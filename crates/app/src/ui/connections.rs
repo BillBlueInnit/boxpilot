@@ -199,8 +199,11 @@ impl Render for ConnectionsPage {
                     let c = &r.conn;
                     let id = c.id.clone();
                     let engine = engine.clone();
+                    // List items are laid out as roots: without a width they
+                    // shrink to their content and the columns drift.
                     h_flex()
                         .id(("conn", i))
+                        .w_full()
                         .h(dp(36.))
                         .px_3()
                         .gap_3()

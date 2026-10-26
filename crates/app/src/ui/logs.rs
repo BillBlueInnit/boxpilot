@@ -161,6 +161,7 @@ impl Render for LogsPage {
                     let l = &lines[i];
                     let c = colors[l.level as usize];
                     h_flex()
+                        .w_full()
                         .h(dp(24.))
                         .px_3()
                         .gap_3()

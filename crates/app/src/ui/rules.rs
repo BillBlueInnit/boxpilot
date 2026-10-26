@@ -383,7 +383,6 @@ impl Render for RulesPage {
         page(t!("nav.rules"), Some(t!("rules.subtitle", providers.len())), actions, cx).child(
             v_flex()
                 .gap_4()
-                .max_w(dp(900.))
                 .child(anim::enter(list, "rules-list", 0.0))
                 .child(anim::enter(
                     card(cx)

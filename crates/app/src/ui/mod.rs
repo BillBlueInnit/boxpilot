@@ -578,7 +578,7 @@ impl Render for MainView {
         // entrance spring; the scroll position of each page is kept.
         let body = if full_height {
             anim::enter(
-                v_flex().flex_1().min_h_0().w_full().px(dp(m.pad)).pb_5().pt(dp(top_pad)).child(content),
+                v_flex().flex_1().min_h_0().w_full().px(dp(m.inset)).pb_5().pt(dp(top_pad)).child(content),
                 ("page", page.index()),
                 0.0,
             )
@@ -597,7 +597,7 @@ impl Render for MainView {
                         .overflow_y_scroll()
                         .track_scroll(&handle)
                         .child(anim::enter(
-                            div().w_full().px(dp(m.pad)).pb_5().pt(dp(top_pad)).max_w(dp(1180. + m.pad * 2.0)).child(content),
+                            div().w_full().px(dp(m.inset)).pb_5().pt(dp(top_pad)).child(content),
                             ("page", page.index()),
                             0.0,
                         )),

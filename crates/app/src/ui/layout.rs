@@ -73,11 +73,15 @@ pub struct Metrics {
     /// Tight spacing for small windows.
     pub narrow: bool,
     pub sidebar: f32,
-    /// Horizontal page padding.
-    pub pad: f32,
     /// Width available to page content, in `dp`.
     pub content: f32,
+    /// Left/right page inset: the padding plus, on very wide windows, the
+    /// margin that centers the capped content column.
+    pub inset: f32,
 }
+
+/// Page content stops growing here; wider windows center it.
+pub const MAX_CONTENT: f32 = 1600.0;
 
 pub fn metrics(window: &Window) -> Metrics {
     let width = window.viewport_size().width.as_f32() / scale();
@@ -85,8 +89,10 @@ pub fn metrics(window: &Window) -> Metrics {
     let narrow = width < 820.0;
     let sidebar = if compact_nav { 64.0 } else { 216.0 };
     let pad = if narrow { 16.0 } else { 24.0 };
-    let content = (width - sidebar - pad * 2.0).clamp(240.0, 1180.0);
-    Metrics { compact_nav, narrow, sidebar, pad, content }
+    let available = width - sidebar - pad * 2.0;
+    let content = available.clamp(240.0, MAX_CONTENT);
+    let inset = pad + (available - MAX_CONTENT).max(0.0) / 2.0;
+    Metrics { compact_nav, narrow, sidebar, content, inset }
 }
 
 /// Splits `content` into equal columns of at least `min` (gap included),
