@@ -10,7 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 log.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["default-tls", "socks", "stream", "gzip", "brotli", "deflate", "json", "charset", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["socks", "stream", "gzip", "brotli", "deflate", "json", "charset", "http2"] }
 futures-util = "0.3"
 serde_yaml_ng = "0.10"
 base64 = "0.22"
@@ -19,6 +19,19 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# TLS: the OS stack on Windows (SChannel) and macOS (Security.framework);
+# rustls with the system certificate store on Linux, so no libssl is needed.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

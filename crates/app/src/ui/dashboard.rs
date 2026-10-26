@@ -174,7 +174,7 @@ impl DashboardPage {
                             Button::new("admin")
                                 .small()
                                 .primary()
-                                .label(t!("btn.restart_admin_short"))
+                                .label(if cfg!(windows) { t!("btn.restart_admin_short") } else { t!("btn.grant_tun") })
                                 .on_click(|_, _, cx| super::toggle_tun(true, cx)),
                         )
                     }),
@@ -278,7 +278,7 @@ impl DashboardPage {
     fn controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let engine = self.state.read(cx).engine.clone();
         let s = engine.settings();
-        let elevated = boxpilot_core::sys::is_elevated();
+        let tun_ok = engine.tun_permitted();
         let (e1, e2, e3) = (engine.clone(), engine.clone(), engine.clone());
         card(cx)
             .flex_1()
@@ -314,7 +314,7 @@ impl DashboardPage {
             .child(divider(cx))
             .child(setting_row(
                 t!("quick.tun"),
-                Some(if elevated { t!("quick.tun_desc") } else { t!("quick.tun_desc_admin") }),
+                Some(if tun_ok { t!("quick.tun_desc") } else if cfg!(windows) { t!("quick.tun_desc_admin") } else { t!("quick.tun_desc_grant") }),
                 Switch::new("tun").checked(s.tun_enabled).on_change(|v, _, cx| super::toggle_tun(*v, cx)),
                 cx,
             ))

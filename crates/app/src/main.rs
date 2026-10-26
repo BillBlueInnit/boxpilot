@@ -14,10 +14,12 @@ use boxpilot_core::Engine;
 use gpui_kit::{App, AppContext as _, AsyncApp};
 
 use crate::state::AppState;
-use crate::tray::{Tray, TrayAction};
+use crate::tray::{TrayAction, TrayHandle};
 
 fn main() {
     let autostart = std::env::args().any(|a| a == "--autostart");
+    // CI: start the full UI, check the window came up, then exit.
+    let smoke_test = std::env::args().any(|a| a == "--smoke-test");
     let Some(mut show_requests) = platform::single_instance() else {
         // Another instance is running and has been asked to show itself.
         return;
@@ -40,7 +42,8 @@ fn main() {
     log::info!("BoxPilot {} starting", env!("CARGO_PKG_VERSION"));
 
     let settings = engine.settings();
-    if settings.run_as_admin && !boxpilot_core::sys::is_elevated() {
+    // Windows only: elsewhere "administrator" means a privileged core binary.
+    if cfg!(windows) && settings.run_as_admin && !boxpilot_core::sys::is_elevated() {
         // Hand over to an elevated instance; it waits for this one to exit.
         let mut args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--restarted").collect();
         args.push("--restarted".into());
@@ -51,9 +54,10 @@ fn main() {
     }
     i18n::set_language(settings.language);
 
-    gpui_kit::application()
-        .with_assets(ui::assets::AppAssets)
-        .run(move |cx: &mut App| {
+    let app = gpui_kit::application().with_assets(ui::assets::AppAssets);
+    // macOS: clicking the Dock icon brings the window back.
+    app.on_reopen(ui::show_main_window);
+    app.run(move |cx: &mut App| {
             gpui_kit::init(cx);
             ui::init(cx);
 
@@ -61,7 +65,7 @@ fn main() {
             AppState::install(state.clone(), cx);
 
             let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel();
-            match Tray::new(move |a| {
+            match TrayHandle::new(move |a| {
                 let _ = tray_tx.send(a);
             }) {
                 Ok(tray) => state.update(cx, |s, _| {
@@ -101,6 +105,18 @@ fn main() {
 
             ui::open_main_window(cx, !(autostart && settings.start_minimized));
             engine.startup();
+            if smoke_test {
+                cx.spawn(async move |cx: &mut AsyncApp| {
+                    cx.background_executor().timer(Duration::from_secs(6)).await;
+                    cx.update(|cx| {
+                        let ok = AppState::global(cx).read(cx).window.is_some();
+                        println!("ui smoke test: window {}", if ok { "open" } else { "missing" });
+                        AppState::engine(cx).shutdown_blocking();
+                        std::process::exit(if ok { 0 } else { 1 });
+                    });
+                })
+                .detach();
+            }
         });
     drop(runtime);
 }

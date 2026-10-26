@@ -46,10 +46,8 @@ fn platform_suffix() -> Result<String> {
         "x86" => "386",
         other => bail!("unsupported architecture {other}"),
     };
-    if os != "windows" {
-        bail!("automatic core download is only implemented for Windows");
-    }
-    Ok(format!("{os}-{arch}.zip"))
+    let ext = if os == "windows" { "zip" } else { "tar.gz" };
+    Ok(format!("{os}-{arch}.{ext}"))
 }
 
 /// Finds the newest release (optionally including pre-releases) with a build for this platform.
@@ -116,8 +114,60 @@ pub async fn download(
     Ok(data)
 }
 
-/// Extracts every file of the release archive's top folder into `dest`.
-pub fn install_zip(archive: &[u8], dest: &Path) -> Result<()> {
+/// Extracts the release archive (`.zip` on Windows, `.tar.gz` elsewhere).
+pub fn install_archive(name: &str, archive: &[u8], dest: &Path) -> Result<()> {
+    if name.ends_with(".tar.gz") {
+        install_tar_gz(archive, dest)
+    } else {
+        install_zip(archive, dest)
+    }
+}
+
+/// Writes one extracted file, replacing the old one and keeping it executable.
+fn place_file(dest: &Path, name: &str, data: &[u8]) -> Result<()> {
+    let target = dest.join(name);
+    let tmp = dest.join(format!("{name}.new"));
+    std::fs::write(&tmp, data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    if target.exists() {
+        std::fs::remove_file(&target)
+            .with_context(|| format!("replace {} (is it still running?)", target.display()))?;
+    }
+    std::fs::rename(&tmp, &target)?;
+    Ok(())
+}
+
+fn install_tar_gz(archive: &[u8], dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    let mut found_exe = false;
+    for entry in tar.entries().context("open archive")? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let Some(name) = entry.path()?.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("LICENSE") {
+            continue;
+        }
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        place_file(dest, &name, &buf)?;
+        found_exe |= name.starts_with("sing-box");
+    }
+    if !found_exe {
+        bail!("archive does not contain sing-box");
+    }
+    Ok(())
+}
+
+fn install_zip(archive: &[u8], dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).context("open archive")?;
     let mut found_exe = false;
@@ -137,14 +187,7 @@ pub fn install_zip(archive: &[u8], dest: &Path) -> Result<()> {
         }
         let mut buf = Vec::new();
         entry.read_to_end(&mut buf)?;
-        let target = dest.join(&name);
-        let tmp = dest.join(format!("{name}.new"));
-        std::fs::write(&tmp, &buf)?;
-        if target.exists() {
-            std::fs::remove_file(&target)
-                .with_context(|| format!("replace {} (is it still running?)", target.display()))?;
-        }
-        std::fs::rename(&tmp, &target)?;
+        place_file(dest, &name, &buf)?;
         found_exe |= name.starts_with("sing-box");
     }
     if !found_exe {

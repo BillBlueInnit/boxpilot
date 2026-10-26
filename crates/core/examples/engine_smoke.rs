@@ -35,7 +35,7 @@ fn main() {
         println!("start: {:?} in {:?} -> {:?}", r.as_ref().err(), t.elapsed(), engine.status());
         if !engine.status().is_running() {
             for l in engine.logs().iter().rev().take(10) { println!("  log: {:?} {}", l.level, l.message); }
-            return;
+            panic!("core did not start");
         }
         let api = engine.api();
         let groups = engine.groups();
@@ -44,30 +44,41 @@ fn main() {
         }
         engine.select_proxy("Proxy", "Dead B");
         tokio::time::sleep(Duration::from_millis(500)).await;
-        println!("after select: {:?}", engine.groups().iter().find(|g| g.name == "Proxy").map(|g| g.now.clone()));
+        let now = engine.groups().iter().find(|g| g.name == "Proxy").map(|g| g.now.clone());
+        println!("after select: {now:?}");
+        assert_eq!(now.as_deref(), Some("Dead B"), "selector switch");
         engine.test_delays(vec!["Dead A".into(), "direct".into()]);
         tokio::time::sleep(Duration::from_secs(6)).await;
         println!("delay Dead A: {:?}, direct: {:?}", engine.delay("Dead A"), engine.delay("direct"));
+        assert_eq!(engine.delay("Dead A"), Some(None), "dead node times out");
+        assert!(matches!(engine.delay("direct"), Some(Some(_))), "direct latency measured");
         engine.set_mode(ProxyMode::Global);
         tokio::time::sleep(Duration::from_millis(500)).await;
         let cfg: serde_json::Value = reqwest::Client::builder().no_proxy().build().unwrap()
             .get("http://127.0.0.1:19090/configs").bearer_auth(engine.settings().clash_api_secret)
             .send().await.unwrap().json().await.unwrap();
         println!("mode via API: {}", cfg["mode"]);
+        assert_eq!(cfg["mode"], "Global", "mode switch");
         // A request through the mixed port in Direct mode reaches the internet.
         engine.set_mode(ProxyMode::Direct);
         tokio::time::sleep(Duration::from_millis(300)).await;
         let client = reqwest::Client::builder().proxy(reqwest::Proxy::all("http://127.0.0.1:17890").unwrap()).build().unwrap();
         let r = client.get("https://www.gstatic.com/generate_204").timeout(Duration::from_secs(10)).send().await;
-        println!("direct via mixed port: {:?}", r.map(|r| r.status()));
+        let status = r.map(|r| r.status().as_u16());
+        println!("direct via mixed port: {status:?}");
+        assert_eq!(status.ok(), Some(204), "traffic through the mixed port");
         println!("connections: {:?}", api.connections().await.map(|c| c.connections.map(|v| v.len())));
         // Settings change that affects the config triggers a reload.
         engine.update_settings(|s| s.log_level = "debug".into());
         tokio::time::sleep(Duration::from_secs(3)).await;
         println!("after reload: {:?}", engine.status());
+        assert!(engine.status().is_running(), "reload keeps the core running");
         let mut slot_status = engine.status();
         engine.stop();
         for _ in 0..50 { tokio::time::sleep(Duration::from_millis(100)).await; slot_status = engine.status(); if slot_status == CoreStatus::Stopped { break; } }
-        println!("after stop: {:?}; api alive: {}", slot_status, api.version().await.is_ok());
+        let alive = api.version().await.is_ok();
+        println!("after stop: {slot_status:?}; api alive: {alive}");
+        assert!(slot_status == CoreStatus::Stopped && !alive, "core stopped");
+        println!("engine smoke test passed");
     });
 }

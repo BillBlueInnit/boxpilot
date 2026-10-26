@@ -329,7 +329,6 @@ impl Render for SettingsPage {
         let (et, es, el, elang) = (engine.clone(), engine.clone(), engine.clone(), engine.clone());
         let export_engine = engine.clone();
         let data_dir = engine.paths().root.clone();
-        let elevated = boxpilot_core::sys::is_elevated();
         let muted = cx.theme().muted_foreground;
         let theme_options: Vec<(SharedString, ThemePref)> = vec![
             (t!("theme.system").into(), ThemePref::System),
@@ -365,12 +364,18 @@ impl Render for SettingsPage {
                     cx,
                 ))
                 .child(switch_row("login", t!("set.launch_login"), t!("set.launch_login_desc"), s.launch_at_login, e, |s, v| s.launch_at_login = v, cx))
-                .child(setting_row(
-                    t!("set.run_admin"),
-                    Some(t!("set.run_admin_desc")),
-                    Switch::new("run-admin").checked(s.run_as_admin).on_change(|v, _, cx| super::toggle_run_as_admin(*v, cx)),
-                    cx,
-                ))
+                // macOS / Linux grant TUN to the core binary from the TUN switch instead.
+                .when(cfg!(windows), |d| {
+                    d.child(setting_row(
+                        t!("set.run_admin"),
+                        Some(t!("set.run_admin_desc")),
+                        Switch::new("run-admin").checked(s.run_as_admin).on_change(|v, _, cx| super::toggle_run_as_admin(*v, cx)),
+                        cx,
+                    ))
+                })
+                .when(super::platform_mica_supported(), |d| {
+                    d.child(switch_row("mica", t!("set.mica"), t!("set.mica_desc"), s.mica, e, |s, v| s.mica = v, cx))
+                })
                 .child(switch_row("minimized", t!("set.start_min"), t!("set.start_min_desc"), s.start_minimized, e, |s, v| s.start_minimized = v, cx))
                 .child(switch_row("autoconnect", t!("set.autoconnect"), t!("set.autoconnect_desc"), s.auto_start_core, e, |s, v| s.auto_start_core = v, cx))
                 .child(switch_row("tray", t!("set.close_tray"), t!("set.close_tray_desc"), s.close_to_tray, e, |s, v| s.close_to_tray = v, cx))
@@ -389,7 +394,7 @@ impl Render for SettingsPage {
                 .child(section_title(t!("set.tun"), cx))
                 .child(setting_row(
                     t!("set.tun_enable"),
-                    Some(if elevated { t!("set.tun_enable_desc") } else { t!("set.tun_enable_desc_admin") }),
+                    Some(if engine.tun_permitted() { t!("set.tun_enable_desc") } else if cfg!(windows) { t!("set.tun_enable_desc_admin") } else { t!("set.tun_enable_desc_grant") }),
                     Switch::new("tun2").checked(s.tun_enabled).on_change(|v, _, cx| super::toggle_tun(*v, cx)),
                     cx,
                 ))

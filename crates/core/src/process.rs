@@ -139,7 +139,8 @@ pub async fn check_config(core: &Path, config: &Path, workdir: &Path) -> Result<
 }
 
 pub fn spawn_core(core: &Path, config: &Path, workdir: &Path) -> Result<Child> {
-    command(core)
+    let mut cmd = command(core);
+    cmd
         .arg("run")
         .arg("-c")
         .arg(config)
@@ -148,9 +149,17 @@ pub fn spawn_core(core: &Path, config: &Path, workdir: &Path) -> Result<Child> {
         .arg("--disable-color")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("start {}", core.display()))
+        .kill_on_drop(true);
+    // Linux: the kernel kills the core if the app dies (the Windows job
+    // object does the same; macOS relies on the stale-pid cleanup).
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
+    cmd.spawn().with_context(|| format!("start {}", core.display()))
 }
 
 /// Forwards each output line of the child to `sink`.

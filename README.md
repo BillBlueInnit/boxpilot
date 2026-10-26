@@ -46,6 +46,30 @@ Data lives in `%APPDATA%\BoxPilot`. Create a `data` folder next to `boxpilot.exe
 - **Motion**: every transition is a damped spring (GPUI's analytic solver), so movement eases and
   settles like a physical object, keeps its velocity when interrupted and respects "reduce motion".
 
+## Platforms
+
+BoxPilot runs on every platform GPUI supports — Windows 10/11, macOS (Apple silicon and Intel)
+and Linux (X11 and Wayland) — with the same features. Where the operating systems differ, each
+one gets its native mechanism:
+
+| | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| Window | borderless, native frame, snap layouts on Maximize, optional Mica | native traffic lights | client-side decorations (or the WM's own) |
+| Caption buttons | Segoe Fluent / MDL2 glyphs, WinUI colours | AppKit traffic lights | Adwaita (GNOME) or Breeze (KDE) style, `button-layout` order and side |
+| System proxy | WinINet (registry) | `networksetup`, every network service | GNOME `gsettings`, KDE `kioslaverc` |
+| TUN permission | run BoxPilot as administrator (login via scheduled task, no UAC prompt) | core made setuid root after one admin prompt | `CAP_NET_ADMIN` on the core via `pkexec setcap` |
+| Launch at login | Run key / scheduled task | LaunchAgent | XDG autostart |
+| Close to tray | hides the window | hides the app (Dock icon brings it back) | closes the window (tray reopens it) |
+| Core cleanup if the app crashes | job object | stale-pid cleanup at next start | parent-death signal + stale-pid cleanup |
+| Data folder | `%APPDATA%\BoxPilot` | `~/Library/Application Support/BoxPilot` | `$XDG_CONFIG_HOME/BoxPilot` |
+
+Linux needs an AppIndicator-capable tray (GNOME: the AppIndicator extension) for the tray icon.
+
+`.github/workflows/ci.yml` builds and tests natively on Windows, macOS (arm64 and x64) and Linux:
+unit tests, every generated config through `sing-box check`, a live engine test against the real
+core (start, groups, selection, latency, mode switch, traffic, reload, stop) and a GUI start-up
+check (`boxpilot --smoke-test`).
+
 ## Layout
 
 | Path | What it does |

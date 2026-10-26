@@ -154,3 +154,69 @@ impl Tray {
         }
     }
 }
+
+/// Owns the tray from the UI thread. On Linux the indicator must live on a
+/// GTK main loop, so it runs on its own thread and receives updates.
+pub struct TrayHandle {
+    #[cfg(not(target_os = "linux"))]
+    tray: Tray,
+    #[cfg(target_os = "linux")]
+    tx: std::sync::mpsc::Sender<TrayMsg>,
+}
+
+#[cfg(target_os = "linux")]
+enum TrayMsg {
+    Relabel,
+    Sync(bool, bool, ProxyMode, bool, bool, String),
+}
+
+impl TrayHandle {
+    pub fn new(on_action: impl Fn(TrayAction) + Send + Sync + 'static) -> anyhow::Result<Self> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(Self { tray: Tray::new(on_action)? })
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let (tx, rx) = std::sync::mpsc::channel::<TrayMsg>();
+            std::thread::Builder::new().name("tray".into()).spawn(move || {
+                if let Err(e) = gtk::init() {
+                    log::error!("tray unavailable (GTK): {e}");
+                    return;
+                }
+                let mut tray = match Tray::new(on_action) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::error!("tray unavailable: {e:#}");
+                        return;
+                    }
+                };
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                    while let Ok(msg) = rx.try_recv() {
+                        match msg {
+                            TrayMsg::Relabel => tray.relabel(),
+                            TrayMsg::Sync(r, b, m, p, t, tip) => tray.sync(r, b, m, p, t, &tip),
+                        }
+                    }
+                    gtk::glib::ControlFlow::Continue
+                });
+                gtk::main();
+            })?;
+            Ok(Self { tx })
+        }
+    }
+
+    pub fn relabel(&mut self) {
+        #[cfg(not(target_os = "linux"))]
+        self.tray.relabel();
+        #[cfg(target_os = "linux")]
+        let _ = self.tx.send(TrayMsg::Relabel);
+    }
+
+    pub fn sync(&mut self, running: bool, busy: bool, mode: ProxyMode, system_proxy: bool, tun: bool, tooltip: &str) {
+        #[cfg(not(target_os = "linux"))]
+        self.tray.sync(running, busy, mode, system_proxy, tun, tooltip);
+        #[cfg(target_os = "linux")]
+        let _ = self.tx.send(TrayMsg::Sync(running, busy, mode, system_proxy, tun, tooltip.to_string()));
+    }
+}

@@ -290,6 +290,28 @@ impl Engine {
         self.core_path().is_file()
     }
 
+    /// Whether TUN can be used: an elevated app on Windows; on macOS / Linux
+    /// either root or a core binary granted the privilege.
+    pub fn tun_permitted(&self) -> bool {
+        sys::is_elevated() || sys::core_tun_privileged(&self.core_path())
+    }
+
+    /// macOS / Linux: asks for an administrator password and grants the core
+    /// binary the right to create TUN interfaces (needed again after a core update).
+    pub async fn grant_tun_privilege(&self) -> Result<()> {
+        let core = self.core_path();
+        if !core.is_file() {
+            bail!("{CORE_MISSING}");
+        }
+        tokio::task::spawn_blocking(move || sys::grant_tun_privilege(&core)).await??;
+        self.log_app(LogLevel::Info, "granted TUN permission to the core");
+        Ok(())
+    }
+
+    fn pid_file(&self) -> PathBuf {
+        self.store.paths.run_dir.join("core.pid")
+    }
+
     pub fn download_state(&self) -> CoreDownloadState {
         self.with(|s| s.download.clone())
     }
@@ -406,6 +428,11 @@ impl Engine {
         let this = self.clone();
         self.rt.spawn(async move {
             let s = this.settings();
+            // A core from a crashed session would hold the ports; stop it.
+            if let Some(pid) = std::fs::read_to_string(this.pid_file()).ok().and_then(|p| p.trim().parse().ok()) {
+                sys::kill_stale_core(pid);
+                let _ = std::fs::remove_file(this.pid_file());
+            }
             // A marker means we set the system proxy and did not get to restore it
             // (crash or power loss). Only then is it safe to clear it.
             let marker = this.sysproxy_marker();
@@ -537,7 +564,7 @@ impl Engine {
             );
         }
         let settings = self.settings();
-        if settings.tun_enabled && !sys::is_elevated() {
+        if settings.tun_enabled && !self.tun_permitted() {
             bail!(TUN_NEEDS_ADMIN);
         }
         let mut built = self.render_config(&settings, version);
@@ -565,6 +592,9 @@ impl Engine {
             .context("invalid configuration")?;
 
         let mut child = process::spawn_core(&core, &cfg_path, &run_dir)?;
+        if let Some(pid) = child.id() {
+            let _ = std::fs::write(self.pid_file(), pid.to_string());
+        }
         #[cfg(windows)]
         if let (Some(job), Some(h)) = (&self.job, child.raw_handle()) {
             job.assign(h);
@@ -752,6 +782,7 @@ impl Engine {
             }
             req = &mut kill_rx => {
                 let _ = child.kill().await;
+                let _ = std::fs::remove_file(self.pid_file());
                 if let Ok(done) = req {
                     let _ = done.send(());
                 }
@@ -1774,7 +1805,8 @@ impl Engine {
         let dest = self.paths().core_dir.clone();
         let installed = {
             let dest = dest.clone();
-            tokio::task::spawn_blocking(move || core_download::install_zip(&data, &dest)).await?
+            let name = release.asset_name.clone();
+            tokio::task::spawn_blocking(move || core_download::install_archive(&name, &data, &dest)).await?
         };
         if installed.is_ok() && !self.settings().core_path.is_empty() {
             // Use the downloaded core instead of the custom path.

@@ -1,28 +1,30 @@
 pub mod anim;
 pub mod assets;
+mod chrome;
 mod connections;
 mod dashboard;
 mod logs;
 mod proxies;
 mod rules;
 mod settings;
+pub mod smooth_scroll;
 mod subscriptions;
 pub mod widgets;
 
 use boxpilot_core::CoreStatus;
 use boxpilot_core::model::{Settings, ThemePref};
+use gpui_kit::AnimationExt as _;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex, window_border,
 };
-use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, App, Bounds, Context, Entity, FontWeight, SharedString, SpringAnimation, Subscription, Window,
-    WindowBounds, WindowOptions, div, px, size,
+    Animation, App, Bounds, Context, Entity, FontWeight, ScrollHandle, SpringAnimation, Subscription, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::state::{AppState, Page, status_text};
@@ -32,36 +34,65 @@ use widgets::*;
 pub fn init(_cx: &mut App) {}
 
 pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
-    match AppState::engine(cx).settings().theme {
-        ThemePref::System => Theme::sync_system_appearance(window, cx),
-        ThemePref::Light => Theme::change(ThemeMode::Light, window, cx),
-        ThemePref::Dark => Theme::change(ThemeMode::Dark, window, cx),
+    let pref = AppState::engine(cx).settings().theme;
+    match window {
+        Some(window) => {
+            match pref {
+                ThemePref::System => Theme::sync_system_appearance(Some(window), cx),
+                ThemePref::Light => Theme::change(ThemeMode::Light, Some(window), cx),
+                ThemePref::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
+            }
+            // Keep the native frame and Mica tint in step with the app theme.
+            crate::platform::set_dark_frame(window, cx.theme().is_dark());
+        }
+        None => match pref {
+            ThemePref::System => Theme::sync_system_appearance(None, cx),
+            ThemePref::Light => Theme::change(ThemeMode::Light, None, cx),
+            ThemePref::Dark => Theme::change(ThemeMode::Dark, None, cx),
+        },
+    }
+}
+
+pub fn platform_mica_supported() -> bool {
+    crate::platform::mica_supported()
+}
+
+/// Whether the Mica backdrop is in use (Windows 11 22H2+ and enabled).
+pub fn mica_active(settings: &Settings) -> bool {
+    settings.mica && crate::platform::mica_supported()
+}
+
+fn backdrop(settings: &Settings) -> WindowBackgroundAppearance {
+    if mica_active(settings) {
+        WindowBackgroundAppearance::MicaBackdrop
+    } else {
+        WindowBackgroundAppearance::Opaque
     }
 }
 
 pub fn open_main_window(cx: &mut App, show: bool) {
+    let settings = AppState::engine(cx).settings();
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1140.), px(760.)), cx))),
         window_min_size: Some(size(px(900.), px(600.))),
         show,
         focus: show,
         app_id: Some("BoxPilot".into()),
+        // The OS title bar is hidden; the native frame (shadow, rounded
+        // corners, resize borders, snap) is kept and our caption area maps
+        // onto it. On macOS AppKit keeps the traffic lights and drag region.
         titlebar: Some(gpui_kit::TitlebarOptions {
             title: Some("BoxPilot".into()),
-            ..TitleBar::title_bar_options()
+            appears_transparent: true,
+            traffic_light_position: Some(gpui_kit::point(px(14.), px(14.))),
         }),
+        app_owns_titlebar_drag: false,
+        window_background: backdrop(&settings),
         ..TitleBar::window_options()
     };
     let result = gpui_kit::open_window(options, cx, |window, cx| {
         apply_theme(Some(window), cx);
-        window.on_window_should_close(cx, |window, cx| {
-            if AppState::engine(cx).settings().close_to_tray {
-                crate::platform::hide_window(window);
-            } else {
-                quit(cx);
-            }
-            false
-        });
+        window.on_window_should_close(cx, handle_close_request);
         cx.new(|cx| MainView::new(window, cx))
     });
     match result {
@@ -75,11 +106,24 @@ pub fn open_main_window(cx: &mut App, show: bool) {
 
 pub fn show_main_window(cx: &mut App) {
     let state = AppState::global(cx);
-    match state.read(cx).window {
-        Some(handle) => {
-            let _ = handle.update(cx, |_, window, _| crate::platform::show_window(window));
-        }
-        None => open_main_window(cx, true),
+    let handle = state.read(cx).window;
+    let shown = handle.is_some_and(|h| {
+        h.update(cx, |_, window, cx| crate::platform::show_window(window, cx)).is_ok()
+    });
+    if !shown {
+        // The window was closed (Linux close-to-tray); open a fresh one.
+        open_main_window(cx, true);
+    }
+}
+
+/// The window's close button: hide to the tray or quit. Returns whether the
+/// window should actually be destroyed.
+pub fn handle_close_request(window: &mut Window, cx: &mut App) -> bool {
+    if AppState::engine(cx).settings().close_to_tray {
+        crate::platform::hide_to_tray(window, cx)
+    } else {
+        quit(cx);
+        false
     }
 }
 
@@ -101,39 +145,83 @@ fn confirm_elevation(body: &'static str, apply: fn(&mut Settings), cx: &mut App)
                 .w(px(480.))
                 .child(div().text_sm().text_color(muted).child(body))
                 .footer(
-                    DialogFooter::new()
-                        .child(cancel_button())
-                        .child(
-                            Button::new("restart-admin")
-                                .primary()
-                                .label(t!("btn.restart_admin"))
-                                .on_click(move |_, window, cx| {
-                                    window.close_dialog(cx);
-                                    restart_elevated(apply, cx);
-                                }),
-                        ),
+                    DialogFooter::new().child(cancel_button()).child(
+                        Button::new("restart-admin")
+                            .primary()
+                            .label(t!("btn.restart_admin"))
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                restart_elevated(apply, cx);
+                            }),
+                    ),
                 )
         });
     });
 }
 
-/// Enables or disables TUN mode, offering to restart elevated when needed.
+/// Enables or disables TUN mode. On Windows TUN needs an elevated app; on
+/// macOS / Linux the core binary is granted the privilege instead.
 pub fn toggle_tun(enable: bool, cx: &mut App) {
     let engine = AppState::engine(cx);
-    if !enable || boxpilot_core::sys::is_elevated() {
+    if !enable || engine.tun_permitted() {
         engine.update_settings(|s| s.tun_enabled = enable);
         return;
     }
-    confirm_elevation(t!("admin.body_tun"), |s| s.tun_enabled = true, cx);
+    if cfg!(windows) {
+        confirm_elevation(t!("admin.body_tun"), |s| s.tun_enabled = true, cx);
+    } else {
+        grant_core_privilege(Some(|s: &mut Settings| s.tun_enabled = true), cx);
+    }
 }
 
 pub fn toggle_run_as_admin(enable: bool, cx: &mut App) {
     let engine = AppState::engine(cx);
+    if !cfg!(windows) {
+        // macOS / Linux: "administrator" means a privileged core binary.
+        if enable && !engine.tun_permitted() {
+            grant_core_privilege(Some(|s: &mut Settings| s.run_as_admin = true), cx);
+        } else {
+            engine.update_settings(|s| s.run_as_admin = enable);
+        }
+        return;
+    }
     if !enable || boxpilot_core::sys::is_elevated() {
         engine.update_settings(|s| s.run_as_admin = enable);
         return;
     }
     confirm_elevation(t!("admin.body_run"), |s| s.run_as_admin = true, cx);
+}
+
+/// macOS / Linux: asks the system for an administrator password to let the
+/// core create TUN interfaces (setuid on macOS, capabilities on Linux).
+fn grant_core_privilege(apply: Option<fn(&mut Settings)>, cx: &mut App) {
+    let engine = AppState::engine(cx);
+    let window = AppState::global(cx).read(cx).window;
+    let task = engine.runtime().spawn({
+        let engine = engine.clone();
+        async move { engine.grant_tun_privilege().await }
+    });
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        let result = task.await.map_err(anyhow::Error::from).and_then(|r| r);
+        cx.update(|cx| match result {
+            Ok(()) => {
+                if let Some(apply) = apply {
+                    engine.update_settings(apply);
+                }
+            }
+            Err(e) => {
+                if let Some(handle) = window {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        window.push_notification(
+                            gpui_kit::component::notification::Notification::warning(format!("{e:#}")),
+                            cx,
+                        )
+                    });
+                }
+            }
+        });
+    })
+    .detach();
 }
 
 fn restart_elevated(apply: fn(&mut Settings), cx: &mut App) {
@@ -177,7 +265,10 @@ pub struct MainView {
     connections: Entity<connections::ConnectionsPage>,
     logs: Entity<logs::LogsPage>,
     settings: Entity<settings::SettingsPage>,
+    /// One scroll position per page, kept while switching pages.
+    scroll: Vec<ScrollHandle>,
     last_theme: ThemePref,
+    last_mica: bool,
     last_page: Page,
     moving_down: bool,
     _subscriptions: Vec<Subscription>,
@@ -186,13 +277,18 @@ pub struct MainView {
 impl MainView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
-        let last_theme = state.read(cx).engine.settings().theme;
+        let settings = state.read(cx).engine.settings();
         let subs = vec![
             cx.observe_in(&state, window, |this: &mut Self, state, window, cx| {
-                let theme = state.read(cx).engine.settings().theme;
-                if theme != this.last_theme {
-                    this.last_theme = theme;
+                let settings = state.read(cx).engine.settings();
+                if settings.theme != this.last_theme {
+                    this.last_theme = settings.theme;
                     apply_theme(Some(window), cx);
+                }
+                let mica = mica_active(&settings);
+                if mica != this.last_mica {
+                    this.last_mica = mica;
+                    window.set_background_appearance(backdrop(&settings));
                 }
                 cx.notify();
             }),
@@ -210,8 +306,10 @@ impl MainView {
             connections: cx.new(|cx| connections::ConnectionsPage::new(window, cx)),
             logs: cx.new(|cx| logs::LogsPage::new(window, cx)),
             settings: cx.new(|cx| settings::SettingsPage::new(window, cx)),
+            scroll: Page::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             state,
-            last_theme,
+            last_theme: settings.theme,
+            last_mica: mica_active(&settings),
             last_page: Page::Dashboard,
             moving_down: true,
             _subscriptions: subs,
@@ -230,7 +328,9 @@ impl MainView {
         }
     }
 
-    fn render_sidebar(&self, page: Page, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, page: Page, mica: bool, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Linux desktops may put the window buttons on the left (button-layout).
+        let left_controls = chrome::window_controls(chrome::Side::Left, window, cx);
         let engine = self.state.read(cx).engine.clone();
         let status = engine.status();
         let t = cx.theme();
@@ -260,12 +360,13 @@ impl MainView {
         } else {
             (anim::SNAPPY, anim::TRAILING)
         };
+        let accent = if mica { t.sidebar_accent.opacity(0.85) } else { t.sidebar_accent };
         let indicator = div()
             .absolute()
             .left_0()
             .right_0()
             .rounded(t.radius)
-            .bg(t.sidebar_accent)
+            .bg(accent)
             .with_spring("nav-top", SpringAnimation::new(top_cfg).to(px(top)), |d, v| d.top(v))
             .with_spring("nav-bottom", SpringAnimation::new(bottom_cfg).to(px(bottom)), |e, v| {
                 e.map_element(|d| d.bottom(v))
@@ -333,33 +434,44 @@ impl MainView {
             .w(px(216.))
             .h_full()
             .flex_none()
-            .bg(t.sidebar)
-            .border_r_1()
-            .border_color(t.sidebar_border)
+            .when(!mica, |d| d.bg(t.sidebar))
+            .when_some(left_controls, |d, controls| {
+                d.child(
+                    h_flex()
+                        .h(px(chrome::CAPTION_H))
+                        .child(controls)
+                        .child(chrome::drag_region("drag-left-controls").flex_1().h_full()),
+                )
+            })
+            // The logo block doubles as a window drag handle (it has no controls).
             .child(
-                h_flex()
-                    .px_4()
-                    .pt_3()
-                    .pb_4()
-                    .gap_2p5()
-                    .items_center()
+                chrome::drag_region("drag-sidebar")
+                    .pt(px(chrome::SIDEBAR_TOP_INSET))
                     .child(
-                        div()
-                            .size(px(30.))
-                            .flex_none()
-                            .rounded(px(8.))
-                            .bg(t.primary)
-                            .text_color(t.primary_foreground)
-                            .flex()
+                        h_flex()
+                            .px_4()
+                            .pt_3()
+                            .pb_4()
+                            .gap_2p5()
                             .items_center()
-                            .justify_center()
-                            .child(extra_icon(Lucide::Waypoints).size(px(16.))),
-                    )
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child("BoxPilot"))
-                            .child(div().text_xs().text_color(t.muted_foreground).truncate().child(version)),
+                            .child(
+                                div()
+                                    .size(px(30.))
+                                    .flex_none()
+                                    .rounded(px(8.))
+                                    .bg(t.primary)
+                                    .text_color(t.primary_foreground)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(extra_icon(Lucide::Waypoints).size(px(16.))),
+                            )
+                            .child(
+                                v_flex()
+                                    .min_w_0()
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child("BoxPilot"))
+                                    .child(div().text_xs().text_color(t.muted_foreground).truncate().child(version)),
+                            ),
                     ),
             )
             .child(
@@ -372,7 +484,7 @@ impl MainView {
                         .children(items),
                 ),
             )
-            .child(div().flex_1())
+            .child(chrome::drag_region("drag-sidebar-fill").flex_1())
             .child(
                 h_flex()
                     .mx_2()
@@ -382,7 +494,7 @@ impl MainView {
                     .gap_2()
                     .items_center()
                     .rounded(t.radius)
-                    .bg(t.sidebar_accent.opacity(0.5))
+                    .bg(accent.opacity(0.5))
                     .child(status_dot)
                     .child(div().text_sm().min_w_0().truncate().child(status_text(&status))),
             )
@@ -390,12 +502,13 @@ impl MainView {
 }
 
 impl Render for MainView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.state.read(cx).page;
         if page != self.last_page {
             self.moving_down = page.index() > self.last_page.index();
             self.last_page = page;
         }
+        let mica = self.last_mica;
         let t = cx.theme();
         let content: gpui_kit::AnyView = match page {
             Page::Dashboard => self.dashboard.clone().into(),
@@ -407,53 +520,63 @@ impl Render for MainView {
             Page::Settings => self.settings.clone().into(),
         };
         let full_height = matches!(page, Page::Connections | Page::Logs);
-        let title_fg = t.muted_foreground;
-        let bg = t.background;
-        let fg = t.foreground;
+        let (bg, fg, sidebar_bg, border) = (t.background, t.foreground, t.sidebar, t.border);
 
+        let top_pad = if mica { 20.0 } else { 4.0 };
         // Each page mounts under its own id, so switching pages replays the
-        // entrance spring.
+        // entrance spring; the scroll position of each page is kept.
         let body = if full_height {
             anim::enter(
-                v_flex().flex_1().min_h_0().w_full().px_6().py_5().child(content),
+                v_flex().flex_1().min_h_0().w_full().px_6().pb_5().pt(px(top_pad)).child(content),
                 ("page", page.index()),
                 0.0,
             )
             .into_any_element()
         } else {
-            div()
-                .id(("content", page.index()))
-                .size_full()
-                .overflow_y_scrollbar()
-                .child(anim::enter(
-                    div().w_full().px_6().py_5().max_w(px(1180.)).child(content),
-                    ("page", page.index()),
-                    0.0,
-                ))
-                .into_any_element()
+            let handle = self.scroll[page.index()].clone();
+            smooth_scroll::smooth_scroll(
+                ("smooth", page.index()),
+                &handle,
+                div()
+                    .id(("content", page.index()))
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&handle)
+                    .child(anim::enter(
+                        div().w_full().px_6().pb_5().pt(px(top_pad)).max_w(px(1180.)).child(content),
+                        ("page", page.index()),
+                        0.0,
+                    ))
+                    .vertical_scrollbar(&handle),
+            )
+            .into_any_element()
         };
 
-        v_flex()
-            .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .text_sm()
-                        .text_color(title_fg)
-                        .child(SharedString::from(page.title())),
+        let caption = chrome::caption_bar(window, cx);
+        window_border().child(
+            h_flex()
+                .size_full()
+                .text_color(fg)
+                .when(!mica, |d| d.bg(sidebar_bg))
+                .child(self.render_sidebar(page, mica, window, cx))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .when(!mica, |d| d.bg(bg))
+                        .child(caption)
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_h_0()
+                                // With Mica the content sits on a raised sheet, as in Windows 11 apps.
+                                .when(mica, |d| {
+                                    d.bg(bg).border_l_1().border_t_1().border_color(border).rounded_tl(px(8.))
+                                })
+                                .child(body),
+                        ),
                 ),
-            )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .items_start()
-                    .child(self.render_sidebar(page, cx))
-                    .child(v_flex().flex_1().min_w_0().h_full().child(body)),
-            )
+        )
     }
 }

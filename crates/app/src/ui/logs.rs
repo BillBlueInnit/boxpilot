@@ -154,6 +154,7 @@ impl Render for LogsPage {
         let (muted, fg, border) = (t.muted_foreground, t.foreground, t.border);
         let colors = [t.muted_foreground, t.muted_foreground, t.info, t.warning, t.danger];
         let mono = t.mono_font_family.clone();
+        let base = self.scroll.0.borrow().base_handle.clone();
         let list = uniform_list("log-list", count, move |range, _, _| {
             range
                 .map(|i| {
@@ -214,7 +215,7 @@ impl Render for LogsPage {
                 .when(count == 0, |d| {
                     d.child(empty_state(extra_icon(Lucide::ScrollText), t!("logs.empty"), t!("logs.empty_hint"), None, cx))
                 })
-                .when(count > 0, |d| d.child(list)),
+                .when(count > 0, |d| d.child(super::smooth_scroll::smooth_scroll("log-smooth", &base, list))),
         )
     }
 }

@@ -12,7 +12,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{AnyWindowHandle, App, Context, Entity, Global};
 
 use crate::t;
-use crate::tray::Tray;
+use crate::tray::TrayHandle;
 
 pub const TRAFFIC_SAMPLES: usize = 60;
 
@@ -64,7 +64,7 @@ pub struct AppState {
     /// Bumped whenever new log lines arrive.
     pub log_rev: u64,
     pub window: Option<AnyWindowHandle>,
-    pub tray: Option<Tray>,
+    pub tray: Option<TrayHandle>,
     pub language: Language,
 }
 

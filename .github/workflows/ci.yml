@@ -1,0 +1,111 @@
+# Builds and tests BoxPilot natively on every platform GPUI supports, then
+# checks that the same behaviour holds everywhere:
+#   * unit tests (converter, config generator, rule-sets, i18n, smooth scroll)
+#   * every generated config passes `sing-box check` with the real core
+#   * a live engine test: start, groups, selection, latency, mode switch,
+#     traffic through the mixed port, reload and stop
+#   * the GUI starts and opens its window (`--smoke-test`)
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows x64, os: windows-latest, singbox: windows-amd64, ext: zip }
+          - { name: macOS arm64, os: macos-14, singbox: darwin-arm64, ext: tar.gz }
+          - { name: macOS x64, os: macos-13, singbox: darwin-amd64, ext: tar.gz }
+          - { name: Linux x64, os: ubuntu-24.04, singbox: linux-amd64, ext: tar.gz }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libfontconfig-dev libfreetype-dev libvulkan-dev libpipewire-0.3-dev \
+            libgtk-3-dev libayatana-appindicator3-dev libxdo-dev \
+            xvfb mesa-vulkan-drivers libgl1-mesa-dri
+
+      - name: Unit tests
+        run: cargo test --workspace --locked
+
+      - name: Build release
+        run: cargo build --release --locked -p boxpilot -p boxpilot-core --examples --bins
+
+      - name: Download the sing-box core
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/SagerNet/sing-box/releases/latest | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p')
+          name="sing-box-${tag}-${{ matrix.singbox }}"
+          curl -fsSL -o "core.${{ matrix.ext }}" \
+            "https://github.com/SagerNet/sing-box/releases/download/v${tag}/${name}.${{ matrix.ext }}"
+          mkdir core
+          if [ "${{ matrix.ext }}" = "zip" ]; then unzip -q core.zip -d core; else tar -xzf core.tar.gz -C core; fi
+          bin=$(find "$PWD/core" -type f \( -name sing-box -o -name sing-box.exe \) | head -n1)
+          chmod +x "$bin"
+          "$bin" version
+          echo "SING_BOX=$bin" >> "$GITHUB_ENV"
+
+      - name: Generated configs pass sing-box check
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/release/examples/gen_config cfg
+          for f in cfg/*-1.14.json; do
+            echo "checking $f"
+            "$SING_BOX" check -c "$f" -D cfg
+          done
+
+      - name: Live engine test
+        shell: bash
+        run: |
+          ./target/release/examples/engine_smoke "$SING_BOX" "$RUNNER_TEMP/smoke"
+          # Rule-sets fetched by the app before start, China bypass on.
+          ./target/release/examples/engine_smoke "$SING_BOX" "$RUNNER_TEMP/smoke-cn" cn
+
+      - name: UI starts (Windows, macOS)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          mkdir -p target/release/data
+          echo '{"auto_start_core":false,"mixed_port":27890,"clash_api_port":29090}' > target/release/data/settings.json
+          ./target/release/boxpilot --smoke-test
+
+      - name: UI starts (Linux, X11 under Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p target/release/data
+          echo '{"auto_start_core":false,"mixed_port":27890,"clash_api_port":29090}' > target/release/data/settings.json
+          xvfb-run -a -s "-screen 0 1280x800x24" ./target/release/boxpilot --smoke-test
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxpilot-${{ matrix.singbox }}
+          path: |
+            target/release/boxpilot
+            target/release/boxpilot.exe
+          if-no-files-found: ignore

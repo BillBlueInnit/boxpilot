@@ -9,6 +9,22 @@ use crate::model::{Node, Settings, Subscription};
 
 pub const APP_NAME: &str = "BoxPilot";
 
+/// `%APPDATA%` on Windows, `~/Library/Application Support` on macOS and
+/// `$XDG_CONFIG_HOME` (or `~/.config`) on Linux.
+fn config_home() -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home)
+    } else if cfg!(target_os = "macos") {
+        home().join("Library").join("Application Support")
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home().join(".config"))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub root: PathBuf,
@@ -25,13 +41,7 @@ impl Paths {
             .ok()
             .and_then(|p| p.parent().map(Path::to_path_buf));
         let portable = exe_dir.as_ref().map(|d| d.join("data")).filter(|d| d.is_dir());
-        let root = portable.unwrap_or_else(|| {
-            std::env::var_os("APPDATA")
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(APP_NAME)
-        });
+        let root = portable.unwrap_or_else(|| config_home().join(APP_NAME));
         Self::at(root)
     }
 

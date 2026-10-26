@@ -10,7 +10,7 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex};
 use gpui_kit::component::Disableable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AsyncApp, Context, Entity, FontWeight, SharedString, Subscription, Task, WeakEntity, Window, div, px,
+    UniformListScrollHandle, AsyncApp, Context, Entity, FontWeight, SharedString, Subscription, Task, WeakEntity, Window, div, px,
     uniform_list,
 };
 
@@ -33,6 +33,7 @@ pub struct ConnectionsPage {
     snapshot: ConnectionsSnapshot,
     rows: Rc<Vec<Row>>,
     prev: HashMap<String, (u64, u64)>,
+    scroll: UniformListScrollHandle,
     _poll: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -87,6 +88,7 @@ impl ConnectionsPage {
             snapshot: ConnectionsSnapshot::default(),
             rows: Rc::new(vec![]),
             prev: HashMap::new(),
+            scroll: UniformListScrollHandle::new(),
             _poll,
             _subs,
         }
@@ -185,6 +187,7 @@ impl Render for ConnectionsPage {
         let rows = self.rows.clone();
         let (fg, muted, border, hover, danger) = (t.foreground, t.muted_foreground, t.border, t.muted, t.danger);
         let row_count = rows.len();
+        let base = self.scroll.0.borrow().base_handle.clone();
         let list = uniform_list("conn-list", row_count, move |range, _, _| {
             range
                 .map(|i| {
@@ -244,6 +247,7 @@ impl Render for ConnectionsPage {
                 })
                 .collect()
         })
+        .track_scroll(&self.scroll)
         .flex_1()
         .min_h_0();
 
@@ -279,7 +283,7 @@ impl Render for ConnectionsPage {
                     .when(row_count == 0, |d| {
                         d.child(empty_state(extra_icon(Lucide::Cable), t!("conn.none"), t!("conn.none_hint"), None, cx))
                     })
-                    .when(row_count > 0, |d| d.child(list)),
+                    .when(row_count > 0, |d| d.child(super::smooth_scroll::smooth_scroll("conn-smooth", &base, list))),
             )
             .into_any_element()
     }

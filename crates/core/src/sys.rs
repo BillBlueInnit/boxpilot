@@ -169,6 +169,33 @@ mod imp {
 
     pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+    /// On Windows TUN needs the app (and so the core) to run elevated.
+    pub fn core_tun_privileged(_core: &std::path::Path) -> bool {
+        is_elevated()
+    }
+
+    pub fn grant_tun_privilege(_core: &std::path::Path) -> Result<()> {
+        bail!("restart BoxPilot as administrator")
+    }
+
+    /// Kills a core left running by a previous crash, if `pid` is still a sing-box.
+    pub fn kill_stale_core(pid: u32) {
+        use std::os::windows::process::CommandExt;
+        let filter = format!("PID eq {pid}");
+        let listed = std::process::Command::new("tasklist")
+            .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase())
+            .unwrap_or_default();
+        if listed.contains("sing-box") {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+    }
+
     fn schtasks(args: &[&str]) -> std::io::Result<std::process::Output> {
         use std::os::windows::process::CommandExt;
         std::process::Command::new("schtasks")
@@ -241,6 +268,16 @@ mod imp {
         schtasks(&["/Query", "/TN", name]).map(|o| o.status.success()).unwrap_or(false)
     }
 
+    /// The Windows build number, e.g. 26100 (0 when unknown).
+    pub fn windows_build() -> u32 {
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+            .and_then(|k| k.get_value::<String, _>("CurrentBuildNumber"))
+            .ok()
+            .and_then(|b| b.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
     /// The Windows display language as a locale name, e.g. `zh-CN`.
     pub fn ui_locale() -> String {
         use windows_sys::Win32::Globalization::{GetUserDefaultUILanguage, LCIDToLocaleName};
@@ -255,44 +292,337 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 mod imp {
     use super::*;
+    use anyhow::{Context, bail};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
-    pub fn set_system_proxy(_server: &str, _bypass: &str) -> Result<()> {
-        anyhow::bail!("system proxy is only implemented on Windows")
+    fn run(cmd: &str, args: &[&str]) -> Result<String> {
+        let out = Command::new(cmd).args(args).output().with_context(|| format!("run {cmd}"))?;
+        if !out.status.success() {
+            bail!("{cmd}: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
-    pub fn clear_system_proxy() -> Result<()> {
+
+    fn home() -> PathBuf {
+        std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"))
+    }
+
+    /// `localhost;127.*;<local>` (Windows style) -> individual host patterns.
+    fn bypass_hosts(bypass: &str) -> Vec<String> {
+        bypass
+            .split([';', ','])
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+            .map(|h| if h == "<local>" { "*.local".to_string() } else { h.to_string() })
+            .collect()
+    }
+
+    fn split_host_port(server: &str) -> (&str, &str) {
+        server.rsplit_once(':').unwrap_or((server, "7890"))
+    }
+
+    // ------------------------------------------------------------ macOS
+
+    #[cfg(target_os = "macos")]
+    fn network_services() -> Result<Vec<String>> {
+        let out = run("networksetup", &["-listallnetworkservices"])?;
+        Ok(out
+            .lines()
+            .skip(1) // "An asterisk (*) denotes that a network service is disabled."
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('*'))
+            .map(|l| l.trim().to_string())
+            .collect())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn set_system_proxy(server: &str, bypass: &str) -> Result<()> {
+        let (host, port) = split_host_port(server);
+        let hosts = bypass_hosts(bypass);
+        for svc in network_services()? {
+            run("networksetup", &["-setwebproxy", &svc, host, port])?;
+            run("networksetup", &["-setsecurewebproxy", &svc, host, port])?;
+            run("networksetup", &["-setsocksfirewallproxy", &svc, host, port])?;
+            let mut args = vec!["-setproxybypassdomains".to_string(), svc.clone()];
+            args.extend(hosts.iter().cloned());
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            run("networksetup", &args)?;
+        }
         Ok(())
     }
-    pub fn system_proxy_state() -> SysProxyState {
-        SysProxyState::default()
-    }
-    pub fn set_launch_at_login(_name: &str, _command: Option<&str>) -> Result<()> {
-        anyhow::bail!("launch at login is only implemented on Windows")
-    }
-    pub fn launch_at_login_enabled(_name: &str) -> bool {
-        false
-    }
-    pub fn is_elevated() -> bool {
-        unsafe extern "C" {
-            fn geteuid() -> u32;
+
+    #[cfg(target_os = "macos")]
+    pub fn clear_system_proxy() -> Result<()> {
+        for svc in network_services()? {
+            run("networksetup", &["-setwebproxystate", &svc, "off"])?;
+            run("networksetup", &["-setsecurewebproxystate", &svc, "off"])?;
+            run("networksetup", &["-setsocksfirewallproxystate", &svc, "off"])?;
         }
-        unsafe { geteuid() == 0 }
+        Ok(())
     }
+
+    #[cfg(target_os = "macos")]
+    pub fn system_proxy_state() -> SysProxyState {
+        let Some(svc) = network_services().ok().and_then(|s| s.into_iter().next()) else {
+            return SysProxyState::default();
+        };
+        let out = run("networksetup", &["-getwebproxy", &svc]).unwrap_or_default();
+        let field = |k: &str| {
+            out.lines()
+                .find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()))
+                .unwrap_or_default()
+        };
+        SysProxyState {
+            enabled: field("Enabled:") == "Yes",
+            server: format!("{}:{}", field("Server:"), field("Port:")),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn launch_agent(name: &str) -> PathBuf {
+        home().join("Library/LaunchAgents").join(format!("app.boxpilot.{name}.plist"))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn set_launch_at_login(name: &str, command: Option<&str>) -> Result<()> {
+        let path = launch_agent(name);
+        let Some(command) = command else {
+            let _ = std::fs::remove_file(&path);
+            return Ok(());
+        };
+        let args: String = split_command(command)
+            .iter()
+            .map(|a| format!("    <string>{}</string>\n", xml_escape(a)))
+            .collect();
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>app.boxpilot.{name}</string>
+  <key>ProgramArguments</key>
+  <array>
+{args}  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+"#
+        );
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(&path, plist)?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn launch_at_login_enabled(name: &str) -> bool {
+        launch_agent(name).is_file()
+    }
+
+    /// TUN on macOS needs root: the core runs setuid root (still killable by
+    /// the app, since its real uid stays the user's).
+    #[cfg(target_os = "macos")]
+    pub fn core_tun_privileged(core: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(core).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o4000 != 0)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn grant_tun_privilege(core: &Path) -> Result<()> {
+        let p = core.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "do shell script \"chown root:wheel \" & quoted form of \"{p}\" & \" && chmod u+s \" & quoted form of \"{p}\" with administrator privileges"
+        );
+        run("osascript", &["-e", &script]).map(|_| ())
+    }
+
+    // ------------------------------------------------------------ Linux
+
+    #[cfg(not(target_os = "macos"))]
+    fn is_kde() -> bool {
+        std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn kwriteconfig(args: &[&str]) -> Result<()> {
+        run("kwriteconfig6", args).or_else(|_| run("kwriteconfig5", args)).map(|_| ())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn gsettings(args: &[&str]) -> Result<()> {
+        run("gsettings", args).map(|_| ())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn set_system_proxy(server: &str, bypass: &str) -> Result<()> {
+        let (host, port) = split_host_port(server);
+        let hosts = bypass_hosts(bypass);
+        if is_kde() {
+            let k = |key: &str, value: &str| {
+                kwriteconfig(&["--file", "kioslaverc", "--group", "Proxy Settings", "--key", key, value])
+            };
+            k("ProxyType", "1")?;
+            k("httpProxy", &format!("http://{host} {port}"))?;
+            k("httpsProxy", &format!("http://{host} {port}"))?;
+            k("socksProxy", &format!("socks://{host} {port}"))?;
+            k("NoProxyFor", &hosts.join(","))?;
+            return Ok(());
+        }
+        for schema in ["http", "https", "socks"] {
+            let schema = format!("org.gnome.system.proxy.{schema}");
+            gsettings(&["set", &schema, "host", host])?;
+            gsettings(&["set", &schema, "port", port])?;
+        }
+        let ignore = format!(
+            "[{}]",
+            hosts.iter().map(|h| format!("'{h}'")).collect::<Vec<_>>().join(", ")
+        );
+        gsettings(&["set", "org.gnome.system.proxy", "ignore-hosts", &ignore])?;
+        gsettings(&["set", "org.gnome.system.proxy", "mode", "manual"])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn clear_system_proxy() -> Result<()> {
+        if is_kde() {
+            return kwriteconfig(&["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0"]);
+        }
+        gsettings(&["set", "org.gnome.system.proxy", "mode", "none"])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn system_proxy_state() -> SysProxyState {
+        let get = |schema: &str, key: &str| {
+            run("gsettings", &["get", schema, key])
+                .map(|s| s.trim().trim_matches('\'').to_string())
+                .unwrap_or_default()
+        };
+        SysProxyState {
+            enabled: get("org.gnome.system.proxy", "mode") == "manual",
+            server: format!(
+                "{}:{}",
+                get("org.gnome.system.proxy.http", "host"),
+                get("org.gnome.system.proxy.http", "port")
+            ),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn autostart_file(name: &str) -> PathBuf {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".config"));
+        config.join("autostart").join(format!("{}.desktop", name.to_ascii_lowercase()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn set_launch_at_login(name: &str, command: Option<&str>) -> Result<()> {
+        let path = autostart_file(name);
+        let Some(command) = command else {
+            let _ = std::fs::remove_file(&path);
+            return Ok(());
+        };
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(
+            &path,
+            format!(
+                "[Desktop Entry]\nType=Application\nName={name}\nExec={command}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+            ),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn launch_at_login_enabled(name: &str) -> bool {
+        autostart_file(name).is_file()
+    }
+
+    /// TUN on Linux needs CAP_NET_ADMIN, granted to the core binary.
+    #[cfg(not(target_os = "macos"))]
+    pub fn core_tun_privileged(core: &Path) -> bool {
+        run("getcap", &[&core.to_string_lossy()]).is_ok_and(|o| o.contains("cap_net_admin"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn grant_tun_privilege(core: &Path) -> Result<()> {
+        run(
+            "pkexec",
+            &["setcap", "cap_net_admin,cap_net_raw,cap_net_bind_service+eip", &core.to_string_lossy()],
+        )
+        .map(|_| ())
+    }
+
+    // ------------------------------------------------------------ shared
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn xml_escape(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
+    /// Splits `"path with spaces" --flag` into arguments.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn split_command(cmd: &str) -> Vec<String> {
+        let cmd = cmd.trim();
+        match cmd.strip_prefix('"').and_then(|r| r.split_once('"')) {
+            Some((exe, rest)) => std::iter::once(exe.to_string())
+                .chain(rest.split_whitespace().map(String::from))
+                .collect(),
+            None => cmd.split_whitespace().map(String::from).collect(),
+        }
+    }
+
+    pub fn is_elevated() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
     pub fn relaunch_elevated(_args: &str) -> Result<()> {
-        anyhow::bail!("run the application with sudo to use TUN mode")
+        bail!("not supported on this platform")
     }
+
     pub fn set_elevated_login_task(_name: &str, _cmd: Option<(&str, &str)>) -> Result<()> {
         Ok(())
     }
+
     pub fn elevated_login_task_exists(_name: &str) -> bool {
         false
     }
+
     pub fn ui_locale() -> String {
-        std::env::var("LANG").unwrap_or_else(|_| "en-US".into())
+        #[cfg(target_os = "macos")]
+        if let Ok(out) = run("defaults", &["read", "-g", "AppleLanguages"]) {
+            if let Some(first) = out.split('"').nth(1) {
+                return first.to_string();
+            }
+        }
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .iter()
+            .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty() && v != "C"))
+            .map(|v| v.split('.').next().unwrap_or(&v).replace('_', "-"))
+            .unwrap_or_else(|| "en-US".into())
     }
+
+    pub fn windows_build() -> u32 {
+        0
+    }
+
+    /// Kills a core left running by a previous crash, if `pid` is still a sing-box.
+    pub fn kill_stale_core(pid: u32) {
+        #[cfg(target_os = "linux")]
+        let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        #[cfg(not(target_os = "linux"))]
+        let name = run("ps", &["-p", &pid.to_string(), "-o", "comm="]).unwrap_or_default();
+        if name.contains("sing-box") {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+    }
+
     pub struct KillOnCloseJob;
+
     impl KillOnCloseJob {
         pub fn new() -> Option<Self> {
             None
