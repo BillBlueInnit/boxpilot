@@ -60,7 +60,10 @@ fn main() {
     }
     i18n::set_language(settings.language);
 
-    let app = gpui_kit::application().with_assets(ui::assets::AppAssets);
+    // The app lives in the tray: closing the window (lightweight mode) must not quit.
+    let app = gpui_kit::application()
+        .with_assets(ui::assets::AppAssets)
+        .with_quit_mode(gpui_kit::QuitMode::Explicit);
     // macOS: clicking the Dock icon brings the window back.
     app.on_reopen(ui::show_main_window);
     app.run(move |cx: &mut App| {
@@ -110,7 +113,10 @@ fn main() {
             })
             .detach();
 
-            ui::open_main_window(cx, !(autostart && settings.start_minimized));
+            let start_hidden = autostart && settings.start_minimized;
+            if !(start_hidden && ui::lightweight(&settings)) {
+                ui::open_main_window(cx, !start_hidden);
+            }
             engine.startup();
             if smoke_test {
                 cx.spawn(async move |cx: &mut AsyncApp| {

@@ -137,7 +137,7 @@ impl AppState {
                     self.session_up += t.up;
                     self.session_down += t.down;
                 }
-                Event::Log(_) => self.log_rev += 1,
+                Event::Log => self.log_rev += 1,
                 Event::Notice(kind, msg) => notices.push((kind, msg)),
                 Event::Status | Event::Settings => tray_dirty = true,
                 _ => {}

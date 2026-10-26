@@ -27,7 +27,7 @@ use crate::rules::{self, RuleProvider};
 use crate::sys;
 
 pub const TUN_NEEDS_ADMIN: &str = "TUN mode requires administrator rights";
-const MAX_LOGS: usize = 5000;
+const MAX_LOGS: usize = 2000;
 const DELAY_TIMEOUT_MS: u32 = 5000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +103,8 @@ impl ProxyGroup {
 #[derive(Debug, Clone)]
 pub enum Event {
     Status,
-    Log(LogLine),
+    /// New lines in [`Engine::logs`].
+    Log,
     Traffic(Traffic),
     Subscriptions,
     Settings,
@@ -163,6 +164,8 @@ struct State {
     groups: Vec<ProxyGroup>,
     meta: BuildMeta,
     logs: VecDeque<LogLine>,
+    /// The core's latest error line, kept even while recording is off.
+    last_error: Option<Arc<str>>,
     traffic: Traffic,
     providers: Vec<RuleProvider>,
 }
@@ -218,6 +221,7 @@ impl Engine {
                 groups: Vec::new(),
                 meta: BuildMeta::default(),
                 logs: VecDeque::new(),
+                last_error: None,
                 traffic: Traffic::default(),
                 providers,
             }),
@@ -377,13 +381,22 @@ impl Engine {
     }
 
     fn push_log(&self, line: LogLine) {
-        self.with(|s| {
+        let kept = self.with(|s| {
+            if line.level >= LogLevel::Error && !line.message.starts_with("[app]") {
+                s.last_error = Some(line.message.clone());
+            }
+            if !s.settings.record_logs {
+                return false;
+            }
             if s.logs.len() >= MAX_LOGS {
                 s.logs.pop_front();
             }
-            s.logs.push_back(line.clone());
+            s.logs.push_back(line);
+            true
         });
-        self.emit(Event::Log(line));
+        if kept {
+            self.emit(Event::Log);
+        }
     }
 
     fn log_app(&self, level: LogLevel, msg: impl Into<String>) {
@@ -397,15 +410,7 @@ impl Engine {
     }
 
     fn last_core_error(&self) -> String {
-        self.with(|s| {
-            s.logs
-                .iter()
-                .rev()
-                .take(30)
-                .find(|l| l.level >= LogLevel::Error && !l.message.starts_with("[app]"))
-                .map(|l| l.message.clone())
-                .unwrap_or_default()
-        })
+        self.with(|s| s.last_error.as_deref().unwrap_or_default().to_string())
     }
 
     fn save_subs(&self) {
@@ -599,6 +604,8 @@ impl Engine {
         if let (Some(job), Some(h)) = (&self.job, child.raw_handle()) {
             job.assign(h);
         }
+        // Errors from an earlier run must not explain this one.
+        self.with(|s| s.last_error = None);
         for pipe in [
             child.stdout.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
             child.stderr.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),

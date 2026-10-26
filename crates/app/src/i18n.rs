@@ -150,8 +150,8 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("btn.save", ["Save", "保存", "儲存", "Сохранить"]),
     ("btn.close_all", ["Close all", "全部断开", "全部中斷", "Закрыть все"]),
     ("btn.follow", ["Follow", "跟随", "跟隨", "Следить"]),
-    ("btn.pause", ["Pause", "暂停", "暫停", "Пауза"]),
-    ("btn.resume", ["Resume", "继续", "繼續", "Продолжить"]),
+    ("btn.record_stop", ["Stop recording", "停止记录", "停止記錄", "Остановить запись"]),
+    ("btn.record_start", ["Start recording", "开始记录", "開始記錄", "Начать запись"]),
     ("btn.open", ["Open", "打开", "開啟", "Открыть"]),
     ("btn.check_updates", ["Check for updates", "检查更新", "檢查更新", "Проверить обновления"]),
     ("btn.update_to", ["Update to {0}", "更新到 {0}", "更新至 {0}", "Обновить до {0}"]),
@@ -183,6 +183,12 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("tip.move_down", ["Move down", "下移", "下移", "Ниже"]),
     ("tip.paste", ["Add from a link or content on the clipboard", "从剪贴板中的链接或内容添加", "從剪貼簿中的連結或內容新增", "Добавить ссылку или текст из буфера обмена"]),
     ("tip.clear", ["Clear", "清空", "清除", "Очистить"]),
+    ("tip.record", [
+        "Keep new log lines in memory. Turn off to save memory; the setting is remembered.",
+        "在内存中保留新的日志。关闭可节省内存，设置会被记住。",
+        "在記憶體中保留新的日誌。關閉可節省記憶體，設定會被記住。",
+        "Хранить новые строки журнала в памяти. Отключите для экономии памяти; настройка сохраняется.",
+    ]),
     ("tip.open_folder", ["Open data folder", "打开数据目录", "開啟資料夾", "Открыть папку данных"]),
     ("tip.test_one", ["Click to test latency", "点击测试延迟", "點擊測試延遲", "Нажмите, чтобы проверить задержку"]),
     // Time
@@ -315,7 +321,7 @@ static TABLE: &[(&str, [&str; 4])] = &[
     // Logs
     ("logs.search", ["Search logs", "搜索日志", "搜尋日誌", "Поиск в журнале"]),
     ("logs.subtitle", ["{0} lines", "{0} 行", "{0} 行", "строк: {0}"]),
-    ("logs.paused", ["paused", "已暂停", "已暫停", "пауза"]),
+    ("logs.stopped", ["recording stopped", "已停止记录", "已停止記錄", "запись остановлена"]),
     ("logs.empty", ["No logs yet", "暂无日志", "尚無日誌", "Журнал пуст"]),
     ("logs.empty_hint", ["Core and app messages show up here.", "内核和应用的消息会显示在这里。", "核心及應用程式的訊息會顯示在這裡。", "Здесь появятся сообщения ядра и приложения."]),
     // Settings
@@ -331,6 +337,13 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("set.autoconnect", ["Connect on launch", "启动时自动连接", "啟動時自動連線", "Подключаться при запуске"]),
     ("set.autoconnect_desc", ["Start the core automatically when the app opens.", "打开应用时自动启动内核。", "開啟應用程式時自動啟動核心。", "Автоматически запускать ядро при открытии."]),
     ("set.close_tray", ["Close to tray", "关闭时最小化到托盘", "關閉時縮小至系統匣", "Сворачивать в трей"]),
+    ("set.lightweight", ["Lightweight mode", "轻量模式", "輕量模式", "Облегчённый режим"]),
+    ("set.lightweight_desc", [
+        "Closing the window unloads the interface to save memory; the proxy keeps running in the tray.",
+        "关闭窗口时卸载界面以节省内存，代理在托盘中继续运行。",
+        "關閉視窗時卸載介面以節省記憶體，代理在系統匣中繼續執行。",
+        "При закрытии окна интерфейс выгружается для экономии памяти; прокси продолжает работать в трее.",
+    ]),
     ("set.close_tray_desc", ["Keep running in the tray when the window is closed.", "关闭窗口后继续在托盘中运行。", "關閉視窗後繼續在系統匣中執行。", "Продолжать работу в трее после закрытия окна."]),
     ("set.mica", ["Mica backdrop", "云母效果", "雲母效果", "Эффект Mica"]),
     ("set.mica_desc", ["Let the desktop tint the sidebar (Windows 11).", "让桌面颜色透过侧边栏（Windows 11）。", "讓桌面色彩透過側邊欄（Windows 11）。", "Боковая панель с оттенком рабочего стола (Windows 11)."]),

@@ -177,6 +177,8 @@ pub struct Settings {
     // Core
     pub core_path: String,
     pub log_level: String,
+    /// Keep core log lines in memory for the Logs page.
+    pub record_logs: bool,
     pub clash_api_port: u16,
     pub clash_api_secret: String,
     pub urltest_url: String,
@@ -199,6 +201,8 @@ pub struct Settings {
     pub start_minimized: bool,
     pub auto_start_core: bool,
     pub close_to_tray: bool,
+    /// Closing to the tray destroys the window to free UI memory; the proxy keeps running.
+    pub lightweight: bool,
     pub theme: ThemePref,
     /// Windows 11 Mica backdrop behind the sidebar.
     pub mica: bool,
@@ -248,6 +252,7 @@ impl Default for Settings {
             custom_rules: String::new(),
             core_path: String::new(),
             log_level: "info".into(),
+            record_logs: true,
             clash_api_port: 9090,
             clash_api_secret: String::new(),
             urltest_url: "https://www.gstatic.com/generate_204".into(),
@@ -264,6 +269,7 @@ impl Default for Settings {
             start_minimized: false,
             auto_start_core: true,
             close_to_tray: true,
+            lightweight: true,
             theme: ThemePref::System,
             mica: true,
             gpu: GpuPreference::Auto,

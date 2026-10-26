@@ -65,6 +65,20 @@ pub fn show_window(window: &mut Window, cx: &mut App) {
     window.activate_window();
 }
 
+/// Returns memory freed by a closed window to the OS.
+pub fn trim_memory() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        // (-1, -1) empties the working set; pages fault back in as needed.
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// Maximizes, or restores when already maximized.
 pub fn toggle_maximize(window: &Window) {
     #[cfg(windows)]

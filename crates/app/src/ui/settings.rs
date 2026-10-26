@@ -450,6 +450,9 @@ impl Render for SettingsPage {
                 .child(switch_row("minimized", t!("set.start_min"), t!("set.start_min_desc"), s.start_minimized, e, |s, v| s.start_minimized = v, cx))
                 .child(switch_row("autoconnect", t!("set.autoconnect"), t!("set.autoconnect_desc"), s.auto_start_core, e, |s, v| s.auto_start_core = v, cx))
                 .child(switch_row("tray", t!("set.close_tray"), t!("set.close_tray_desc"), s.close_to_tray, e, |s, v| s.close_to_tray = v, cx))
+                .when(s.close_to_tray, |d| {
+                    d.child(switch_row("lightweight", t!("set.lightweight"), t!("set.lightweight_desc"), s.lightweight, e, |s, v| s.lightweight = v, cx))
+                })
                 .into_any_element(),
             graphics,
             self.core_section(cx).into_any_element(),

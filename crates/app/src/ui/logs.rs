@@ -20,7 +20,6 @@ pub struct LogsPage {
     state: Entity<AppState>,
     search: Entity<InputState>,
     level: LogLevel,
-    paused: bool,
     follow: bool,
     lines: Rc<Vec<LogLine>>,
     built_for: (u64, String, LogLevel),
@@ -44,7 +43,6 @@ impl LogsPage {
             state,
             search,
             level: LogLevel::Info,
-            paused: false,
             follow: true,
             lines: Rc::new(vec![]),
             built_for: (u64::MAX, String::new(), LogLevel::Info),
@@ -57,9 +55,6 @@ impl LogsPage {
         let rev = self.state.read(cx).log_rev;
         let filter = self.search.read(cx).value().to_lowercase();
         let key = (rev, filter.clone(), self.level);
-        if self.paused && self.built_for.1 == key.1 && self.built_for.2 == key.2 {
-            return;
-        }
         if key == self.built_for {
             return;
         }
@@ -87,9 +82,11 @@ impl Render for LogsPage {
         let t = cx.theme();
         let level = self.level;
         let this = cx.entity().downgrade();
-        let (this2, this3, this4) = (this.clone(), this.clone(), this.clone());
+        let (this2, this4) = (this.clone(), this.clone());
         let engine = self.state.read(cx).engine.clone();
         let data_dir = engine.paths().root.clone();
+        let recording = engine.settings().record_logs;
+        let e_rec = engine.clone();
         let actions = vec![
             div().w(dp(220.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
             choice(
@@ -116,16 +113,13 @@ impl Render for LogsPage {
                     });
                 })
                 .into_any_element(),
-            Button::new("pause")
+            // Stopping also freezes the list, which makes long output readable.
+            Button::new("record")
                 .small()
-                .icon(if self.paused { IconName::Play } else { IconName::Pause })
-                .label(if self.paused { t!("btn.resume") } else { t!("btn.pause") })
-                .on_click(move |_, _, cx| {
-                    let _ = this3.update(cx, |s, cx| {
-                        s.paused = !s.paused;
-                        cx.notify();
-                    });
-                })
+                .icon(extra_icon(if recording { Lucide::CircleStop } else { Lucide::CirclePlay }))
+                .label(if recording { t!("btn.record_stop") } else { t!("btn.record_start") })
+                .tooltip(t!("tip.record"))
+                .on_click(move |_, _, _| e_rec.update_settings(move |s| s.record_logs = !recording))
                 .into_any_element(),
             Button::new("clear-logs")
                 .small()
@@ -168,7 +162,7 @@ impl Render for LogsPage {
                         .items_center()
                         .text_xs()
                         .font_family(mono.clone())
-                        .child(div().w(dp(60.)).flex_none().text_color(muted).child(l.time.clone()))
+                        .child(div().w(dp(60.)).flex_none().text_color(muted).child(l.clock()))
                         .child(
                             div()
                                 .w(dp(44.))
@@ -183,7 +177,7 @@ impl Render for LogsPage {
                                 .min_w_0()
                                 .truncate()
                                 .text_color(if l.level >= LogLevel::Warn { c } else { fg })
-                                .child(l.message.clone()),
+                                .child(SharedString::from(l.message.clone())),
                         )
                 })
                 .collect()
@@ -194,8 +188,8 @@ impl Render for LogsPage {
 
         page(
             t!("nav.logs"),
-            Some(if self.paused {
-                format!("{} · {}", t!("logs.subtitle", count), t!("logs.paused"))
+            Some(if !recording {
+                format!("{} · {}", t!("logs.subtitle", count), t!("logs.stopped"))
             } else {
                 t!("logs.subtitle", count)
             }),

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -49,21 +50,50 @@ impl LogLevel {
     }
 }
 
+/// One log entry. Thousands are buffered, so it stays small, and cloning
+/// one only bumps a reference count.
 #[derive(Debug, Clone)]
 pub struct LogLine {
-    pub time: String,
+    /// Local time of day, in seconds.
+    pub time: u32,
     pub level: LogLevel,
-    pub message: String,
+    pub message: Arc<str>,
 }
 
+/// Longest message kept; sing-box can put whole DNS answers on one line.
+const MAX_MESSAGE: usize = 1024;
+
 impl LogLine {
-    pub fn app(level: LogLevel, message: impl Into<String>) -> Self {
-        Self {
-            time: chrono::Local::now().format("%H:%M:%S").to_string(),
-            level,
-            message: message.into(),
+    pub fn new(time: u32, level: LogLevel, message: &str) -> Self {
+        let mut end = message.len().min(MAX_MESSAGE);
+        while !message.is_char_boundary(end) {
+            end -= 1;
         }
+        Self { time, level, message: message[..end].into() }
     }
+
+    pub fn app(level: LogLevel, message: impl AsRef<str>) -> Self {
+        Self::new(now_clock(), level, message.as_ref())
+    }
+
+    /// `HH:MM:SS`.
+    pub fn clock(&self) -> String {
+        format!("{:02}:{:02}:{:02}", self.time / 3600, self.time / 60 % 60, self.time % 60)
+    }
+}
+
+fn now_clock() -> u32 {
+    use chrono::Timelike as _;
+    chrono::Local::now().num_seconds_from_midnight()
+}
+
+/// `12:00:01` or `12:00:01.123` → seconds since midnight.
+fn parse_clock(s: &str) -> Option<u32> {
+    let mut it = s.split(':');
+    let h: u32 = it.next()?.parse().ok()?;
+    let m: u32 = it.next()?.parse().ok()?;
+    let sec: u32 = it.next()?.split('.').next()?.parse().ok()?;
+    (h < 24 && m < 60 && sec < 61).then_some(h * 3600 + m * 60 + sec)
 }
 
 /// Parses `+0800 2026-10-26 12:00:00 INFO [123 0ms] router: ...`.
@@ -71,12 +101,7 @@ pub fn parse_log_line(raw: &str) -> LogLine {
     let tokens: Vec<&str> = raw.split_whitespace().take(5).collect();
     for (i, t) in tokens.iter().enumerate() {
         if let Some(level) = LogLevel::parse(t.split('[').next().unwrap_or(t)) {
-            let time = if i > 0 { tokens[i - 1] } else { "" };
-            let time = if time.contains(':') {
-                time.to_string()
-            } else {
-                chrono::Local::now().format("%H:%M:%S").to_string()
-            };
+            let time = i.checked_sub(1).and_then(|p| parse_clock(tokens[p])).unwrap_or_else(now_clock);
             let idx = raw.find(t).map(|p| p + t.len()).unwrap_or(0);
             let mut message = raw[idx..].trim();
             // Drop the "[connection-id duration]" prefix.
@@ -85,11 +110,7 @@ pub fn parse_log_line(raw: &str) -> LogLine {
                     message = message[end + 1..].trim();
                 }
             }
-            return LogLine {
-                time,
-                level,
-                message: message.to_string(),
-            };
+            return LogLine::new(time, level, message);
         }
     }
     LogLine::app(LogLevel::Info, raw.trim())
@@ -185,11 +206,11 @@ mod tests {
     fn parses_sing_box_lines() {
         let l = parse_log_line("+0800 2026-10-26 12:00:01 INFO [3514528287 0ms] inbound/mixed[mixed-in]: inbound connection to www.google.com:443");
         assert_eq!(l.level, LogLevel::Info);
-        assert_eq!(l.time, "12:00:01");
-        assert_eq!(l.message, "inbound/mixed[mixed-in]: inbound connection to www.google.com:443");
+        assert_eq!(l.clock(), "12:00:01");
+        assert_eq!(&*l.message, "inbound/mixed[mixed-in]: inbound connection to www.google.com:443");
         let l = parse_log_line("FATAL[0000] start service: bind: address already in use");
         assert_eq!(l.level, LogLevel::Error);
-        assert_eq!(l.message, "start service: bind: address already in use");
+        assert_eq!(&*l.message, "start service: bind: address already in use");
         let l = parse_log_line("ERROR router: rule-set not found");
         assert_eq!(l.level, LogLevel::Error);
     }

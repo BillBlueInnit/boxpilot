@@ -116,9 +116,14 @@ pub fn show_main_window(cx: &mut App) {
         h.update(cx, |_, window, cx| crate::platform::show_window(window, cx)).is_ok()
     });
     if !shown {
-        // The window was closed (Linux close-to-tray); open a fresh one.
+        // The window was closed (lightweight mode, Linux close-to-tray); open a fresh one.
         open_main_window(cx, true);
     }
+}
+
+/// Whether closing the window tears down the UI instead of hiding it.
+pub fn lightweight(settings: &Settings) -> bool {
+    settings.close_to_tray && settings.lightweight
 }
 
 /// The window's close button: hide to the tray or quit. Returns whether the
@@ -126,12 +131,33 @@ pub fn show_main_window(cx: &mut App) {
 pub fn handle_close_request(window: &mut Window, cx: &mut App) -> bool {
     let saved = layout::saved_window(window);
     AppState::engine(cx).update_settings(move |s| s.window = Some(saved));
-    if AppState::engine(cx).settings().close_to_tray {
-        crate::platform::hide_to_tray(window, cx)
-    } else {
+    let settings = AppState::engine(cx).settings();
+    if !settings.close_to_tray {
         quit(cx);
         false
+    } else if lightweight(&settings) {
+        enter_lightweight(cx);
+        true
+    } else {
+        crate::platform::hide_to_tray(window, cx)
     }
+}
+
+/// Lightweight mode: the window, its renderer and every page are dropped;
+/// the core, tray, scheduler and system proxy keep running. The tray or a
+/// second launch opens a fresh window.
+fn enter_lightweight(cx: &mut App) {
+    log::info!("window closed: lightweight mode");
+    AppState::global(cx).update(cx, |s, _| s.window = None);
+    // Give the window time to be torn down before handing memory back.
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+        let closed = cx.update(|cx| AppState::global(cx).read(cx).window.is_none());
+        if closed {
+            crate::platform::trim_memory();
+        }
+    })
+    .detach();
 }
 
 /// Starts a fresh instance and exits (used to apply start-up settings).
