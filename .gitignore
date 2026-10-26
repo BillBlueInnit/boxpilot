@@ -1,0 +1,15 @@
+# Build output
+/target/
+
+# Portable-mode data folder (settings, subscriptions, downloaded core)
+/data/
+**/data/core/
+
+# Logs and editor files
+*.log
+*.pdb
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

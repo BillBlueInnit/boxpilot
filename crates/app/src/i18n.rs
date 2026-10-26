@@ -1,0 +1,443 @@
+//! UI translations: English, Simplified Chinese, Traditional Chinese, Russian.
+//!
+//! `t!("key")` returns the string for the active language; `t!("key", a, b)`
+//! substitutes `{0}`, `{1}`, … Missing keys fall back to English, then the key.
+
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use boxpilot_core::model::Language;
+
+static CURRENT: AtomicUsize = AtomicUsize::new(0);
+
+/// Resolves `pref` (following Windows for `System`) and makes it active.
+pub fn set_language(pref: Language) -> Language {
+    let lang = match pref {
+        Language::System => Language::from_locale(&boxpilot_core::sys::ui_locale()),
+        l => l,
+    };
+    let idx = match lang {
+        Language::SimplifiedChinese => 1,
+        Language::TraditionalChinese => 2,
+        Language::Russian => 3,
+        _ => 0,
+    };
+    CURRENT.store(idx, Ordering::Relaxed);
+    gpui_kit::component::set_locale(match idx {
+        1 => "zh-CN",
+        2 => "zh-TW",
+        _ => "en",
+    });
+    lang
+}
+
+static INDEX: LazyLock<HashMap<&'static str, &'static [&'static str; 4]>> =
+    LazyLock::new(|| TABLE.iter().map(|(k, v)| (*k, v)).collect());
+
+pub fn tr(key: &'static str) -> &'static str {
+    match INDEX.get(key) {
+        Some(v) => {
+            let s = v[CURRENT.load(Ordering::Relaxed)];
+            if s.is_empty() { v[0] } else { s }
+        }
+        None => {
+            debug_assert!(false, "missing translation key `{key}`");
+            key
+        }
+    }
+}
+
+/// Like [`tr`] for keys that are only known at runtime (e.g. notice keys).
+pub fn tr_dyn(key: &str) -> String {
+    INDEX
+        .get(key)
+        .map(|v| {
+            let s = v[CURRENT.load(Ordering::Relaxed)];
+            if s.is_empty() { v[0] } else { s }
+        })
+        .unwrap_or(key)
+        .to_string()
+}
+
+pub fn fill(template: &str, args: &[&dyn std::fmt::Display]) -> String {
+    let mut out = template.to_string();
+    for (i, a) in args.iter().enumerate() {
+        out = out.replace(&format!("{{{i}}}"), &a.to_string());
+    }
+    out
+}
+
+#[macro_export]
+macro_rules! t {
+    ($key:literal) => {
+        $crate::i18n::tr($key)
+    };
+    ($key:literal, $($arg:expr),+ $(,)?) => {
+        $crate::i18n::fill($crate::i18n::tr($key), &[$(&$arg as &dyn ::std::fmt::Display),+])
+    };
+}
+
+/// `[English, 简体中文, 繁體中文, Русский]`
+static TABLE: &[(&str, [&str; 4])] = &[
+    // Navigation
+    ("nav.dashboard", ["Dashboard", "仪表盘", "儀表板", "Обзор"]),
+    ("nav.proxies", ["Proxies", "代理", "代理", "Прокси"]),
+    ("nav.subscriptions", ["Subscriptions", "订阅", "訂閱", "Подписки"]),
+    ("nav.rules", ["Rules", "规则", "規則", "Правила"]),
+    ("nav.connections", ["Connections", "连接", "連線", "Соединения"]),
+    ("nav.logs", ["Logs", "日志", "日誌", "Журнал"]),
+    ("nav.settings", ["Settings", "设置", "設定", "Настройки"]),
+    // Status
+    ("status.connected", ["Connected", "已连接", "已連線", "Подключено"]),
+    ("status.connecting", ["Connecting…", "正在连接…", "正在連線…", "Подключение…"]),
+    ("status.disconnecting", ["Disconnecting…", "正在断开…", "正在中斷…", "Отключение…"]),
+    ("status.disconnected", ["Disconnected", "未连接", "未連線", "Отключено"]),
+    ("status.failed", ["Connection failed", "连接失败", "連線失敗", "Ошибка подключения"]),
+    ("status.error", ["Error", "错误", "錯誤", "Ошибка"]),
+    ("core.not_installed_short", ["core not installed", "未安装内核", "未安裝核心", "ядро не установлено"]),
+    ("err.tun_admin", ["TUN mode requires administrator rights.", "TUN 模式需要管理员权限。", "TUN 模式需要系統管理員權限。", "Для режима TUN нужны права администратора."]),
+    ("err.core_missing", ["The sing-box core is not installed. Download it in Settings.", "尚未安装 sing-box 内核，请在设置中下载。", "尚未安裝 sing-box 核心，請在設定中下載。", "Ядро sing-box не установлено. Скачайте его в настройках."]),
+    // Modes
+    ("mode.rule", ["Rule", "规则", "規則", "Правила"]),
+    ("mode.global", ["Global", "全局", "全域", "Глобальный"]),
+    ("mode.direct", ["Direct", "直连", "直連", "Напрямую"]),
+    // Dashboard
+    ("dash.detail_running", ["{0} mode · {1} · {2}", "{0}模式 · {1} · {2}", "{0}模式 · {1} · {2}", "Режим «{0}» · {1} · {2}"]),
+    ("dash.via_sysproxy", ["system proxy :{0}", "系统代理 :{0}", "系統代理 :{0}", "системный прокси :{0}"]),
+    ("dash.core_missing", ["The sing-box core is not installed yet.", "尚未安装 sing-box 内核。", "尚未安裝 sing-box 核心。", "Ядро sing-box ещё не установлено."]),
+    ("dash.no_nodes", ["Add a subscription to get started.", "添加订阅即可开始使用。", "新增訂閱即可開始使用。", "Добавьте подписку, чтобы начать."]),
+    ("dash.see_details", ["See the details below.", "详情见下方。", "詳情見下方。", "Подробности ниже."]),
+    ("dash.ready", ["{0} nodes ready · {1} mode", "{0} 个节点就绪 · {1}模式", "{0} 個節點就緒 · {1}模式", "Узлов готово: {0} · режим «{1}»"]),
+    ("stat.upload", ["Upload", "上传", "上傳", "Отдача"]),
+    ("stat.download", ["Download", "下载", "下載", "Загрузка"]),
+    ("stat.current", ["current speed", "当前速度", "目前速度", "текущая скорость"]),
+    ("stat.session", ["Session", "本次会话", "本次工作階段", "Сеанс"]),
+    ("stat.nodes", ["Nodes", "节点", "節點", "Узлы"]),
+    ("stat.from_subs", ["from {0} subscription(s)", "来自 {0} 个订阅", "來自 {0} 個訂閱", "подписок: {0}"]),
+    ("chart.traffic", ["Traffic", "流量", "流量", "Трафик"]),
+    ("chart.peak", ["peak {0}", "峰值 {0}", "峰值 {0}", "пик {0}"]),
+    ("quick.title", ["Quick settings", "快捷设置", "快速設定", "Быстрые настройки"]),
+    ("quick.mode", ["Mode", "模式", "模式", "Режим"]),
+    ("quick.mode_desc", ["Rule routes by rules; Global proxies everything.", "规则模式按规则分流；全局模式代理全部流量。", "規則模式依規則分流；全域模式代理所有流量。", "«Правила» — по правилам; «Глобальный» — всё через прокси."]),
+    ("quick.sysproxy", ["System proxy", "系统代理", "系統代理", "Системный прокси"]),
+    ("quick.sysproxy_desc", ["Point Windows at the local proxy while connected.", "连接时让 Windows 使用本地代理。", "連線時讓 Windows 使用本機代理。", "Направлять Windows на локальный прокси при подключении."]),
+    ("quick.tun", ["TUN mode", "TUN 模式", "TUN 模式", "Режим TUN"]),
+    ("quick.tun_desc", ["Capture all traffic with a virtual adapter.", "通过虚拟网卡接管全部流量。", "透過虛擬網路卡接管所有流量。", "Перехват всего трафика через виртуальный адаптер."]),
+    ("quick.tun_desc_admin", ["Capture all traffic. Needs administrator rights.", "接管全部流量，需要管理员权限。", "接管所有流量，需要系統管理員權限。", "Перехват всего трафика. Нужны права администратора."]),
+    ("quick.lan", ["Allow LAN", "允许局域网", "允許區域網路", "Доступ из LAN"]),
+    ("quick.lan_desc", ["Let other devices use this proxy.", "允许其他设备使用此代理。", "允許其他裝置使用此代理。", "Разрешить другим устройствам использовать прокси."]),
+    ("subs.none_yet", ["No subscriptions yet.", "还没有订阅。", "尚無訂閱。", "Подписок пока нет."]),
+    ("subs.nodes_updated", ["{0} nodes · {1}", "{0} 个节点 · {1}", "{0} 個節點 · {1}", "узлов: {0} · {1}"]),
+    ("subs.never_updated", ["never updated", "从未更新", "從未更新", "не обновлялась"]),
+    // Buttons
+    ("btn.download_core", ["Download core", "下载内核", "下載核心", "Скачать ядро"]),
+    ("btn.downloading", ["Downloading…", "正在下载…", "正在下載…", "Загрузка…"]),
+    ("btn.add_subscription", ["Add subscription", "添加订阅", "新增訂閱", "Добавить подписку"]),
+    ("btn.connect", ["Connect", "连接", "連線", "Подключить"]),
+    ("btn.disconnect", ["Disconnect", "断开连接", "中斷連線", "Отключить"]),
+    ("btn.restart_admin_short", ["Restart as admin", "以管理员重启", "以管理員重新啟動", "Перезапуск от админа"]),
+    ("btn.restart_admin", ["Restart as administrator", "以管理员身份重启", "以系統管理員身分重新啟動", "Перезапустить от администратора"]),
+    ("btn.update_all", ["Update all", "全部更新", "全部更新", "Обновить все"]),
+    ("btn.view_all", ["View all {0}", "查看全部 {0} 个", "檢視全部 {0} 個", "Показать все ({0})"]),
+    ("btn.test_latency", ["Test latency", "测试延迟", "測試延遲", "Проверить задержку"]),
+    ("btn.paste", ["Paste", "粘贴", "貼上", "Вставить"]),
+    ("btn.add", ["Add", "添加", "新增", "Добавить"]),
+    ("btn.cancel", ["Cancel", "取消", "取消", "Отмена"]),
+    ("btn.delete", ["Delete", "删除", "刪除", "Удалить"]),
+    ("btn.save", ["Save", "保存", "儲存", "Сохранить"]),
+    ("btn.close_all", ["Close all", "全部断开", "全部中斷", "Закрыть все"]),
+    ("btn.follow", ["Follow", "跟随", "跟隨", "Следить"]),
+    ("btn.pause", ["Pause", "暂停", "暫停", "Пауза"]),
+    ("btn.resume", ["Resume", "继续", "繼續", "Продолжить"]),
+    ("btn.open", ["Open", "打开", "開啟", "Открыть"]),
+    ("btn.check_updates", ["Check for updates", "检查更新", "檢查更新", "Проверить обновления"]),
+    ("btn.update_to", ["Update to {0}", "更新到 {0}", "更新至 {0}", "Обновить до {0}"]),
+    ("btn.reinstall", ["Reinstall latest", "重新安装最新版", "重新安裝最新版", "Переустановить"]),
+    ("btn.download_latest", ["Download latest", "下载最新版", "下載最新版", "Скачать последнюю"]),
+    ("btn.copy_json", ["Copy JSON", "复制 JSON", "複製 JSON", "Копировать JSON"]),
+    ("btn.apply_rules", ["Apply rules", "应用规则", "套用規則", "Применить"]),
+    ("btn.import_acl", ["Import ACL4SSR", "导入 ACL4SSR", "匯入 ACL4SSR", "Импорт ACL4SSR"]),
+    ("btn.add_ruleset", ["Add rule-set", "添加规则集", "新增規則集", "Добавить набор"]),
+    ("btn.import", ["Import", "导入", "匯入", "Импорт"]),
+    ("btn.browse", ["Browse…", "浏览…", "瀏覽…", "Обзор…"]),
+    // Tooltips
+    ("tip.enabled", ["Enabled", "启用", "啟用", "Включено"]),
+    ("tip.copy_url", ["Copy URL", "复制链接", "複製連結", "Копировать ссылку"]),
+    ("tip.update_now", ["Update now", "立即更新", "立即更新", "Обновить сейчас"]),
+    ("tip.edit", ["Edit", "编辑", "編輯", "Изменить"]),
+    ("tip.delete", ["Delete", "删除", "刪除", "Удалить"]),
+    ("tip.move_up", ["Move up", "上移", "上移", "Выше"]),
+    ("tip.move_down", ["Move down", "下移", "下移", "Ниже"]),
+    ("tip.paste", ["Add from a link or content on the clipboard", "从剪贴板中的链接或内容添加", "從剪貼簿中的連結或內容新增", "Добавить ссылку или текст из буфера обмена"]),
+    ("tip.clear", ["Clear", "清空", "清除", "Очистить"]),
+    ("tip.open_folder", ["Open data folder", "打开数据目录", "開啟資料夾", "Открыть папку данных"]),
+    ("tip.test_one", ["Click to test latency", "点击测试延迟", "點擊測試延遲", "Нажмите, чтобы проверить задержку"]),
+    // Time
+    ("time.just_now", ["just now", "刚刚", "剛剛", "только что"]),
+    ("time.ago", ["{0} ago", "{0}前", "{0}前", "{0} назад"]),
+    ("time.s", ["{0}s", "{0} 秒", "{0} 秒", "{0} с"]),
+    ("time.m", ["{0}m", "{0} 分钟", "{0} 分鐘", "{0} мин"]),
+    ("time.h", ["{0}h", "{0} 小时", "{0} 小時", "{0} ч"]),
+    ("time.hm", ["{0}h {1}m", "{0} 小时 {1} 分", "{0} 小時 {1} 分", "{0} ч {1} мин"]),
+    ("time.d", ["{0}d", "{0} 天", "{0} 天", "{0} д"]),
+    ("time.manual", ["manual", "手动", "手動", "вручную"]),
+    // Proxies
+    ("proxies.not_connected", ["Not connected", "未连接", "未連線", "Нет подключения"]),
+    ("proxies.not_connected_hint", ["Connect to choose nodes, compare latency and switch groups.", "连接后即可选择节点、测试延迟和切换分组。", "連線後即可選擇節點、測試延遲及切換群組。", "Подключитесь, чтобы выбирать узлы, сравнивать задержку и переключать группы."]),
+    ("proxies.loading", ["Loading groups…", "正在加载分组…", "正在載入群組…", "Загрузка групп…"]),
+    ("proxies.filter", ["Filter nodes", "筛选节点", "篩選節點", "Фильтр узлов"]),
+    ("proxies.subtitle", ["{0} groups · {1} mode", "{0} 个分组 · {1}模式", "{0} 個群組 · {1}模式", "Групп: {0} · режим «{1}»"]),
+    ("proxies.selector", ["Manual selection", "手动选择", "手動選擇", "Ручной выбор"]),
+    ("proxies.urltest", ["Auto select (lowest latency)", "自动选择（延迟最低）", "自動選擇（延遲最低）", "Автовыбор (мин. задержка)"]),
+    ("proxies.current", ["current: {0}", "当前：{0}", "目前：{0}", "текущий: {0}"]),
+    ("proxies.group", ["group", "分组", "群組", "группа"]),
+    ("group.proxy", ["Proxy", "节点选择", "節點選擇", "Прокси"]),
+    ("group.auto", ["Auto", "自动选择", "自動選擇", "Авто"]),
+    ("group.direct", ["Direct", "直连", "直連", "Напрямую"]),
+    ("latency.timeout", ["timeout", "超时", "逾時", "тайм-аут"]),
+    // Subscriptions
+    ("subs.subtitle", ["{0} subscriptions · {1} nodes", "{0} 个订阅 · {1} 个节点", "{0} 個訂閱 · {1} 個節點", "Подписок: {0} · узлов: {1}"]),
+    ("subs.empty_title", ["No subscriptions", "没有订阅", "沒有訂閱", "Нет подписок"]),
+    ("subs.empty_hint", ["Add a subscription URL from your provider, or paste share links (vmess://, vless://, ss://, trojan://, hy2://, tuic://…), a Clash config or a sing-box config.", "添加服务商提供的订阅链接，或粘贴分享链接（vmess://、vless://、ss://、trojan://、hy2://、tuic:// 等）、Clash 配置或 sing-box 配置。", "新增服務商提供的訂閱連結，或貼上分享連結（vmess://、vless://、ss://、trojan://、hy2://、tuic:// 等）、Clash 設定或 sing-box 設定。", "Добавьте ссылку на подписку от провайдера или вставьте ссылки (vmess://, vless://, ss://, trojan://, hy2://, tuic://…), конфигурацию Clash или sing-box."]),
+    ("subs.clipboard_empty", ["The clipboard is empty", "剪贴板为空", "剪貼簿是空的", "Буфер обмена пуст"]),
+    ("subs.local", ["Local", "本地", "本機", "Локальная"]),
+    ("subs.updating", ["Updating…", "正在更新…", "正在更新…", "Обновление…"]),
+    ("subs.update_failed", ["Update failed", "更新失败", "更新失敗", "Ошибка обновления"]),
+    ("subs.pasted", ["Imported from pasted content", "从粘贴的内容导入", "從貼上的內容匯入", "Импортировано из вставленного текста"]),
+    ("subs.untitled", ["Untitled", "未命名", "未命名", "Без названия"]),
+    ("subs.url_copied", ["URL copied", "链接已复制", "已複製連結", "Ссылка скопирована"]),
+    ("subs.delete_title", ["Delete subscription?", "删除订阅？", "刪除訂閱？", "Удалить подписку?"]),
+    ("subs.delete_body", ["“{0}” and its nodes will be removed.", "将移除“{0}”及其所有节点。", "將移除「{0}」及其所有節點。", "«{0}» и её узлы будут удалены."]),
+    ("meta.nodes", ["{0} nodes", "{0} 个节点", "{0} 個節點", "узлов: {0}"]),
+    ("meta.updated", ["updated {0}", "{0}更新", "{0}更新", "обновлено {0}"]),
+    ("meta.every", ["every {0}", "每 {0}", "每 {0}", "каждые {0}"]),
+    ("meta.due_now", ["due now", "即将更新", "即將更新", "обновится сейчас"]),
+    ("meta.next_in", ["next in {0}", "{0}后更新", "{0}後更新", "следующее через {0}"]),
+    ("meta.auto_off", ["auto update off", "自动更新已关闭", "自動更新已關閉", "автообновление выкл."]),
+    ("meta.on_startup", ["on startup", "启动时更新", "啟動時更新", "при запуске"]),
+    ("usage.of", ["{0} of {1} used", "已用 {0} / {1}", "已用 {0} / {1}", "использовано {0} из {1}"]),
+    ("usage.used", ["{0} used", "已用 {0}", "已用 {0}", "использовано {0}"]),
+    ("usage.expires", ["expires {0} ({1})", "{0} 到期（{1}）", "{0} 到期（{1}）", "истекает {0} ({1})"]),
+    ("usage.left", ["{0} left", "剩余 {0}", "剩餘 {0}", "осталось {0}"]),
+    ("usage.expired", ["expired", "已过期", "已過期", "истекла"]),
+    // Subscription editor
+    ("editor.edit_title", ["Edit subscription", "编辑订阅", "編輯訂閱", "Изменить подписку"]),
+    ("editor.remote", ["Remote URL", "远程链接", "遠端連結", "Ссылка"]),
+    ("editor.paste", ["Paste content", "粘贴内容", "貼上內容", "Вставить текст"]),
+    ("editor.name", ["Name", "名称", "名稱", "Название"]),
+    ("editor.name_ph", ["Optional — taken from the provider when empty", "可选，留空则使用服务商提供的名称", "選填，留空則使用服務商提供的名稱", "Необязательно — возьмётся у провайдера"]),
+    ("editor.url", ["Subscription URL", "订阅链接", "訂閱連結", "Ссылка на подписку"]),
+    ("editor.url_hint", ["v2ray / Shadowrocket links, Clash and sing-box subscriptions are all supported.", "支持 v2ray / Shadowrocket 链接、Clash 和 sing-box 订阅。", "支援 v2ray / Shadowrocket 連結、Clash 及 sing-box 訂閱。", "Поддерживаются ссылки v2ray / Shadowrocket, подписки Clash и sing-box."]),
+    ("editor.content", ["Content", "内容", "內容", "Содержимое"]),
+    ("editor.content_ph", ["Paste share links (one per line), base64, a Clash YAML or a sing-box JSON config", "粘贴分享链接（每行一个）、base64、Clash YAML 或 sing-box JSON 配置", "貼上分享連結（每行一個）、base64、Clash YAML 或 sing-box JSON 設定", "Ссылки (по одной в строке), base64, YAML Clash или JSON sing-box"]),
+    ("editor.interval", ["Update every (hours)", "更新间隔（小时）", "更新間隔（小時）", "Интервал (часы)"]),
+    ("editor.interval_hint", ["0 disables periodic updates", "0 表示不定时更新", "0 表示不定時更新", "0 — без периодических обновлений"]),
+    ("editor.via", ["Download via", "下载方式", "下載方式", "Загружать через"]),
+    ("editor.via_hint", ["Auto tries the proxy first, then direct", "自动：先走代理，失败后直连", "自動：先走代理，失敗後直連", "Авто: сначала прокси, затем напрямую"]),
+    ("via.auto", ["Auto", "自动", "自動", "Авто"]),
+    ("via.direct", ["Direct", "直连", "直連", "Напрямую"]),
+    ("via.proxy", ["Proxy", "代理", "代理", "Через прокси"]),
+    ("editor.auto_update", ["Automatic updates", "自动更新", "自動更新", "Автообновление"]),
+    ("editor.auto_update_desc", ["Refresh on the interval above, catching up after the app was closed.", "按上方间隔更新，应用关闭期间错过的更新会自动补上。", "依上方間隔更新，應用程式關閉期間錯過的更新會自動補上。", "Обновлять с этим интервалом, догоняя пропущенное, пока приложение было закрыто."]),
+    ("editor.update_start", ["Update on startup", "启动时更新", "啟動時更新", "Обновлять при запуске"]),
+    ("editor.update_start_desc", ["Fetch the latest nodes every time BoxPilot starts.", "每次启动 BoxPilot 时获取最新节点。", "每次啟動 BoxPilot 時取得最新節點。", "Получать свежие узлы при каждом запуске BoxPilot."]),
+    ("editor.ua", ["User-Agent", "User-Agent", "User-Agent", "User-Agent"]),
+    ("editor.ua_hint", ["Providers pick the format by User-Agent; leave empty for the default.", "服务商会根据 User-Agent 返回不同格式，留空使用默认值。", "服務商會依 User-Agent 回傳不同格式，留空使用預設值。", "Провайдер выбирает формат по User-Agent; оставьте пустым для значения по умолчанию."]),
+    ("editor.ua_ph", ["Default ({0})", "默认（{0}）", "預設（{0}）", "По умолчанию ({0})"]),
+    ("editor.include", ["Include (regex)", "保留（正则）", "保留（正規表示式）", "Оставить (regex)"]),
+    ("editor.exclude", ["Exclude (regex)", "排除（正则）", "排除（正規表示式）", "Исключить (regex)"]),
+    ("editor.err_interval", ["The update interval must be a number of hours", "更新间隔必须是小时数", "更新間隔必須是小時數", "Интервал должен быть числом часов"]),
+    ("editor.err_content", ["Paste some content to import", "请粘贴要导入的内容", "請貼上要匯入的內容", "Вставьте содержимое для импорта"]),
+    ("editor.err_url", ["Enter an http(s) subscription URL", "请输入 http(s) 订阅链接", "請輸入 http(s) 訂閱連結", "Введите ссылку http(s)"]),
+    // Rules
+    ("rules.subtitle", ["{0} rule-sets · matched in order, before the built-in rules", "{0} 个规则集 · 按顺序匹配，优先于内置规则", "{0} 個規則集 · 依序比對，優先於內建規則", "Наборов: {0} · проверяются по порядку, до встроенных правил"]),
+    ("rules.builtin", ["Built-in rules", "内置规则", "內建規則", "Встроенные правила"]),
+    ("rules.bypass_cn", ["Bypass mainland China", "绕过中国大陆", "繞過中國大陸", "Не проксировать Китай"]),
+    ("rules.bypass_cn_desc", ["Send Chinese sites and IPs direct (geosite-cn, geoip-cn).", "中国网站和 IP 直连（geosite-cn、geoip-cn）。", "中國網站和 IP 直連（geosite-cn、geoip-cn）。", "Китайские сайты и IP — напрямую (geosite-cn, geoip-cn)."]),
+    ("rules.block_ads", ["Block ads", "拦截广告", "攔截廣告", "Блокировать рекламу"]),
+    ("rules.block_ads_desc", ["Reject geosite-category-ads-all.", "拦截 geosite-category-ads-all。", "攔截 geosite-category-ads-all。", "Блокировать geosite-category-ads-all."]),
+    ("rules.via_proxy", ["Download rule-sets via proxy", "通过代理下载规则集", "透過代理下載規則集", "Загружать наборы через прокси"]),
+    ("rules.via_proxy_desc", ["Useful when GitHub is blocked.", "适用于无法直连 GitHub 的网络。", "適用於無法直連 GitHub 的網路。", "Полезно, если GitHub заблокирован."]),
+    ("rules.geosite_url", ["Geosite URL", "Geosite 地址", "Geosite 網址", "URL geosite"]),
+    ("rules.geoip_url", ["GeoIP URL", "GeoIP 地址", "GeoIP 網址", "URL GeoIP"]),
+    ("rules.template_desc", ["Template, {name} is replaced.", "模板，{name} 会被替换。", "範本，{name} 會被替換。", "Шаблон, {name} подставляется."]),
+    ("rules.sets", ["Rule-sets", "规则集", "規則集", "Наборы правил"]),
+    ("rules.empty_title", ["No rule-sets", "没有规则集", "沒有規則集", "Нет наборов правил"]),
+    ("rules.empty_hint", ["Import sing-box .srs / .json rule-sets, Clash rule providers or ACL4SSR lists, and choose where matching traffic goes.", "导入 sing-box .srs / .json 规则集、Clash 规则集或 ACL4SSR 列表，并指定匹配流量的去向。", "匯入 sing-box .srs / .json 規則集、Clash 規則集或 ACL4SSR 清單，並指定符合流量的去向。", "Импортируйте наборы sing-box .srs / .json, провайдеры правил Clash или списки ACL4SSR и укажите, куда направлять трафик."]),
+    ("rules.count", ["{0} rules", "{0} 条规则", "{0} 條規則", "правил: {0}"]),
+    ("rules.delete_title", ["Delete rule-set?", "删除规则集？", "刪除規則集？", "Удалить набор правил?"]),
+    ("rules.delete_body", ["“{0}” will be removed.", "将移除“{0}”。", "將移除「{0}」。", "«{0}» будет удалён."]),
+    ("rules.edit_title", ["Edit rule-set", "编辑规则集", "編輯規則集", "Изменить набор"]),
+    ("rules.source", ["Source", "来源", "來源", "Источник"]),
+    ("rules.source_hint", ["URL or local file (.srs, .json, .list, .yaml, .txt)", "链接或本地文件（.srs、.json、.list、.yaml、.txt）", "連結或本機檔案（.srs、.json、.list、.yaml、.txt）", "Ссылка или локальный файл (.srs, .json, .list, .yaml, .txt)"]),
+    ("rules.format", ["Format", "格式", "格式", "Формат"]),
+    ("rules.target", ["Action", "处理方式", "處理方式", "Действие"]),
+    ("rules.target_hint", ["Where matching traffic goes", "匹配流量的去向", "符合流量的去向", "Куда направлять совпадения"]),
+    ("rules.err_source", ["Enter a URL or an existing file", "请输入链接或已存在的文件路径", "請輸入連結或已存在的檔案路徑", "Укажите ссылку или существующий файл"]),
+    ("rules.format_auto", ["Auto detect", "自动识别", "自動識別", "Автоопределение"]),
+    ("target.proxy", ["Proxy", "代理", "代理", "Прокси"]),
+    ("target.direct", ["Direct", "直连", "直連", "Напрямую"]),
+    ("target.reject", ["Reject", "拦截", "攔截", "Блокировать"]),
+    ("acl.title", ["Import ACL4SSR / subconverter config", "导入 ACL4SSR / subconverter 配置", "匯入 ACL4SSR / subconverter 設定", "Импорт конфигурации ACL4SSR / subconverter"]),
+    ("acl.desc", ["Paste the URL of an .ini config, or its content. Each ruleset= line becomes a rule-set; groups that start with DIRECT or REJECT keep that action, the rest go through the proxy.", "粘贴 .ini 配置的链接或内容。每行 ruleset= 会成为一个规则集；以 DIRECT 或 REJECT 开头的分组保持对应动作，其余走代理。", "貼上 .ini 設定的連結或內容。每行 ruleset= 會成為一個規則集；以 DIRECT 或 REJECT 開頭的群組保留對應動作，其餘走代理。", "Вставьте ссылку на .ini или его текст. Каждая строка ruleset= станет набором; группы, начинающиеся с DIRECT или REJECT, сохраняют действие, остальное — через прокси."]),
+    ("acl.preset", ["Use ACL4SSR Online Full", "使用 ACL4SSR 在线完整版", "使用 ACL4SSR 線上完整版", "ACL4SSR Online Full"]),
+    ("acl.imported", ["Imported {0} rule-sets", "已导入 {0} 个规则集", "已匯入 {0} 個規則集", "Импортировано наборов: {0}"]),
+    ("rules.custom", ["Custom rules", "自定义规则", "自訂規則", "Свои правила"]),
+    ("rules.custom_help", ["One per line: TYPE,VALUE,TARGET. Types: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX, IP-CIDR, SRC-IP-CIDR, PROCESS-NAME, PROCESS-PATH, DST-PORT, NETWORK, GEOSITE, GEOIP, RULE-SET (URL). TARGET: proxy, direct, reject or a group/node name. Use | for several values.", "每行一条：类型,值,目标。类型：DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、IP-CIDR、SRC-IP-CIDR、PROCESS-NAME、PROCESS-PATH、DST-PORT、NETWORK、GEOSITE、GEOIP、RULE-SET（链接）。目标：proxy、direct、reject 或分组/节点名称。多个值用 | 分隔。", "每行一條：類型,值,目標。類型：DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、IP-CIDR、SRC-IP-CIDR、PROCESS-NAME、PROCESS-PATH、DST-PORT、NETWORK、GEOSITE、GEOIP、RULE-SET（連結）。目標：proxy、direct、reject 或群組/節點名稱。多個值以 | 分隔。", "По одному в строке: ТИП,ЗНАЧЕНИЕ,ЦЕЛЬ. Типы: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX, IP-CIDR, SRC-IP-CIDR, PROCESS-NAME, PROCESS-PATH, DST-PORT, NETWORK, GEOSITE, GEOIP, RULE-SET (ссылка). ЦЕЛЬ: proxy, direct, reject или имя группы/узла. Несколько значений — через |."]),
+    ("rules.applied", ["Rules applied", "规则已应用", "已套用規則", "Правила применены"]),
+    // Connections
+    ("conn.filter", ["Filter host, process, rule…", "筛选主机、进程、规则…", "篩選主機、程序、規則…", "Фильтр: хост, процесс, правило…"]),
+    ("conn.subtitle", ["{0} active · ↑ {1}  ↓ {2} total", "{0} 个活动连接 · 总计 ↑ {1}  ↓ {2}", "{0} 個活動連線 · 總計 ↑ {1}  ↓ {2}", "Активных: {0} · всего ↑ {1}  ↓ {2}"]),
+    ("conn.offline_hint", ["Active connections appear here while the core is running.", "内核运行时，活动连接会显示在这里。", "核心執行時，活動連線會顯示在這裡。", "Активные соединения появятся здесь, когда ядро запущено."]),
+    ("conn.none", ["No connections", "没有连接", "沒有連線", "Нет соединений"]),
+    ("conn.none_hint", ["Nothing is going through the proxy right now.", "当前没有流量经过代理。", "目前沒有流量經過代理。", "Сейчас через прокси ничего не идёт."]),
+    ("col.host", ["Host", "主机", "主機", "Хост"]),
+    ("col.process", ["Process", "进程", "程序", "Процесс"]),
+    ("col.rule", ["Rule", "规则", "規則", "Правило"]),
+    ("col.outbound", ["Outbound", "出站", "出站", "Выход"]),
+    ("col.net", ["Net", "网络", "網路", "Сеть"]),
+    ("col.down", ["↓ Speed", "↓ 速度", "↓ 速度", "↓ Скор."]),
+    ("col.up", ["↑ Speed", "↑ 速度", "↑ 速度", "↑ Скор."]),
+    ("col.time", ["Time", "时长", "時長", "Время"]),
+    // Logs
+    ("logs.search", ["Search logs", "搜索日志", "搜尋日誌", "Поиск в журнале"]),
+    ("logs.subtitle", ["{0} lines", "{0} 行", "{0} 行", "строк: {0}"]),
+    ("logs.paused", ["paused", "已暂停", "已暫停", "пауза"]),
+    ("logs.empty", ["No logs yet", "暂无日志", "尚無日誌", "Журнал пуст"]),
+    ("logs.empty_hint", ["Core and app messages show up here.", "内核和应用的消息会显示在这里。", "核心及應用程式的訊息會顯示在這裡。", "Здесь появятся сообщения ядра и приложения."]),
+    // Settings
+    ("settings.subtitle", ["Changes apply immediately; the core reloads when needed.", "更改立即生效，必要时自动重载内核。", "變更立即生效，必要時自動重新載入核心。", "Изменения применяются сразу; ядро перезапускается при необходимости."]),
+    ("set.general", ["General", "常规", "一般", "Общие"]),
+    ("set.language", ["Language", "语言", "語言", "Язык"]),
+    ("set.launch_login", ["Launch at login", "开机启动", "開機啟動", "Запускать при входе"]),
+    ("set.launch_login_desc", ["Start BoxPilot when you sign in to Windows.", "登录 Windows 时启动 BoxPilot。", "登入 Windows 時啟動 BoxPilot。", "Запускать BoxPilot при входе в Windows."]),
+    ("set.run_admin", ["Run as administrator", "以管理员身份运行", "以系統管理員身分執行", "Запускать от администратора"]),
+    ("set.run_admin_desc", ["Always start elevated so TUN mode works. Launch at login then uses a scheduled task, without a UAC prompt.", "始终以管理员权限启动，TUN 模式随时可用；开机启动改用计划任务，无需 UAC 确认。", "一律以系統管理員權限啟動，TUN 模式隨時可用；開機啟動改用排程工作，無需 UAC 確認。", "Всегда запускаться с повышенными правами для режима TUN. Автозапуск — через планировщик, без запроса UAC."]),
+    ("set.start_min", ["Start minimized", "启动时最小化", "啟動時最小化", "Запускать свёрнутым"]),
+    ("set.start_min_desc", ["When launched at login, stay in the tray.", "开机启动时只显示在托盘。", "開機啟動時只顯示在系統匣。", "При автозапуске оставаться в трее."]),
+    ("set.autoconnect", ["Connect on launch", "启动时自动连接", "啟動時自動連線", "Подключаться при запуске"]),
+    ("set.autoconnect_desc", ["Start the core automatically when the app opens.", "打开应用时自动启动内核。", "開啟應用程式時自動啟動核心。", "Автоматически запускать ядро при открытии."]),
+    ("set.close_tray", ["Close to tray", "关闭时最小化到托盘", "關閉時縮小至系統匣", "Сворачивать в трей"]),
+    ("set.close_tray_desc", ["Keep running in the tray when the window is closed.", "关闭窗口后继续在托盘中运行。", "關閉視窗後繼續在系統匣中執行。", "Продолжать работу в трее после закрытия окна."]),
+    ("set.theme", ["Theme", "主题", "主題", "Тема"]),
+    ("theme.system", ["System", "跟随系统", "跟隨系統", "Системная"]),
+    ("theme.light", ["Light", "浅色", "淺色", "Светлая"]),
+    ("theme.dark", ["Dark", "深色", "深色", "Тёмная"]),
+    ("lang.system", ["System", "跟随系统", "跟隨系統", "Системный"]),
+    ("set.core", ["sing-box core", "sing-box 内核", "sing-box 核心", "Ядро sing-box"]),
+    ("core.checking", ["Checking GitHub releases…", "正在检查 GitHub 发布…", "正在檢查 GitHub 發行版…", "Проверка релизов на GitHub…"]),
+    ("core.available", ["sing-box {0} is available", "sing-box {0} 可用", "sing-box {0} 可用", "Доступна sing-box {0}"]),
+    ("core.uptodate", ["Up to date ({0})", "已是最新（{0}）", "已是最新（{0}）", "Актуальная версия ({0})"]),
+    ("core.downloading", ["Downloading {0} / {1}", "正在下载 {0} / {1}", "正在下載 {0} / {1}", "Загрузка {0} / {1}"]),
+    ("core.installing", ["Installing…", "正在安装…", "正在安裝…", "Установка…"]),
+    ("core.installed", ["Installed", "已安装", "已安裝", "Установлено"]),
+    ("core.not_installed", ["Not installed", "未安装", "未安裝", "Не установлено"]),
+    ("core.not_installed_long", ["Not installed — download it to start using BoxPilot", "未安装，下载后即可使用 BoxPilot", "未安裝，下載後即可使用 BoxPilot", "Не установлено — скачайте, чтобы начать"]),
+    ("set.prerelease", ["Include pre-releases", "包含预发布版本", "包含預先發行版本", "Включая предварительные версии"]),
+    ("set.prerelease_desc", ["Offer beta and alpha builds of sing-box.", "提供 sing-box 的 beta 和 alpha 版本。", "提供 sing-box 的 beta 及 alpha 版本。", "Предлагать бета- и альфа-сборки sing-box."]),
+    ("set.mirror", ["GitHub mirror", "GitHub 镜像", "GitHub 鏡像", "Зеркало GitHub"]),
+    ("set.mirror_desc", ["Prefix for downloads when GitHub is slow.", "GitHub 较慢时用于下载的前缀。", "GitHub 較慢時用於下載的前綴。", "Префикс для загрузок, если GitHub медленный."]),
+    ("set.core_path", ["Custom core path", "自定义内核路径", "自訂核心路徑", "Свой путь к ядру"]),
+    ("set.core_path_desc", ["Use an existing sing-box executable instead.", "改用已有的 sing-box 可执行文件。", "改用現有的 sing-box 執行檔。", "Использовать существующий файл sing-box."]),
+    ("set.core_path_ph", ["Leave empty to use the downloaded core", "留空使用下载的内核", "留空使用下載的核心", "Пусто — использовать скачанное ядро"]),
+    ("set.core_folder", ["Core folder", "内核目录", "核心資料夾", "Папка ядра"]),
+    ("set.proxy", ["Proxy", "代理", "代理", "Прокси"]),
+    ("set.mixed_port", ["Mixed port", "混合端口", "混合連接埠", "Смешанный порт"]),
+    ("set.mixed_port_desc", ["HTTP and SOCKS5 on one port.", "HTTP 与 SOCKS5 共用一个端口。", "HTTP 與 SOCKS5 共用一個連接埠。", "HTTP и SOCKS5 на одном порту."]),
+    ("set.lan", ["Allow LAN connections", "允许局域网连接", "允許區域網路連線", "Разрешить подключения из LAN"]),
+    ("set.lan_desc", ["Listen on all interfaces.", "监听所有网络接口。", "監聽所有網路介面。", "Слушать на всех интерфейсах."]),
+    ("set.sysproxy", ["Set system proxy", "设置系统代理", "設定系統代理", "Системный прокси"]),
+    ("set.sysproxy_desc", ["Applied while connected and restored on exit.", "连接时生效，退出时恢复。", "連線時生效，結束時還原。", "Действует при подключении, сбрасывается при выходе."]),
+    ("set.bypass", ["Bypass list", "绕过列表", "略過清單", "Исключения"]),
+    ("set.bypass_desc", ["Hosts that skip the system proxy.", "不经过系统代理的主机。", "不經過系統代理的主機。", "Узлы, обходящие системный прокси."]),
+    ("set.tun", ["TUN", "TUN", "TUN", "TUN"]),
+    ("set.tun_enable", ["Enable TUN mode", "启用 TUN 模式", "啟用 TUN 模式", "Включить режим TUN"]),
+    ("set.tun_enable_desc", ["Route all system traffic through BoxPilot.", "让系统全部流量经过 BoxPilot。", "讓系統所有流量經過 BoxPilot。", "Направлять весь трафик системы через BoxPilot."]),
+    ("set.tun_enable_desc_admin", ["Requires running as administrator.", "需要以管理员身份运行。", "需要以系統管理員身分執行。", "Требуется запуск от администратора."]),
+    ("set.stack", ["Stack", "协议栈", "協定堆疊", "Стек"]),
+    ("set.stack_desc", ["mixed is recommended; gvisor is the most compatible.", "推荐 mixed；gvisor 兼容性最好。", "建議使用 mixed；gvisor 相容性最佳。", "Рекомендуется mixed; gvisor — самый совместимый."]),
+    ("set.strict", ["Strict route", "严格路由", "嚴格路由", "Строгая маршрутизация"]),
+    ("set.strict_desc", ["Prevent leaks while TUN is active.", "防止 TUN 开启时的流量泄漏。", "防止 TUN 開啟時的流量外洩。", "Предотвращать утечки при работе TUN."]),
+    ("set.mtu", ["MTU", "MTU", "MTU", "MTU"]),
+    ("set.dns", ["DNS", "DNS", "DNS", "DNS"]),
+    ("set.dns_remote", ["Remote DNS", "远程 DNS", "遠端 DNS", "Удалённый DNS"]),
+    ("set.dns_remote_desc", ["Resolved through the proxy. https://, tls://, quic://, h3:// or an IP.", "经代理解析。支持 https://、tls://、quic://、h3:// 或 IP。", "經代理解析。支援 https://、tls://、quic://、h3:// 或 IP。", "Через прокси. https://, tls://, quic://, h3:// или IP."]),
+    ("set.dns_direct", ["Direct DNS", "直连 DNS", "直連 DNS", "Прямой DNS"]),
+    ("set.dns_direct_desc", ["Used for direct and Chinese domains.", "用于直连和中国域名。", "用於直連及中國網域。", "Для прямых и китайских доменов."]),
+    ("set.fakeip", ["FakeIP", "FakeIP", "FakeIP", "FakeIP"]),
+    ("set.fakeip_desc", ["Answer with fake addresses for faster connections (best with TUN).", "返回虚假地址以加快连接（适合 TUN）。", "回傳虛擬位址以加快連線（適合 TUN）。", "Отвечать фиктивными адресами для ускорения (лучше с TUN)."]),
+    ("set.ipv6", ["IPv6", "IPv6", "IPv6", "IPv6"]),
+    ("set.ipv6_desc", ["Resolve and route IPv6 addresses.", "解析并路由 IPv6 地址。", "解析並路由 IPv6 位址。", "Разрешать и маршрутизировать IPv6."]),
+    ("set.subs", ["Subscriptions", "订阅", "訂閱", "Подписки"]),
+    ("set.ua", ["Default User-Agent", "默认 User-Agent", "預設 User-Agent", "User-Agent по умолчанию"]),
+    ("set.ua_desc", ["clash.meta gets the richest format from most providers.", "大多数服务商对 clash.meta 返回最完整的格式。", "多數服務商對 clash.meta 回傳最完整的格式。", "Для clash.meta большинство провайдеров отдают самый полный формат."]),
+    ("set.default_interval", ["Default update interval (hours)", "默认更新间隔（小时）", "預設更新間隔（小時）", "Интервал по умолчанию (часы)"]),
+    ("set.default_interval_desc", ["Used for new subscriptions.", "用于新添加的订阅。", "用於新增的訂閱。", "Для новых подписок."]),
+    ("set.timeout", ["Download timeout (seconds)", "下载超时（秒）", "下載逾時（秒）", "Тайм-аут загрузки (с)"]),
+    ("set.reload", ["Reload core after updates", "更新后重载内核", "更新後重新載入核心", "Перезапускать ядро после обновлений"]),
+    ("set.reload_desc", ["Apply new nodes as soon as a subscription changes.", "订阅变化后立即应用新节点。", "訂閱變更後立即套用新節點。", "Применять новые узлы сразу после изменения подписки."]),
+    ("set.advanced", ["Advanced", "高级", "進階", "Дополнительно"]),
+    ("set.log_level", ["Core log level", "内核日志级别", "核心日誌層級", "Уровень журнала ядра"]),
+    ("set.api_port", ["Controller port", "控制器端口", "控制器連接埠", "Порт контроллера"]),
+    ("set.api_port_desc", ["Clash API used by this app.", "本应用使用的 Clash API。", "本應用程式使用的 Clash API。", "Clash API, используемый приложением."]),
+    ("set.test_url", ["Latency test URL", "延迟测试地址", "延遲測試網址", "URL проверки задержки"]),
+    ("set.test_interval", ["Auto group test interval (minutes)", "自动分组测试间隔（分钟）", "自動群組測試間隔（分鐘）", "Интервал проверки автогруппы (мин)"]),
+    ("set.export", ["Generated configuration", "生成的配置", "產生的設定", "Сгенерированная конфигурация"]),
+    ("set.export_desc", ["Copy the sing-box config BoxPilot would run.", "复制 BoxPilot 将使用的 sing-box 配置。", "複製 BoxPilot 將使用的 sing-box 設定。", "Скопировать конфигурацию sing-box, которую запустит BoxPilot."]),
+    ("set.config_copied", ["Configuration copied", "配置已复制", "已複製設定", "Конфигурация скопирована"]),
+    ("set.data_folder", ["Data folder", "数据目录", "資料夾", "Папка данных"]),
+    ("set.about", ["BoxPilot {0} · powered by sing-box", "BoxPilot {0} · 基于 sing-box", "BoxPilot {0} · 基於 sing-box", "BoxPilot {0} · на базе sing-box"]),
+    ("err.port", ["Enter a port between 1 and 65535", "请输入 1 到 65535 之间的端口", "請輸入 1 到 65535 之間的連接埠", "Введите порт от 1 до 65535"]),
+    ("err.port_api", ["This port is used by the controller", "该端口已被控制器使用", "此連接埠已被控制器使用", "Этот порт занят контроллером"]),
+    ("err.port_proxy", ["This port is used by the proxy", "该端口已被代理使用", "此連接埠已被代理使用", "Этот порт занят прокси"]),
+    ("err.invalid", ["Invalid value", "无效的值", "無效的值", "Недопустимое значение"]),
+    ("err.required", ["This field is required", "此项不能为空", "此欄位不可為空", "Обязательное поле"]),
+    ("err.template", ["The URL must contain {name}", "地址必须包含 {name}", "網址必須包含 {name}", "URL должен содержать {name}"]),
+    ("err.http_url", ["Enter an http(s) URL", "请输入 http(s) 地址", "請輸入 http(s) 網址", "Введите URL http(s)"]),
+    // Dialogs
+    ("admin.title", ["Administrator rights required", "需要管理员权限", "需要系統管理員權限", "Нужны права администратора"]),
+    ("admin.body_tun", ["TUN mode creates a virtual network adapter, which Windows only allows for administrators. Restart BoxPilot as administrator to enable it.", "TUN 模式需要创建虚拟网卡，Windows 只允许管理员执行此操作。请以管理员身份重启 BoxPilot 以启用。", "TUN 模式需要建立虛擬網路卡，Windows 只允許系統管理員執行此操作。請以系統管理員身分重新啟動 BoxPilot 以啟用。", "Режим TUN создаёт виртуальный сетевой адаптер — Windows разрешает это только администраторам. Перезапустите BoxPilot от имени администратора."]),
+    ("admin.body_run", ["BoxPilot will restart with administrator rights now.", "BoxPilot 将立即以管理员权限重启。", "BoxPilot 將立即以系統管理員權限重新啟動。", "BoxPilot сейчас перезапустится с правами администратора."]),
+    // Tray
+    ("tray.show", ["Show BoxPilot", "显示 BoxPilot", "顯示 BoxPilot", "Показать BoxPilot"]),
+    ("tray.start", ["Start", "启动", "啟動", "Запустить"]),
+    ("tray.stop", ["Stop", "停止", "停止", "Остановить"]),
+    ("tray.mode", ["Mode", "模式", "模式", "Режим"]),
+    ("tray.sysproxy", ["System Proxy", "系统代理", "系統代理", "Системный прокси"]),
+    ("tray.tun", ["TUN Mode", "TUN 模式", "TUN 模式", "Режим TUN"]),
+    ("tray.update_subs", ["Update Subscriptions", "更新订阅", "更新訂閱", "Обновить подписки"]),
+    ("tray.quit", ["Quit", "退出", "結束", "Выход"]),
+    // Notices
+    ("notice.save_failed", ["Saving failed: {0}", "保存失败：{0}", "儲存失敗：{0}", "Не удалось сохранить: {0}"]),
+    ("notice.core_exited", ["{0}", "{0}", "{0}", "{0}"]),
+    ("notice.sysproxy_failed", ["System proxy: {0}", "系统代理：{0}", "系統代理：{0}", "Системный прокси: {0}"]),
+    ("notice.login_failed", ["Launch at login: {0}", "开机启动：{0}", "開機啟動：{0}", "Автозапуск: {0}"]),
+    ("notice.mode_failed", ["Switching mode failed: {0}", "切换模式失败：{0}", "切換模式失敗：{0}", "Не удалось сменить режим: {0}"]),
+    ("notice.no_remote_subs", ["No remote subscriptions to update", "没有可更新的远程订阅", "沒有可更新的遠端訂閱", "Нет удалённых подписок для обновления"]),
+    ("notice.sub_updated", ["{0}: {1} nodes", "{0}：{1} 个节点", "{0}：{1} 個節點", "{0}: узлов — {1}"]),
+    ("notice.sub_failed", ["{0}: {1}", "{0}：{1}", "{0}：{1}", "{0}: {1}"]),
+    ("notice.select_failed", ["Could not select {0}: {1}", "无法选择 {0}：{1}", "無法選擇 {0}：{1}", "Не удалось выбрать {0}: {1}"]),
+    ("notice.start_core_first", ["Connect first to test latency", "请先连接再测试延迟", "請先連線再測試延遲", "Сначала подключитесь, чтобы проверить задержку"]),
+    ("notice.core_download_failed", ["Core download failed: {0}", "内核下载失败：{0}", "核心下載失敗：{0}", "Не удалось скачать ядро: {0}"]),
+    ("notice.core_installed", ["sing-box {0} installed", "sing-box {0} 已安装", "sing-box {0} 已安裝", "sing-box {0} установлен"]),
+    ("notice.rules_updated", ["{0}: {1} rules", "{0}：{1} 条规则", "{0}：{1} 條規則", "{0}: правил — {1}"]),
+    ("notice.rules_batch", ["Rule-sets updated: {0} succeeded, {1} failed", "规则集已更新：成功 {0} 个，失败 {1} 个", "規則集已更新：成功 {0} 個，失敗 {1} 個", "Наборы обновлены: успешно {0}, ошибок {1}"]),
+    ("notice.rules_failed", ["{0}: {1}", "{0}：{1}", "{0}：{1}", "{0}: {1}"]),
+];
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn table_is_complete_and_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for (k, v) in super::TABLE {
+            assert!(seen.insert(*k), "duplicate key {k}");
+            for (i, s) in v.iter().enumerate() {
+                assert!(!s.is_empty(), "{k}[{i}] is empty");
+                let placeholders = |s: &str| (0..5).filter(|n| s.contains(&format!("{{{n}}}"))).count();
+                assert_eq!(placeholders(v[0]), placeholders(s), "{k}[{i}] placeholders differ");
+            }
+        }
+    }
+}
