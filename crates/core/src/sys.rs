@@ -268,6 +268,34 @@ mod imp {
         schtasks(&["/Query", "/TN", name]).map(|o| o.status.success()).unwrap_or(false)
     }
 
+    /// Sets the per-app GPU preference Windows applies to `exe` (the same
+    /// setting as Settings > Display > Graphics): 1 = power saving,
+    /// 2 = high performance, `None` = let Windows decide.
+    pub fn set_gpu_preference(exe: &str, preference: Option<u32>) -> Result<()> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu
+            .create_subkey(r"Software\Microsoft\DirectX\UserGpuPreferences")
+            .context("open UserGpuPreferences")?;
+        match preference {
+            Some(p) => key.set_value(exe, &format!("GpuPreference={p};"))?,
+            None => match key.delete_value(exe) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            },
+        }
+        Ok(())
+    }
+
+    /// Settings > Accessibility > Text size, as a factor (1.0 = 100 %).
+    pub fn system_text_scale() -> f32 {
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey(r"Software\Microsoft\Accessibility")
+            .and_then(|k| k.get_value::<u32, _>("TextScaleFactor"))
+            .map(|p| p.clamp(100, 225) as f32 / 100.0)
+            .unwrap_or(1.0)
+    }
+
     /// The Windows build number, e.g. 26100 (0 when unknown).
     pub fn windows_build() -> u32 {
         RegKey::predef(HKEY_LOCAL_MACHINE)
@@ -606,6 +634,22 @@ mod imp {
 
     pub fn windows_build() -> u32 {
         0
+    }
+
+    /// GNOME's "Large text" / text-scaling-factor; macOS has no global setting.
+    pub fn system_text_scale() -> f32 {
+        #[cfg(target_os = "macos")]
+        {
+            1.0
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            run("gsettings", &["get", "org.gnome.desktop.interface", "text-scaling-factor"])
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .map(|f| f.clamp(0.5, 3.0))
+                .unwrap_or(1.0)
+        }
     }
 
     /// Kills a core left running by a previous crash, if `pid` is still a sing-box.

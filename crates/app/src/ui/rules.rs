@@ -8,6 +8,7 @@ use boxpilot_core::model::Settings;
 use boxpilot_core::rules::{RuleFormat, RuleProvider};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
@@ -16,7 +17,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, AsyncApp, Context, Entity, FocusHandle, Focusable, FontWeight, PathPromptOptions, SharedString, Subscription,
-    WeakEntity, Window, div, px,
+    WeakEntity, Window, div,
 };
 
 use super::anim;
@@ -24,6 +25,7 @@ use super::subscriptions::{confirm_delete, field};
 use super::widgets::*;
 use crate::state::AppState;
 use crate::t;
+use super::layout::dp;
 
 const ACL4SSR_FULL: &str =
     "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Full.ini";
@@ -33,6 +35,7 @@ pub struct RulesPage {
     custom: Entity<TextareaState>,
     geosite: Entity<InputState>,
     geoip: Entity<InputState>,
+    sel: Selection,
     _subs: Vec<Subscription>,
 }
 
@@ -72,10 +75,13 @@ impl RulesPage {
             cx.subscribe_in(&geosite, window, commit(|s| s.geosite_url.clone(), |s, v| s.geosite_url = v)),
             cx.subscribe_in(&geoip, window, commit(|s| s.geoip_url.clone(), |s, v| s.geoip_url = v)),
         ];
-        Self { state, custom, geosite, geoip, _subs }
+        Self { state, custom, geosite, geoip, sel: Selection::default(), _subs }
     }
 
-    fn provider_row(&self, p: &RuleProvider, idx: usize, total: usize, cx: &App) -> impl IntoElement {
+    fn provider_row(&self, p: &RuleProvider, idx: usize, total: usize, this: WeakEntity<Self>, cx: &App) -> impl IntoElement {
+        let selecting = self.sel.active;
+        let selected = self.sel.ids.contains(&p.id);
+        let pick_id = p.id.clone();
         let engine = self.state.read(cx).engine.clone();
         let t = cx.theme();
         let updating = engine.is_updating(&p.id);
@@ -110,14 +116,36 @@ impl RulesPage {
         let edit = p.clone();
         let name = p.name.clone();
         v_flex()
+            .id(SharedString::from(format!("rp-row-{}", p.id)))
             .gap_1()
             .py_2()
+            .rounded(t.radius)
             .when(!p.enabled, |d| d.opacity(0.6))
+            .when(selecting, |d| {
+                d.cursor_pointer().on_click(move |_, _, cx| {
+                    let _ = this.update(cx, |page, cx| {
+                        page.sel.toggle(&pick_id);
+                        cx.notify();
+                    });
+                })
+            })
+            .when(selected, |d| d.bg(t.primary.opacity(0.06)))
             .child(
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(
+                    .when(selecting, |d| {
+                        // Display only: the whole row handles the click.
+                        d.child(
+                            div()
+                                .w(dp(28.))
+                                .flex_none()
+                                .flex()
+                                .justify_center()
+                                .child(Checkbox::new(("rp-pick", idx)).checked(selected)),
+                        )
+                    })
+                    .when(!selecting, |d| d.child(
                         v_flex()
                             .flex_none()
                             .child(
@@ -138,7 +166,7 @@ impl RulesPage {
                                     .disabled(idx + 1 == total)
                                     .on_click(move |_, _, _| e2.move_rule_provider(&id2, 1)),
                             ),
-                    )
+                    ))
                     .child(
                         v_flex()
                             .flex_1()
@@ -159,7 +187,7 @@ impl RulesPage {
                             .child(div().text_xs().text_color(t.muted_foreground).truncate().child(p.source.clone()))
                             .child(div().text_xs().text_color(t.muted_foreground).truncate().child(meta.join("  ·  "))),
                     )
-                    .child(
+                    .when(!selecting, |d| d.child(
                         h_flex()
                             .flex_none()
                             .gap_1()
@@ -204,12 +232,12 @@ impl RulesPage {
                                         );
                                     }),
                             ),
-                    ),
+                    )),
             )
             .when_some(p.last_error.clone().filter(|_| !updating), |d, err| {
                 d.child(
                     h_flex()
-                        .pl(px(40.))
+                        .pl(dp(40.))
                         .gap_2()
                         .text_xs()
                         .text_color(t.danger)
@@ -244,8 +272,74 @@ impl Render for RulesPage {
         let any_updating = providers.iter().any(|p| engine.is_updating(&p.id));
         let rules = self.custom.clone();
         let rules_engine = engine.clone();
+        let order: Vec<String> = providers.iter().map(|p| p.id.clone()).collect();
+        self.sel.retain(&order);
+        if providers.is_empty() {
+            self.sel.active = false;
+        }
+        let this = cx.entity().downgrade();
 
-        let actions = vec![
+        let actions = if self.sel.active {
+            let chosen = Rc::new(self.sel.ordered(&order));
+            let all = !order.is_empty() && chosen.len() == order.len();
+            let (this_all, this_del, this_done) = (this.clone(), this.clone(), this.clone());
+            let (e_en, e_upd, e_del) = (engine.clone(), engine.clone(), engine.clone());
+            let (c_en, c_upd, c_del) = (chosen.clone(), chosen.clone(), chosen.clone());
+            let order = order.clone();
+            bulk_actions(
+                chosen.len(),
+                all,
+                BulkOps {
+                    select_all: Rc::new(move |all, _, cx| {
+                        let order = order.clone();
+                        let _ = this_all.update(cx, |page, cx| {
+                            page.sel.ids = if all { order.into_iter().collect() } else { Default::default() };
+                            cx.notify();
+                        });
+                    }),
+                    enable: Rc::new(move |on, _, _| e_en.set_rule_providers_enabled(&c_en, on)),
+                    update: Rc::new(move |_, _| e_upd.update_rule_providers(&c_upd)),
+                    delete: Rc::new(move |window, cx| {
+                        let (engine, ids, this) = (e_del.clone(), c_del.clone(), this_del.clone());
+                        confirm_delete(
+                            t!("bulk.delete_title"),
+                            t!("bulk.delete_body", ids.len()),
+                            move |cx| {
+                                engine.remove_rule_providers(&ids);
+                                let _ = this.update(cx, |page, cx| {
+                                    page.sel = Selection::default();
+                                    cx.notify();
+                                });
+                            },
+                            window,
+                            cx,
+                        );
+                    }),
+                    done: Rc::new(move |_, cx| {
+                        let _ = this_done.update(cx, |page, cx| {
+                            page.sel = Selection::default();
+                            cx.notify();
+                        });
+                    }),
+                },
+                cx,
+            )
+        } else {
+            let this_sel = this.clone();
+            vec![
+            Button::new("select-rules")
+                .small()
+                .ghost()
+                .icon(extra_icon(Lucide::ListChecks))
+                .label(t!("btn.select"))
+                .disabled(providers.is_empty())
+                .on_click(move |_, _, cx| {
+                    let _ = this_sel.update(cx, |page, cx| {
+                        page.sel.active = true;
+                        cx.notify();
+                    });
+                })
+                .into_any_element(),
             Button::new("import-acl")
                 .small()
                 .icon(extra_icon(Lucide::Download))
@@ -267,7 +361,8 @@ impl Render for RulesPage {
                 .label(t!("btn.add_ruleset"))
                 .on_click(|_, window, cx| open_rule_editor(None, window, cx))
                 .into_any_element(),
-        ];
+            ]
+        };
 
         let list = card(cx)
             .gap_0()
@@ -279,7 +374,7 @@ impl Render for RulesPage {
                 v_flex()
                     .when(i > 0, |d| d.child(divider(cx)))
                     .child(anim::enter(
-                        div().child(self.provider_row(p, i, providers.len(), cx)),
+                        div().child(self.provider_row(p, i, providers.len(), this.clone(), cx)),
                         SharedString::from(format!("rp-{}", p.id)),
                         anim::stagger(i) * 0.5,
                     ))
@@ -288,7 +383,7 @@ impl Render for RulesPage {
         page(t!("nav.rules"), Some(t!("rules.subtitle", providers.len())), actions, cx).child(
             v_flex()
                 .gap_4()
-                .max_w(px(900.))
+                .max_w(dp(900.))
                 .child(anim::enter(list, "rules-list", 0.0))
                 .child(anim::enter(
                     card(cx)
@@ -297,8 +392,8 @@ impl Render for RulesPage {
                         .child(switch_row("cn", t!("rules.bypass_cn"), t!("rules.bypass_cn_desc"), s.bypass_cn, |s, v| s.bypass_cn = v, cx))
                         .child(switch_row("ads", t!("rules.block_ads"), t!("rules.block_ads_desc"), s.block_ads, |s, v| s.block_ads = v, cx))
                         .child(switch_row("rsproxy", t!("rules.via_proxy"), t!("rules.via_proxy_desc"), s.ruleset_via_proxy, |s, v| s.ruleset_via_proxy = v, cx))
-                        .child(setting_row(t!("rules.geosite_url"), Some(t!("rules.template_desc")), div().w(px(340.)).child(Input::new(&self.geosite).small()), cx))
-                        .child(setting_row(t!("rules.geoip_url"), Some(t!("rules.template_desc")), div().w(px(340.)).child(Input::new(&self.geoip).small()), cx)),
+                        .child(setting_row(t!("rules.geosite_url"), Some(t!("rules.template_desc")), div().w(dp(340.)).child(Input::new(&self.geosite).small()), cx))
+                        .child(setting_row(t!("rules.geoip_url"), Some(t!("rules.template_desc")), div().w(dp(340.)).child(Input::new(&self.geoip).small()), cx)),
                     "rules-builtin",
                     anim::stagger(1),
                 ))
@@ -307,7 +402,7 @@ impl Render for RulesPage {
                         .gap_2()
                         .child(section_title(t!("rules.custom"), cx))
                         .child(div().text_xs().text_color(muted).child(t!("rules.custom_help")))
-                        .child(Textarea::new(&self.custom).h(px(150.)))
+                        .child(Textarea::new(&self.custom).h(dp(150.)))
                         .child(
                             h_flex().justify_end().child(
                                 Button::new("apply-rules")
@@ -497,7 +592,7 @@ impl Render for RuleEditor {
                         }),
                         cx,
                     )))
-                    .child(div().w(px(150.)).flex_none().child(field(t!("editor.interval"), None, Input::new(&self.interval), cx))),
+                    .child(div().w(dp(150.)).flex_none().child(field(t!("editor.interval"), None, Input::new(&self.interval), cx))),
             )
             .when_some(self.error.clone(), |d, e| {
                 d.child(
@@ -527,7 +622,7 @@ pub fn open_rule_editor(original: Option<RuleProvider>, window: &mut Window, cx:
         let ok = editor.clone();
         dialog
             .title(if editing { t!("rules.edit_title") } else { t!("btn.add_ruleset") })
-            .w(px(640.))
+            .w(dp(640.))
             .child(editor.clone())
             .footer(
                 DialogFooter::new()
@@ -555,7 +650,7 @@ fn open_acl_import(window: &mut Window, cx: &mut App) {
         let busy = busy.clone();
         dialog
             .title(t!("acl.title"))
-            .w(px(580.))
+            .w(dp(580.))
             .child(
                 v_flex()
                     .gap_3()

@@ -5,12 +5,13 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, FontWeight, SharedString, SpringAnimation, Subscription, Window, div, px};
+use gpui_kit::{App, Context, Entity, FontWeight, SharedString, SpringAnimation, Subscription, Window, div};
 
 use super::anim;
 use super::widgets::*;
 use crate::state::AppState;
 use crate::t;
+use super::layout::dp;
 
 pub struct ProxiesPage {
     state: Entity<AppState>,
@@ -48,7 +49,7 @@ impl ProxiesPage {
                 .border_1()
                 .cursor_pointer()
                 .text_sm()
-                .max_w(px(260.))
+                .max_w(dp(260.))
                 .when(selected, |d| d.text_color(t.foreground).font_weight(FontWeight::MEDIUM))
                 .when(!selected, |d| d.text_color(t.muted_foreground).hover(|d| d.bg(muted_bg)))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -74,7 +75,7 @@ impl ProxiesPage {
         }))
     }
 
-    fn node_card(&self, group: &ProxyGroup, idx: usize, member: &ProxyMember, groups: &[ProxyGroup], cx: &App) -> impl IntoElement {
+    fn node_card(&self, group: &ProxyGroup, idx: usize, member: &ProxyMember, groups: &[ProxyGroup], width: f32, cx: &App) -> impl IntoElement {
         let engine = self.state.read(cx).engine.clone();
         let t = cx.theme();
         let selected = member.name == group.now;
@@ -105,7 +106,7 @@ impl ProxiesPage {
         let (primary, border, bg) = (t.primary, t.border, t.background);
         div()
             .id(SharedString::from(format!("node-{}-{idx}", group.name)))
-            .w(px(236.))
+            .w(dp(width))
             .p_3()
             .rounded(t.radius_lg)
             .border_1()
@@ -143,7 +144,7 @@ impl ProxiesPage {
                                     .id(SharedString::from(format!("delay-{}-{idx}", group.name)))
                                     .flex_none()
                                     .px_1()
-                                    .rounded(px(4.))
+                                    .rounded(dp(4.))
                                     .text_xs()
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(delay_c)
@@ -189,7 +190,9 @@ impl PhaseExt for f32 {
 }
 
 impl Render for ProxiesPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Cards share each row evenly at any window width.
+        let card_w = super::layout::grid_column(super::layout::metrics(window).content, 236.0, 12.0);
         let engine = self.state.read(cx).engine.clone();
         let status = engine.status();
         if !status.is_running() {
@@ -246,7 +249,7 @@ impl Render for ProxiesPage {
         let t = cx.theme();
 
         let actions = vec![
-            div().w(px(220.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
+            div().w(dp(220.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
             Button::new("test-latency")
                 .small()
                 .icon(extra_icon(Lucide::Zap))
@@ -282,7 +285,7 @@ impl Render for ProxiesPage {
                     .enumerate()
                     .map(|(pos, (i, m))| {
                         anim::enter(
-                            div().child(self.node_card(&group, *i, m, &groups, cx)),
+                            div().child(self.node_card(&group, *i, m, &groups, card_w, cx)),
                             SharedString::from(format!("enter-{}-{}", group.name, m.name)),
                             anim::stagger(pos.min(12)) * 0.5,
                         )

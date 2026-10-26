@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod gpu;
 mod i18n;
 mod icon_art;
 mod logger;
@@ -20,6 +21,11 @@ fn main() {
     let autostart = std::env::args().any(|a| a == "--autostart");
     // CI: start the full UI, check the window came up, then exit.
     let smoke_test = std::env::args().any(|a| a == "--smoke-test");
+    // The renderer picks its GPU at start-up; apply the preference before
+    // GPUI (or any other thread) starts.
+    if let Ok(store) = boxpilot_core::store::Store::new(boxpilot_core::store::Paths::detect()) {
+        gpu::apply_at_startup(store.load_settings().gpu);
+    }
     let Some(mut show_requests) = platform::single_instance() else {
         // Another instance is running and has been asked to show itself.
         return;
@@ -60,6 +66,7 @@ fn main() {
     app.run(move |cx: &mut App| {
             gpui_kit::init(cx);
             ui::init(cx);
+            ui::layout::refresh_system_scale();
 
             let state = cx.new(|_| AppState::new(engine.clone(), settings.language));
             AppState::install(state.clone(), cx);

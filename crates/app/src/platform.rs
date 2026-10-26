@@ -149,10 +149,18 @@ pub fn single_instance() -> Option<tokio::sync::mpsc::UnboundedReceiver<()>> {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
         let path = dir.join(format!("boxpilot-{}.sock", unsafe { libc::getuid() }));
-        // A live instance answers on the socket: ask it to show itself.
-        if let Ok(mut stream) = UnixStream::connect(&path) {
-            let _ = stream.write_all(b"show");
-            return None;
+        // A live instance answers on the socket: ask it to show itself. After
+        // a restart the previous instance may still be shutting down.
+        let restarted = std::env::args().any(|a| a == "--restarted");
+        for attempt in 0..if restarted { 50 } else { 1 } {
+            match UnixStream::connect(&path) {
+                Ok(_) if restarted && attempt < 49 => std::thread::sleep(std::time::Duration::from_millis(100)),
+                Ok(mut stream) => {
+                    let _ = stream.write_all(b"show");
+                    return None;
+                }
+                Err(_) => break,
+            }
         }
         let _ = std::fs::remove_file(&path);
         if let Ok(listener) = UnixListener::bind(&path) {

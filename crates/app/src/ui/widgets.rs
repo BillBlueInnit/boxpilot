@@ -2,17 +2,18 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Div, ElementId, FontWeight, Hsla, SharedString, SpringAnimation, Window, div, px, relative,
+    AnyElement, App, Div, ElementId, FontWeight, Hsla, SharedString, SpringAnimation, Window, div, relative,
 };
 
 use super::anim;
 use crate::t;
+use super::layout::dp;
 
 pub fn extra_icon(name: gpui_kit::assets::IconName) -> Icon {
     Icon::new(name)
@@ -45,7 +46,7 @@ pub fn page(title: &str, subtitle: Option<String>, actions: Vec<AnyElement>, cx:
             .child(
                 v_flex()
                     .flex_1()
-                    .min_w(px(220.))
+                    .min_w(dp(220.))
                     .gap_0p5()
                     .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
                     .when_some(subtitle, |d, s| {
@@ -88,7 +89,7 @@ pub fn setting_row(title: &str, description: Option<&str>, control: impl IntoEle
         .child(
             v_flex()
                 .flex_1()
-                .min_w(px(220.))
+                .min_w(dp(220.))
                 .gap_0p5()
                 .child(div().text_sm().child(title.to_string()))
                 .when_some(description, |d, s| {
@@ -99,7 +100,7 @@ pub fn setting_row(title: &str, description: Option<&str>, control: impl IntoEle
 }
 
 pub fn divider(cx: &App) -> Div {
-    div().h(px(1.)).w_full().bg(cx.theme().border)
+    div().h(dp(1.)).w_full().bg(cx.theme().border)
 }
 
 /// A dropdown button that shows `current` and lets the user pick one of `options`.
@@ -159,29 +160,29 @@ pub fn segmented<T: Copy + PartialEq + 'static, F: Fn(T, &mut Window, &mut App) 
     h_flex()
         .relative()
         .flex_none()
-        .h(px(32.))
-        .w(px(seg_w * options.len() as f32 + pad * 2.0))
+        .h(dp(32.))
+        .w(dp(seg_w * options.len() as f32 + pad * 2.0))
         .rounded(t.radius)
         .bg(t.muted)
         .child(
             div()
                 .absolute()
-                .top(px(pad))
-                .bottom(px(pad))
-                .w(px(seg_w))
+                .top(dp(pad))
+                .bottom(dp(pad))
+                .w(dp(seg_w))
                 .rounded(t.radius)
                 .bg(t.background)
                 .shadow_xs()
                 .with_spring(
                     ElementId::from(SharedString::from(format!("{id}-thumb"))),
-                    SpringAnimation::new(anim::BOUNCY).to(px(thumb_x)),
+                    SpringAnimation::new(anim::BOUNCY).to(dp(thumb_x)),
                     |d, x| d.left(x),
                 ),
         )
         .child(
             h_flex()
                 .absolute()
-                .left(px(pad))
+                .left(dp(pad))
                 .top_0()
                 .bottom_0()
                 .children(options.iter().enumerate().map(|(i, (label, value))| {
@@ -190,7 +191,7 @@ pub fn segmented<T: Copy + PartialEq + 'static, F: Fn(T, &mut Window, &mut App) 
                     let on_select = on_select.clone();
                     div()
                         .id(SharedString::from(format!("{id}-{i}")))
-                        .w(px(seg_w))
+                        .w(dp(seg_w))
                         .h_full()
                         .flex()
                         .items_center()
@@ -213,7 +214,7 @@ pub fn progress_bar(id: impl Into<ElementId>, pct: f32, color: Hsla, cx: &App) -
     let t = cx.theme();
     div()
         .w_full()
-        .h(px(6.))
+        .h(dp(6.))
         .rounded_full()
         .bg(t.muted)
         .overflow_hidden()
@@ -231,14 +232,14 @@ pub fn progress_bar(id: impl Into<ElementId>, pct: f32, color: Hsla, cx: &App) -
 }
 
 pub fn dot(color: Hsla) -> Div {
-    div().size(px(8.)).rounded_full().bg(color).flex_none()
+    div().size(dp(8.)).rounded_full().bg(color).flex_none()
 }
 
 pub fn pill(text: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> Div {
     div()
         .flex_none()
         .px_2()
-        .py(px(1.))
+        .py(dp(1.))
         .rounded_full()
         .text_xs()
         .font_weight(FontWeight::MEDIUM)
@@ -273,7 +274,7 @@ pub fn empty_state(icon: impl Into<Icon>, title: &str, hint: &str, action: Optio
                 .rounded_full()
                 .bg(t.muted)
                 .text_color(t.muted_foreground)
-                .child(icon.into().size(px(22.))),
+                .child(icon.into().size(dp(22.))),
         )
         .child(div().font_weight(FontWeight::MEDIUM).text_center().child(title.to_string()))
         .when(!hint.is_empty(), |d| {
@@ -281,7 +282,7 @@ pub fn empty_state(icon: impl Into<Icon>, title: &str, hint: &str, action: Optio
                 div()
                     .text_sm()
                     .text_color(t.muted_foreground)
-                    .max_w(px(460.))
+                    .max_w(dp(460.))
                     .text_center()
                     .child(hint.to_string()),
             )
@@ -377,4 +378,90 @@ pub fn core_error_text(msg: &str) -> String {
     } else {
         msg.to_string()
     }
+}
+
+/// Multi-select state for list pages (subscriptions, rule-sets).
+#[derive(Default)]
+pub struct Selection {
+    pub active: bool,
+    pub ids: std::collections::HashSet<String>,
+}
+
+impl Selection {
+    pub fn toggle(&mut self, id: &str) {
+        if !self.ids.remove(id) {
+            self.ids.insert(id.to_string());
+        }
+    }
+
+    /// Drops ids that no longer exist.
+    pub fn retain(&mut self, existing: &[String]) {
+        self.ids.retain(|id| existing.contains(id));
+    }
+
+    /// Selected ids in display order.
+    pub fn ordered(&self, order: &[String]) -> Vec<String> {
+        order.iter().filter(|id| self.ids.contains(*id)).cloned().collect()
+    }
+}
+
+type Action = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// What the selection toolbar does; each closure acts on the current selection.
+pub struct BulkOps {
+    pub select_all: Rc<dyn Fn(bool, &mut Window, &mut App)>,
+    pub enable: Rc<dyn Fn(bool, &mut Window, &mut App)>,
+    pub update: Action,
+    pub delete: Action,
+    pub done: Action,
+}
+
+/// Page-header actions shown while selecting.
+pub fn bulk_actions(count: usize, all: bool, ops: BulkOps, cx: &App) -> Vec<AnyElement> {
+    use gpui_kit::component::Disableable as _;
+    let muted = cx.theme().muted_foreground;
+    let BulkOps { select_all, enable, update, delete, done } = ops;
+    let disable = enable.clone();
+    vec![
+        div().text_sm().text_color(muted).child(t!("bulk.selected", count)).into_any_element(),
+        Button::new("bulk-all")
+            .small()
+            .ghost()
+            .label(if all { t!("btn.select_none") } else { t!("btn.select_all") })
+            .on_click(move |_, window, cx| select_all(!all, window, cx))
+            .into_any_element(),
+        Button::new("bulk-enable")
+            .small()
+            .label(t!("btn.enable"))
+            .disabled(count == 0)
+            .on_click(move |_, window, cx| enable(true, window, cx))
+            .into_any_element(),
+        Button::new("bulk-disable")
+            .small()
+            .label(t!("btn.disable"))
+            .disabled(count == 0)
+            .on_click(move |_, window, cx| disable(false, window, cx))
+            .into_any_element(),
+        Button::new("bulk-update")
+            .small()
+            .icon(gpui_kit::component::IconName::RefreshCw)
+            .label(t!("btn.update"))
+            .disabled(count == 0)
+            .on_click(move |_, window, cx| update(window, cx))
+            .into_any_element(),
+        Button::new("bulk-delete")
+            .small()
+            .danger()
+            .icon(extra_icon(gpui_kit::assets::IconName::Trash))
+            .label(t!("btn.delete"))
+            .disabled(count == 0)
+            .on_click(move |_, window, cx| delete(window, cx))
+            .into_any_element(),
+        Button::new("bulk-done")
+            .small()
+            .primary()
+            .label(t!("btn.done"))
+            .on_click(move |_, window, cx| done(window, cx))
+            .into_any_element(),
+    ]
 }

@@ -1,5 +1,5 @@
 use boxpilot_core::CoreDownloadState;
-use boxpilot_core::model::{Language, Settings, ThemePref, TunStack};
+use boxpilot_core::model::{GpuPreference, Language, Settings, ThemePref, TunStack};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -7,12 +7,13 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, ClipboardItem, Context, Entity, Focusable as _, FontWeight, SharedString, Subscription, Window, div, px};
+use gpui_kit::{App, ClipboardItem, Context, Entity, Focusable as _, FontWeight, SharedString, Subscription, Window, div};
 
 use super::anim;
 use super::widgets::*;
 use crate::state::AppState;
 use crate::t;
+use super::layout::dp;
 
 type Getter = fn(&Settings) -> String;
 type Setter = fn(&mut Settings, &str) -> Result<(), &'static str>;
@@ -111,6 +112,8 @@ fn spec(f: F) -> (Getter, Setter, String) {
 pub struct SettingsPage {
     state: Entity<AppState>,
     fields: Vec<(F, Field)>,
+    /// Text input width for the current window size (dp).
+    input_w: f32,
     _subs: Vec<Subscription>,
 }
 
@@ -134,7 +137,7 @@ impl SettingsPage {
             }));
             fields.push((f, Field { input, get, set }));
         }
-        Self { state, fields, _subs: subs }
+        Self { state, fields, input_w: 300.0, _subs: subs }
     }
 
     fn field(&self, f: F) -> &Field {
@@ -173,7 +176,7 @@ impl SettingsPage {
     }
 
     fn input(&self, f: F) -> impl IntoElement {
-        div().w(px(300.)).child(Input::new(&self.field(f).input).small())
+        div().w(dp(self.input_w)).child(Input::new(&self.field(f).input).small())
     }
 
     fn core_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -220,7 +223,7 @@ impl SettingsPage {
                     .flex_wrap()
                     .child(
                         div()
-                            .size(px(40.))
+                            .size(dp(40.))
                             .flex_none()
                             .rounded(t.radius)
                             .bg(if installed { t.success.opacity(0.12) } else { t.warning.opacity(0.12) })
@@ -233,7 +236,7 @@ impl SettingsPage {
                     .child(
                         v_flex()
                             .flex_1()
-                            .min_w(px(180.))
+                            .min_w(dp(180.))
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -300,6 +303,74 @@ impl SettingsPage {
     }
 }
 
+fn gpu_label(g: GpuPreference) -> &'static str {
+    match g {
+        GpuPreference::Auto => t!("gpu.auto"),
+        GpuPreference::PowerSaving => t!("gpu.power"),
+        GpuPreference::HighPerformance => t!("gpu.perf"),
+        GpuPreference::Software => t!("gpu.software"),
+    }
+}
+
+impl SettingsPage {
+    /// Interface size, hardware acceleration and window material.
+    fn graphics_section(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let engine = self.state.read(cx).engine.clone();
+        let s = engine.settings();
+        let muted = cx.theme().muted_foreground;
+        let (e_scale, e_gpu, e_mica) = (engine.clone(), engine.clone(), engine.clone());
+        let system_pct = (super::layout::system_scale() * 100.0).round() as u32;
+        let scale_options: Vec<(SharedString, u32)> = super::layout::SCALES
+            .iter()
+            .map(|v| {
+                let label = if *v == 0 { t!("scale.system", system_pct) } else { format!("{v}%") };
+                (SharedString::from(label), *v)
+            })
+            .collect();
+        let gpu_options: Vec<(SharedString, GpuPreference)> =
+            crate::gpu::choices().iter().map(|g| (SharedString::from(gpu_label(*g)), *g)).collect();
+        // What the running renderer actually uses.
+        let renderer = window.gpu_specs().map(|g| {
+            let kind = if g.is_software_emulated { t!("gpu.cpu") } else { t!("gpu.hardware") };
+            t!("gpu.current", format!("{} · {kind}", g.device_name))
+        });
+        let needs_restart = s.gpu != crate::gpu::startup_preference();
+        card(cx)
+            .gap_1()
+            .child(section_title(t!("set.graphics"), cx))
+            .child(setting_row(
+                t!("set.scale"),
+                Some(t!("set.scale_desc")),
+                choice("ui-scale", s.ui_scale, scale_options, move |v, _, _| e_scale.update_settings(|s| s.ui_scale = v)),
+                cx,
+            ))
+            .when(!gpu_options.is_empty(), |d| {
+                d.child(setting_row(
+                    t!("set.gpu"),
+                    Some(t!("set.gpu_desc")),
+                    choice("gpu", s.gpu, gpu_options, move |v, _, _| e_gpu.update_settings(|s| s.gpu = v)),
+                    cx,
+                ))
+            })
+            .when(crate::gpu::choices().is_empty(), |d| d.child(setting_row(t!("set.gpu"), Some(t!("gpu.mac")), div(), cx)))
+            .when_some(renderer, |d, r| d.child(div().text_xs().text_color(muted).pb_1().child(r)))
+            .when(needs_restart, |d| {
+                d.child(
+                    h_flex().justify_end().child(
+                        Button::new("restart-gpu")
+                            .small()
+                            .primary()
+                            .label(t!("btn.restart_apply"))
+                            .on_click(|_, _, cx| super::restart_app(cx)),
+                    ),
+                )
+            })
+            .when(super::platform_mica_supported(), |d| {
+                d.child(switch_row("mica", t!("set.mica"), t!("set.mica_desc"), s.mica, &e_mica, |s, v| s.mica = v, cx))
+            })
+    }
+}
+
 fn switch_row(
     id: &'static str,
     title: &str,
@@ -322,8 +393,11 @@ fn switch_row(
 }
 
 impl Render for SettingsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let m = super::layout::metrics(window);
+        self.input_w = if m.narrow { 200.0 } else if m.compact_nav { 250.0 } else { 300.0 };
         let engine = self.state.read(cx).engine.clone();
+        let graphics = self.graphics_section(window, cx).into_any_element();
         let s = engine.settings();
         let e = &engine;
         let (et, es, el, elang) = (engine.clone(), engine.clone(), engine.clone(), engine.clone());
@@ -373,13 +447,11 @@ impl Render for SettingsPage {
                         cx,
                     ))
                 })
-                .when(super::platform_mica_supported(), |d| {
-                    d.child(switch_row("mica", t!("set.mica"), t!("set.mica_desc"), s.mica, e, |s, v| s.mica = v, cx))
-                })
                 .child(switch_row("minimized", t!("set.start_min"), t!("set.start_min_desc"), s.start_minimized, e, |s, v| s.start_minimized = v, cx))
                 .child(switch_row("autoconnect", t!("set.autoconnect"), t!("set.autoconnect_desc"), s.auto_start_core, e, |s, v| s.auto_start_core = v, cx))
                 .child(switch_row("tray", t!("set.close_tray"), t!("set.close_tray_desc"), s.close_to_tray, e, |s, v| s.close_to_tray = v, cx))
                 .into_any_element(),
+            graphics,
             self.core_section(cx).into_any_element(),
             card(cx)
                 .gap_1()
@@ -474,7 +546,7 @@ impl Render for SettingsPage {
         page(t!("nav.settings"), Some(t!("settings.subtitle").into()), vec![], cx).child(
             v_flex()
                 .gap_4()
-                .max_w(px(880.))
+                .max_w(dp(880.))
                 .children(sections.into_iter().enumerate().map(|(i, el)| {
                     anim::enter(div().child(el), ("settings-section", i), anim::stagger(i) * 0.6)
                 }))

@@ -1094,6 +1094,56 @@ impl Engine {
         self.rt.spawn(async move { this.after_nodes_changed().await });
     }
 
+    /// Removes several subscriptions with a single core reload.
+    pub fn remove_subscriptions(self: &Arc<Self>, ids: &[String]) {
+        self.with(|s| {
+            s.subs.retain(|x| !ids.contains(&x.id));
+            for id in ids {
+                s.nodes.remove(id);
+            }
+        });
+        for id in ids {
+            self.store.delete_nodes(id);
+        }
+        self.save_subs();
+        let this = self.clone();
+        self.rt.spawn(async move { this.after_nodes_changed().await });
+    }
+
+    /// Enables or disables several subscriptions with a single core reload.
+    pub fn set_subscriptions_enabled(self: &Arc<Self>, ids: &[String], enabled: bool) {
+        let changed = self.with(|s| {
+            let mut changed = false;
+            for x in s.subs.iter_mut().filter(|x| ids.contains(&x.id) && x.enabled != enabled) {
+                x.enabled = enabled;
+                changed = true;
+            }
+            changed
+        });
+        if changed {
+            self.save_subs();
+            self.wake_scheduler.notify_one();
+            let this = self.clone();
+            self.rt.spawn(async move { this.after_nodes_changed().await });
+        }
+    }
+
+    /// Refreshes the given remote subscriptions together (one reload at the end).
+    pub fn update_subscriptions(self: &Arc<Self>, ids: &[String]) {
+        let ids: Vec<String> = self.with(|s| {
+            s.subs
+                .iter()
+                .filter(|x| ids.contains(&x.id) && x.is_remote())
+                .map(|x| x.id.clone())
+                .collect()
+        });
+        if ids.is_empty() {
+            return;
+        }
+        let this = self.clone();
+        self.rt.spawn(async move { this.update_many(ids, false).await });
+    }
+
     pub fn move_subscription(&self, id: &str, delta: isize) {
         self.with(|s| {
             if let Some(i) = s.subs.iter().position(|x| x.id == id) {
@@ -1390,6 +1440,48 @@ impl Engine {
         self.save_providers();
         let this = self.clone();
         self.rt.spawn(async move { this.reload_if_config_changed().await });
+    }
+
+    /// Removes several rule-sets with a single core reload.
+    pub fn remove_rule_providers(self: &Arc<Self>, ids: &[String]) {
+        let removed: Vec<RuleProvider> = self.with(|s| {
+            let (gone, kept) = std::mem::take(&mut s.providers).into_iter().partition(|p| ids.contains(&p.id));
+            s.providers = kept;
+            gone
+        });
+        for p in &removed {
+            if let Some(f) = crate::config::provider_file(&self.rules_dir(), p) {
+                let _ = std::fs::remove_file(f);
+            }
+        }
+        self.save_providers();
+        let this = self.clone();
+        self.rt.spawn(async move { this.reload_if_config_changed().await });
+    }
+
+    /// Enables or disables several rule-sets with a single core reload.
+    pub fn set_rule_providers_enabled(self: &Arc<Self>, ids: &[String], enabled: bool) {
+        self.with(|s| {
+            for p in s.providers.iter_mut().filter(|p| ids.contains(&p.id)) {
+                p.enabled = enabled;
+            }
+        });
+        self.save_providers();
+        self.wake_scheduler.notify_one();
+        let this = self.clone();
+        self.rt.spawn(async move { this.reload_if_config_changed().await });
+    }
+
+    /// Refreshes the given rule-sets and reports one summary.
+    pub fn update_rule_providers(self: &Arc<Self>, ids: &[String]) {
+        let ids = ids.to_vec();
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let total = ids.len();
+            let ok = this.update_providers(ids, true).await;
+            let kind = if ok == total { NoticeKind::Success } else { NoticeKind::Warning };
+            this.notice(kind, Msg::new("notice.rules_batch").arg(ok).arg(total - ok));
+        });
     }
 
     /// Moves a provider up (negative) or down; earlier providers take priority.

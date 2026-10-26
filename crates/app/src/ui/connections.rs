@@ -10,13 +10,14 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex};
 use gpui_kit::component::Disableable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    UniformListScrollHandle, AsyncApp, Context, Entity, FontWeight, SharedString, Subscription, Task, WeakEntity, Window, div, px,
+    UniformListScrollHandle, AsyncApp, Context, Entity, FontWeight, SharedString, Subscription, Task, WeakEntity, Window, div,
     uniform_list,
 };
 
 use super::widgets::*;
 use crate::state::{AppState, Page};
 use crate::t;
+use super::layout::dp;
 
 #[derive(Clone)]
 struct Row {
@@ -137,14 +138,17 @@ impl ConnectionsPage {
 }
 
 impl Render for ConnectionsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Lower-priority columns give way first so the host stays readable.
+        let content = super::layout::metrics(window).content;
+        let (show_rule, show_process, show_net) = (content >= 1060.0, content >= 900.0, content >= 760.0);
         let engine = self.state.read(cx).engine.clone();
         let running = engine.status().is_running();
         let t = cx.theme();
         let total = self.snapshot.connections.as_ref().map_or(0, Vec::len);
         let e_all = engine.clone();
         let actions = vec![
-            div().w(px(240.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
+            div().w(dp(240.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
             Button::new("close-all")
                 .small()
                 .icon(extra_icon(Lucide::Unplug))
@@ -180,7 +184,7 @@ impl Render for ConnectionsPage {
         let head = |label: &'static str, w: Option<f32>| {
             let d = div().text_xs().font_weight(FontWeight::MEDIUM).text_color(t.muted_foreground).truncate().child(label);
             match w {
-                Some(w) => d.w(px(w)).flex_none(),
+                Some(w) => d.w(dp(w)).flex_none(),
                 None => d.flex_1().min_w_0(),
             }
         };
@@ -197,7 +201,7 @@ impl Render for ConnectionsPage {
                     let engine = engine.clone();
                     h_flex()
                         .id(("conn", i))
-                        .h(px(36.))
+                        .h(dp(36.))
                         .px_3()
                         .gap_3()
                         .items_center()
@@ -213,24 +217,28 @@ impl Render for ConnectionsPage {
                                 .text_color(fg)
                                 .child(c.target()),
                         )
-                        .child(div().w(px(130.)).flex_none().truncate().text_color(muted).child(c.process().to_string()))
-                        .child(
-                            div()
-                                .w(px(150.))
-                                .flex_none()
-                                .truncate()
-                                .text_color(muted)
-                                .child(if c.rule_payload.is_empty() { c.rule.clone() } else { format!("{} {}", c.rule, c.rule_payload) }),
-                        )
-                        .child(div().w(px(150.)).flex_none().truncate().child(outbound_label(c.outbound())))
-                        .child(div().w(px(44.)).flex_none().text_xs().text_color(muted).child(c.metadata.network.to_uppercase()))
-                        .child(div().w(px(84.)).flex_none().text_xs().child(fmt_speed(r.down_speed)))
-                        .child(div().w(px(84.)).flex_none().text_xs().child(fmt_speed(r.up_speed)))
-                        .child(div().w(px(56.)).flex_none().text_xs().text_color(muted).child(r.age.clone()))
+                        .when(show_process, |d| {
+                            d.child(div().w(dp(130.)).flex_none().truncate().text_color(muted).child(c.process().to_string()))
+                        })
+                        .when(show_rule, |d| {
+                            d.child(
+                                div()
+                                    .w(dp(150.))
+                                    .flex_none()
+                                    .truncate()
+                                    .text_color(muted)
+                                    .child(if c.rule_payload.is_empty() { c.rule.clone() } else { format!("{} {}", c.rule, c.rule_payload) }),
+                            )
+                        })
+                        .child(div().w(dp(150.)).flex_none().truncate().child(outbound_label(c.outbound())))
+                        .when(show_net, |d| d.child(div().w(dp(44.)).flex_none().text_xs().text_color(muted).child(c.metadata.network.to_uppercase())))
+                        .child(div().w(dp(84.)).flex_none().text_xs().child(fmt_speed(r.down_speed)))
+                        .child(div().w(dp(84.)).flex_none().text_xs().child(fmt_speed(r.up_speed)))
+                        .child(div().w(dp(56.)).flex_none().text_xs().text_color(muted).child(r.age.clone()))
                         .child(
                             div()
                                 .id(SharedString::from(format!("x-{id}")))
-                                .w(px(24.))
+                                .w(dp(24.))
                                 .flex_none()
                                 .text_color(muted)
                                 .cursor_pointer()
@@ -263,7 +271,7 @@ impl Render for ConnectionsPage {
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(34.))
+                            .h(dp(34.))
                             .px_3()
                             .gap_3()
                             .items_center()
@@ -271,10 +279,10 @@ impl Render for ConnectionsPage {
                             .border_color(border)
                             .bg(t.muted.opacity(0.5))
                             .child(head(t!("col.host"), None))
-                            .child(head(t!("col.process"), Some(130.)))
-                            .child(head(t!("col.rule"), Some(150.)))
+                            .when(show_process, |d| d.child(head(t!("col.process"), Some(130.))))
+                            .when(show_rule, |d| d.child(head(t!("col.rule"), Some(150.))))
                             .child(head(t!("col.outbound"), Some(150.)))
-                            .child(head(t!("col.net"), Some(44.)))
+                            .when(show_net, |d| d.child(head(t!("col.net"), Some(44.))))
                             .child(head(t!("col.down"), Some(84.)))
                             .child(head(t!("col.up"), Some(84.)))
                             .child(head(t!("col.time"), Some(56.)))
@@ -283,7 +291,17 @@ impl Render for ConnectionsPage {
                     .when(row_count == 0, |d| {
                         d.child(empty_state(extra_icon(Lucide::Cable), t!("conn.none"), t!("conn.none_hint"), None, cx))
                     })
-                    .when(row_count > 0, |d| d.child(super::smooth_scroll::smooth_scroll("conn-smooth", &base, list))),
+                    .when(row_count > 0, |d| {
+                        d.child(
+                            super::smooth_scroll::with_scrollbar(
+                                "conn-scrollbar",
+                                &self.scroll,
+                                super::smooth_scroll::smooth_scroll("conn-smooth", &base, list),
+                            )
+                            .flex_1()
+                            .min_h_0(),
+                        )
+                    }),
             )
             .into_any_element()
     }

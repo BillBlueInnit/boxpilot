@@ -99,6 +99,21 @@ impl Language {
     }
 }
 
+/// Which graphics processor renders the UI. Applied at start-up.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuPreference {
+    /// The operating system's choice.
+    #[default]
+    Auto,
+    /// The integrated GPU, to save battery.
+    PowerSaving,
+    /// The discrete GPU.
+    HighPerformance,
+    /// No GPU: render on the CPU (Linux / Mesa only).
+    Software,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemePref {
@@ -187,6 +202,20 @@ pub struct Settings {
     pub theme: ThemePref,
     /// Windows 11 Mica backdrop behind the sidebar.
     pub mica: bool,
+    pub gpu: GpuPreference,
+    /// Interface size in percent; 0 follows the OS text-size setting.
+    pub ui_scale: u32,
+    /// Window position and size from the last session (logical pixels).
+    pub window: Option<SavedWindow>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct SavedWindow {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
 }
 
 pub const DEFAULT_BYPASS: &str = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>";
@@ -237,6 +266,9 @@ impl Default for Settings {
             close_to_tray: true,
             theme: ThemePref::System,
             mica: true,
+            gpu: GpuPreference::Auto,
+            ui_scale: 0,
+            window: None,
         }
     }
 }

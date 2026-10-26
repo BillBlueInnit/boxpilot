@@ -8,7 +8,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, ElementId, Entity, FontWeight, Hsla, SharedString, SpringAnimation, Subscription, Window, div, px,
+    App, Context, ElementId, Entity, FontWeight, Hsla, SharedString, SpringAnimation, Subscription, Window, div,
     relative,
 };
 
@@ -16,6 +16,7 @@ use super::anim;
 use super::widgets::*;
 use crate::state::{AppState, Page};
 use crate::t;
+use super::layout::dp;
 
 pub struct DashboardPage {
     state: Entity<AppState>,
@@ -122,7 +123,7 @@ impl DashboardPage {
 
         // The ring's colour eases between states on a critically damped spring.
         let ring = div()
-            .size(px(52.))
+            .size(dp(52.))
             .flex_none()
             .rounded_full()
             .flex()
@@ -136,7 +137,7 @@ impl DashboardPage {
                     d.bg(color.opacity(0.15 * p)).text_color(color.opacity(0.4 + 0.6 * p))
                 },
             )
-            .child(extra_icon(Lucide::ShieldCheck).size(px(26.)));
+            .child(extra_icon(Lucide::ShieldCheck).size(dp(26.)));
         // Re-mount the ring when the status colour changes so the spring replays.
         let ring = div().id(ElementId::from(SharedString::from(format!("ring-{:?}", status_key(&status))))).child(ring);
 
@@ -149,7 +150,7 @@ impl DashboardPage {
                 .child(
                     v_flex()
                         .flex_1()
-                        .min_w(px(200.))
+                        .min_w(dp(200.))
                         .gap_1()
                         .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(title))
                         .child(div().text_sm().text_color(t.muted_foreground).truncate().child(detail)),
@@ -199,7 +200,7 @@ impl DashboardPage {
         let t = cx.theme();
         card(cx)
             .flex_1()
-            .min_w(px(180.))
+            .min_w(dp(180.))
             .gap_2()
             .child(
                 h_flex()
@@ -207,7 +208,7 @@ impl DashboardPage {
                     .items_center()
                     .text_sm()
                     .text_color(t.muted_foreground)
-                    .child(div().flex_none().text_color(color).child(icon.into().size(px(15.))))
+                    .child(div().flex_none().text_color(color).child(icon.into().size(dp(15.))))
                     .child(div().min_w_0().truncate().child(label.to_string())),
             )
             .child(
@@ -247,10 +248,10 @@ impl DashboardPage {
             )
             .child(
                 h_flex()
-                    .h(px(120.))
+                    .h(dp(120.))
                     .w_full()
                     .items_end()
-                    .gap(px(2.))
+                    .gap(dp(2.))
                     .border_b_1()
                     .border_color(t.border)
                     .children(st.traffic.iter().enumerate().map(|(i, s)| {
@@ -261,7 +262,7 @@ impl DashboardPage {
                             .flex_1()
                             .h_full()
                             .justify_end()
-                            .child(div().w_full().bg(up_c).rounded_t(px(2.)).with_spring(
+                            .child(div().w_full().bg(up_c).rounded_t(dp(2.)).with_spring(
                                 ("bar-up", i),
                                 SpringAnimation::new(anim::SMOOTH).to(up),
                                 |d, v| d.h(relative(v.clamp(0.0, 1.0))),
@@ -282,7 +283,7 @@ impl DashboardPage {
         let (e1, e2, e3) = (engine.clone(), engine.clone(), engine.clone());
         card(cx)
             .flex_1()
-            .min_w(px(340.))
+            .min_w(dp(340.))
             .gap_1()
             .child(section_title(t!("quick.title"), cx))
             .child(setting_row(
@@ -339,7 +340,7 @@ impl DashboardPage {
         let state = self.state.clone();
         card(cx)
             .flex_1()
-            .min_w(px(340.))
+            .min_w(dp(340.))
             .child(
                 h_flex()
                     .justify_between()

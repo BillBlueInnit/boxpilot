@@ -8,13 +8,13 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex};
 use gpui_kit::component::Selectable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, FontWeight, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window, div,
-    px, uniform_list,
+    Context, Entity, FontWeight, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window, div, uniform_list,
 };
 
 use super::widgets::*;
 use crate::state::AppState;
 use crate::t;
+use super::layout::dp;
 
 pub struct LogsPage {
     state: Entity<AppState>,
@@ -91,7 +91,7 @@ impl Render for LogsPage {
         let engine = self.state.read(cx).engine.clone();
         let data_dir = engine.paths().root.clone();
         let actions = vec![
-            div().w(px(220.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
+            div().w(dp(220.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
             choice(
                 "log-level",
                 level,
@@ -161,16 +161,16 @@ impl Render for LogsPage {
                     let l = &lines[i];
                     let c = colors[l.level as usize];
                     h_flex()
-                        .h(px(24.))
+                        .h(dp(24.))
                         .px_3()
                         .gap_3()
                         .items_center()
                         .text_xs()
                         .font_family(mono.clone())
-                        .child(div().w(px(60.)).flex_none().text_color(muted).child(l.time.clone()))
+                        .child(div().w(dp(60.)).flex_none().text_color(muted).child(l.time.clone()))
                         .child(
                             div()
-                                .w(px(44.))
+                                .w(dp(44.))
                                 .flex_none()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(c)
@@ -215,7 +215,17 @@ impl Render for LogsPage {
                 .when(count == 0, |d| {
                     d.child(empty_state(extra_icon(Lucide::ScrollText), t!("logs.empty"), t!("logs.empty_hint"), None, cx))
                 })
-                .when(count > 0, |d| d.child(super::smooth_scroll::smooth_scroll("log-smooth", &base, list))),
+                .when(count > 0, |d| {
+                    d.child(
+                        super::smooth_scroll::with_scrollbar(
+                            "log-scrollbar",
+                            &self.scroll,
+                            super::smooth_scroll::smooth_scroll("log-smooth", &base, list),
+                        )
+                        .flex_1()
+                        .min_h_0(),
+                    )
+                }),
         )
     }
 }

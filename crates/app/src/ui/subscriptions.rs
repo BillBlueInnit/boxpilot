@@ -4,6 +4,7 @@ use std::rc::Rc;
 use boxpilot_core::model::{Subscription, UpdateVia, now_unix};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::switch::Switch;
@@ -11,16 +12,18 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, SharedString,
-    Subscription as GpuiSub, Window, div, px,
+    Subscription as GpuiSub, WeakEntity, Window, div,
 };
 
 use super::anim;
 use super::widgets::*;
 use crate::state::AppState;
 use crate::t;
+use super::layout::dp;
 
 pub struct SubscriptionsPage {
     state: Entity<AppState>,
+    sel: Selection,
     _sub: GpuiSub,
 }
 
@@ -28,10 +31,12 @@ impl SubscriptionsPage {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
         let _sub = cx.observe(&state, |_, _, cx| cx.notify());
-        Self { state, _sub }
+        Self { state, sel: Selection::default(), _sub }
     }
 
-    fn sub_card(&self, sub: &Subscription, idx: usize, cx: &App) -> impl IntoElement {
+    fn sub_card(&self, sub: &Subscription, idx: usize, this: WeakEntity<Self>, cx: &App) -> impl IntoElement {
+        let selecting = self.sel.active;
+        let selected = self.sel.ids.contains(&sub.id);
         let engine = self.state.read(cx).engine.clone();
         let t = cx.theme();
         let updating = engine.is_updating(&sub.id);
@@ -62,17 +67,32 @@ impl SubscriptionsPage {
         let edit_sub = sub.clone();
         let url = sub.url.clone();
         let name_for_delete = sub.name.clone();
+        let pick_id = sub.id.clone();
 
         card(cx)
+            .id(SharedString::from(format!("sub-card-{}", sub.id)))
             .gap_2()
             .when(!sub.enabled, |d| d.opacity(0.65))
+            .when(selecting, |d| {
+                d.cursor_pointer().on_click(move |_, _, cx| {
+                    let _ = this.update(cx, |page, cx| {
+                        page.sel.toggle(&pick_id);
+                        cx.notify();
+                    });
+                })
+            })
+            .when(selected, |d| d.border_color(t.primary).bg(t.primary.opacity(0.05)))
             .child(
                 h_flex()
                     .gap_3()
                     .items_center()
+                    .when(selecting, |d| {
+                        // Display only: the whole card handles the click.
+                        d.child(Checkbox::new(SharedString::from(format!("pick-{idx}"))).checked(selected))
+                    })
                     .child(
                         div()
-                            .size(px(34.))
+                            .size(dp(34.))
                             .rounded(t.radius)
                             .bg(t.primary.opacity(0.1))
                             .text_color(t.primary)
@@ -113,7 +133,7 @@ impl SubscriptionsPage {
                                     .child(if remote { sub.url.clone() } else { t!("subs.pasted").to_string() }),
                             ),
                     )
-                    .child(
+                    .when(!selecting, |d| d.child(
                         h_flex()
                             .gap_1()
                             .items_center()
@@ -165,7 +185,7 @@ impl SubscriptionsPage {
                                         confirm_delete(t!("subs.delete_title"), t!("subs.delete_body", name_for_delete), move |_| engine.remove_subscription(&id), window, cx);
                                     }),
                             ),
-                    ),
+                    )),
             )
             .child(div().text_xs().text_color(t.muted_foreground).child(meta.join("  ·  ")))
             .when_some(sub.info.clone(), |d, info| {
@@ -218,7 +238,7 @@ pub fn confirm_delete(
         let on_confirm = on_confirm.clone();
         dialog
             .title(title)
-            .w(px(440.))
+            .w(dp(440.))
             .child(div().text_sm().text_color(cx.theme().muted_foreground).child(body.clone()))
             .footer(
                 DialogFooter::new()
@@ -243,7 +263,72 @@ impl Render for SubscriptionsPage {
         let updating = engine.any_updating();
         let e = engine.clone();
         let remote = subs.iter().filter(|s| s.is_remote() && s.enabled).count();
-        let actions = vec![
+        let order: Vec<String> = subs.iter().map(|s| s.id.clone()).collect();
+        self.sel.retain(&order);
+        if subs.is_empty() {
+            self.sel.active = false;
+        }
+        let this = cx.entity().downgrade();
+        let actions = if self.sel.active {
+            let chosen = Rc::new(self.sel.ordered(&order));
+            let all = !order.is_empty() && chosen.len() == order.len();
+            let (this_all, this_del, this_done) = (this.clone(), this.clone(), this.clone());
+            let (e_en, e_upd, e_del) = (engine.clone(), engine.clone(), engine.clone());
+            let (c_en, c_upd, c_del) = (chosen.clone(), chosen.clone(), chosen.clone());
+            bulk_actions(
+                chosen.len(),
+                all,
+                BulkOps {
+                    select_all: Rc::new(move |all, _, cx| {
+                        let order = order.clone();
+                        let _ = this_all.update(cx, |page, cx| {
+                            page.sel.ids = if all { order.into_iter().collect() } else { Default::default() };
+                            cx.notify();
+                        });
+                    }),
+                    enable: Rc::new(move |on, _, _| e_en.set_subscriptions_enabled(&c_en, on)),
+                    update: Rc::new(move |_, _| e_upd.update_subscriptions(&c_upd)),
+                    delete: Rc::new(move |window, cx| {
+                        let (engine, ids, this) = (e_del.clone(), c_del.clone(), this_del.clone());
+                        confirm_delete(
+                            t!("bulk.delete_title"),
+                            t!("bulk.delete_body", ids.len()),
+                            move |cx| {
+                                engine.remove_subscriptions(&ids);
+                                let _ = this.update(cx, |page, cx| {
+                                    page.sel = Selection::default();
+                                    cx.notify();
+                                });
+                            },
+                            window,
+                            cx,
+                        );
+                    }),
+                    done: Rc::new(move |_, cx| {
+                        let _ = this_done.update(cx, |page, cx| {
+                            page.sel = Selection::default();
+                            cx.notify();
+                        });
+                    }),
+                },
+                cx,
+            )
+        } else {
+            let this_sel = this.clone();
+            vec![
+            Button::new("select-subs")
+                .small()
+                .ghost()
+                .icon(extra_icon(Lucide::ListChecks))
+                .label(t!("btn.select"))
+                .disabled(subs.is_empty())
+                .on_click(move |_, _, cx| {
+                    let _ = this_sel.update(cx, |page, cx| {
+                        page.sel.active = true;
+                        cx.notify();
+                    });
+                })
+                .into_any_element(),
             Button::new("paste-sub")
                 .small()
                 .icon(extra_icon(Lucide::ClipboardPaste))
@@ -276,7 +361,8 @@ impl Render for SubscriptionsPage {
                 .label(t!("btn.add"))
                 .on_click(|_, window, cx| open_editor(None, None, window, cx))
                 .into_any_element(),
-        ];
+            ]
+        };
         let subtitle = t!("subs.subtitle", subs.len(), engine.total_nodes());
         page(t!("nav.subscriptions"), Some(subtitle), actions, cx)
             .when(subs.is_empty(), |d| {
@@ -296,7 +382,7 @@ impl Render for SubscriptionsPage {
                 )))
             })
             .child(v_flex().gap_3().children(subs.iter().enumerate().map(|(i, s)| {
-                anim::enter(div().child(self.sub_card(s, i, cx)), SharedString::from(format!("sub-{}", s.id)), anim::stagger(i))
+                anim::enter(div().child(self.sub_card(s, i, this.clone(), cx)), SharedString::from(format!("sub-{}", s.id)), anim::stagger(i))
             })))
     }
 }
@@ -493,7 +579,7 @@ impl Render for SubEditor {
             .when(!local, |d| {
                 d.child(field(t!("editor.url"), Some(t!("editor.url_hint")), Input::new(&self.url), cx))
             })
-            .when(local, |d| d.child(field(t!("editor.content"), None, Textarea::new(&self.content).h(px(150.)), cx)))
+            .when(local, |d| d.child(field(t!("editor.content"), None, Textarea::new(&self.content).h(dp(150.)), cx)))
             .when(!local, |d| {
                 d.child(
                     h_flex()
@@ -574,7 +660,7 @@ pub fn open_editor(original: Option<Subscription>, prefill: Option<Prefill>, win
         let editor_ok = editor.clone();
         dialog
             .title(if editing { t!("editor.edit_title") } else { t!("btn.add_subscription") })
-            .w(px(600.))
+            .w(dp(600.))
             .child(editor.clone())
             .footer(
                 DialogFooter::new()

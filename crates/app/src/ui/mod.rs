@@ -1,4 +1,5 @@
 pub mod anim;
+pub mod layout;
 pub mod assets;
 mod chrome;
 mod connections;
@@ -17,19 +18,19 @@ use gpui_kit::AnimationExt as _;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex, v_flex, window_border,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, App, Bounds, Context, Entity, FontWeight, ScrollHandle, SpringAnimation, Subscription, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, px, size,
+    Animation, App, Context, Entity, FontWeight, ScrollHandle, SpringAnimation, Subscription, Window,
+    WindowBackgroundAppearance, WindowOptions, div,
 };
 
 use crate::state::{AppState, Page, status_text};
 use crate::t;
 use widgets::*;
+use layout::dp;
 
 pub fn init(_cx: &mut App) {}
 
@@ -51,6 +52,8 @@ pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
             ThemePref::Dark => Theme::change(ThemeMode::Dark, None, cx),
         },
     }
+    let settings = AppState::engine(cx).settings();
+    layout::apply_scale(&settings, cx);
 }
 
 pub fn platform_mica_supported() -> bool {
@@ -72,9 +75,11 @@ fn backdrop(settings: &Settings) -> WindowBackgroundAppearance {
 
 pub fn open_main_window(cx: &mut App, show: bool) {
     let settings = AppState::engine(cx).settings();
+    // Fits the display it opens on; reopens where it was last time.
+    let (bounds, min_size) = layout::initial_bounds(&settings, cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1140.), px(760.)), cx))),
-        window_min_size: Some(size(px(900.), px(600.))),
+        window_bounds: Some(bounds),
+        window_min_size: Some(min_size),
         show,
         focus: show,
         app_id: Some("BoxPilot".into()),
@@ -84,7 +89,7 @@ pub fn open_main_window(cx: &mut App, show: bool) {
         titlebar: Some(gpui_kit::TitlebarOptions {
             title: Some("BoxPilot".into()),
             appears_transparent: true,
-            traffic_light_position: Some(gpui_kit::point(px(14.), px(14.))),
+            traffic_light_position: Some(gpui_kit::point(dp(14.), dp(14.))),
         }),
         app_owns_titlebar_drag: false,
         window_background: backdrop(&settings),
@@ -119,6 +124,8 @@ pub fn show_main_window(cx: &mut App) {
 /// The window's close button: hide to the tray or quit. Returns whether the
 /// window should actually be destroyed.
 pub fn handle_close_request(window: &mut Window, cx: &mut App) -> bool {
+    let saved = layout::saved_window(window);
+    AppState::engine(cx).update_settings(move |s| s.window = Some(saved));
     if AppState::engine(cx).settings().close_to_tray {
         crate::platform::hide_to_tray(window, cx)
     } else {
@@ -127,8 +134,30 @@ pub fn handle_close_request(window: &mut Window, cx: &mut App) -> bool {
     }
 }
 
+/// Starts a fresh instance and exits (used to apply start-up settings).
+pub fn restart_app(cx: &mut App) {
+    remember_window(cx);
+    AppState::engine(cx).shutdown_blocking();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Err(e) = std::process::Command::new(exe).arg("--restarted").spawn() {
+            log::error!("restart failed: {e:#}");
+            return;
+        }
+    }
+    cx.quit();
+}
+
+/// Saves the window's size and position for the next start.
+fn remember_window(cx: &mut App) {
+    let Some(handle) = AppState::global(cx).read(cx).window else { return };
+    if let Ok(saved) = handle.update(cx, |_, window, _| layout::saved_window(window)) {
+        AppState::engine(cx).update_settings(move |s| s.window = Some(saved));
+    }
+}
+
 /// Stops the core, restores the system proxy and exits.
 pub fn quit(cx: &mut App) {
+    remember_window(cx);
     AppState::engine(cx).shutdown_blocking();
     cx.quit();
 }
@@ -142,7 +171,7 @@ fn confirm_elevation(body: &'static str, apply: fn(&mut Settings), cx: &mut App)
             let muted = cx.theme().muted_foreground;
             dialog
                 .title(t!("admin.title"))
-                .w(px(480.))
+                .w(dp(480.))
                 .child(div().text_sm().text_color(muted).child(body))
                 .footer(
                     DialogFooter::new().child(cancel_button()).child(
@@ -285,12 +314,25 @@ impl MainView {
                     this.last_theme = settings.theme;
                     apply_theme(Some(window), cx);
                 }
+                if layout::apply_scale(&settings, cx) {
+                    window.refresh();
+                }
                 let mica = mica_active(&settings);
                 if mica != this.last_mica {
                     this.last_mica = mica;
                     window.set_background_appearance(backdrop(&settings));
                 }
                 cx.notify();
+            }),
+            // The OS text size may have changed while the window was in the background.
+            cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+                if window.is_window_active() {
+                    layout::refresh_system_scale();
+                    let settings = this.state.read(cx).engine.settings();
+                    if layout::apply_scale(&settings, cx) {
+                        window.refresh();
+                    }
+                }
             }),
             cx.observe_window_appearance(window, |this: &mut Self, window, cx| {
                 if this.last_theme == ThemePref::System {
@@ -328,7 +370,8 @@ impl MainView {
         }
     }
 
-    fn render_sidebar(&self, page: Page, mica: bool, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, page: Page, mica: bool, m: layout::Metrics, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = m.compact_nav;
         // Linux desktops may put the window buttons on the left (button-layout).
         let left_controls = chrome::window_controls(chrome::Side::Left, window, cx);
         let engine = self.state.read(cx).engine.clone();
@@ -367,20 +410,20 @@ impl MainView {
             .right_0()
             .rounded(t.radius)
             .bg(accent)
-            .with_spring("nav-top", SpringAnimation::new(top_cfg).to(px(top)), |d, v| d.top(v))
-            .with_spring("nav-bottom", SpringAnimation::new(bottom_cfg).to(px(bottom)), |e, v| {
+            .with_spring("nav-top", SpringAnimation::new(top_cfg).to(dp(top)), |d, v| d.top(v))
+            .with_spring("nav-bottom", SpringAnimation::new(bottom_cfg).to(dp(bottom)), |e, v| {
                 e.map_element(|d| d.bottom(v))
             });
         let bar = div()
             .absolute()
             .left_0()
-            .w(px(3.))
-            .h(px(16.))
+            .w(dp(3.))
+            .h(dp(16.))
             .rounded_full()
             .bg(t.primary)
             .with_spring(
                 "nav-bar",
-                SpringAnimation::new(anim::BOUNCY).to(px(top + (NAV_ITEM_H - 16.0) / 2.0)),
+                SpringAnimation::new(anim::BOUNCY).to(dp(top + (NAV_ITEM_H - 16.0) / 2.0)),
                 |d, v| d.top(v),
             );
 
@@ -392,12 +435,17 @@ impl MainView {
                 Page::Rules if rule_count > 0 => Some(rule_count),
                 _ => None,
             };
+            let title = p.title();
             h_flex()
                 .id(("nav", p.index()))
-                .h(px(NAV_ITEM_H))
+                .h(dp(NAV_ITEM_H))
                 .px_3()
                 .gap_2p5()
                 .items_center()
+                .when(compact, |d| {
+                    d.justify_center()
+                        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(title).build(window, cx))
+                })
                 .rounded(t.radius)
                 .cursor_pointer()
                 .text_sm()
@@ -407,9 +455,9 @@ impl MainView {
                         .hover(|d| d.text_color(t.sidebar_foreground).bg(t.sidebar_accent.opacity(0.4)))
                 })
                 .on_click(move |_, _, cx| state.update(cx, |s, cx| s.set_page(p, cx)))
-                .child(Self::page_icon(p).size(px(16.)))
-                .child(div().flex_1().min_w_0().truncate().child(p.title()))
-                .when_some(badge, |d, n| {
+                .child(Self::page_icon(p).size(dp(16.)))
+                .when(!compact, |d| d.child(div().flex_1().min_w_0().truncate().child(title)))
+                .when_some(badge.filter(|_| !compact), |d, n| {
                     d.child(div().flex_none().text_xs().text_color(t.muted_foreground).child(n.to_string()))
                 })
         });
@@ -431,14 +479,14 @@ impl MainView {
         };
 
         v_flex()
-            .w(px(216.))
+            .w(dp(m.sidebar))
             .h_full()
             .flex_none()
             .when(!mica, |d| d.bg(t.sidebar))
             .when_some(left_controls, |d, controls| {
                 d.child(
                     h_flex()
-                        .h(px(chrome::CAPTION_H))
+                        .h(gpui_kit::px(chrome::CAPTION_H))
                         .child(controls)
                         .child(chrome::drag_region("drag-left-controls").flex_1().h_full()),
                 )
@@ -446,39 +494,40 @@ impl MainView {
             // The logo block doubles as a window drag handle (it has no controls).
             .child(
                 chrome::drag_region("drag-sidebar")
-                    .pt(px(chrome::SIDEBAR_TOP_INSET))
+                    .pt(gpui_kit::px(chrome::SIDEBAR_TOP_INSET))
                     .child(
                         h_flex()
                             .px_4()
+                            .when(compact, |d| d.px_0().justify_center())
                             .pt_3()
                             .pb_4()
                             .gap_2p5()
                             .items_center()
                             .child(
                                 div()
-                                    .size(px(30.))
+                                    .size(dp(30.))
                                     .flex_none()
-                                    .rounded(px(8.))
+                                    .rounded(dp(8.))
                                     .bg(t.primary)
                                     .text_color(t.primary_foreground)
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(extra_icon(Lucide::Waypoints).size(px(16.))),
+                                    .child(extra_icon(Lucide::Waypoints).size(dp(16.))),
                             )
-                            .child(
+                            .when(!compact, |d| d.child(
                                 v_flex()
                                     .min_w_0()
                                     .child(div().font_weight(FontWeight::SEMIBOLD).child("BoxPilot"))
                                     .child(div().text_xs().text_color(t.muted_foreground).truncate().child(version)),
-                            ),
+                            )),
                     ),
             )
             .child(
                 div().px_2().child(
                     v_flex()
                         .relative()
-                        .gap(px(NAV_GAP))
+                        .gap(dp(NAV_GAP))
                         .child(indicator)
                         .child(bar)
                         .children(items),
@@ -495,8 +544,9 @@ impl MainView {
                     .items_center()
                     .rounded(t.radius)
                     .bg(accent.opacity(0.5))
+                    .when(compact, |d| d.justify_center().px_0())
                     .child(status_dot)
-                    .child(div().text_sm().min_w_0().truncate().child(status_text(&status))),
+                    .when(!compact, |d| d.child(div().text_sm().min_w_0().truncate().child(status_text(&status)))),
             )
     }
 }
@@ -522,33 +572,38 @@ impl Render for MainView {
         let full_height = matches!(page, Page::Connections | Page::Logs);
         let (bg, fg, sidebar_bg, border) = (t.background, t.foreground, t.sidebar, t.border);
 
+        let m = layout::metrics(window);
         let top_pad = if mica { 20.0 } else { 4.0 };
         // Each page mounts under its own id, so switching pages replays the
         // entrance spring; the scroll position of each page is kept.
         let body = if full_height {
             anim::enter(
-                v_flex().flex_1().min_h_0().w_full().px_6().pb_5().pt(px(top_pad)).child(content),
+                v_flex().flex_1().min_h_0().w_full().px(dp(m.pad)).pb_5().pt(dp(top_pad)).child(content),
                 ("page", page.index()),
                 0.0,
             )
             .into_any_element()
         } else {
             let handle = self.scroll[page.index()].clone();
-            smooth_scroll::smooth_scroll(
-                ("smooth", page.index()),
+            smooth_scroll::with_scrollbar(
+                ("page-scrollbar", page.index()),
                 &handle,
-                div()
-                    .id(("content", page.index()))
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&handle)
-                    .child(anim::enter(
-                        div().w_full().px_6().pb_5().pt(px(top_pad)).max_w(px(1180.)).child(content),
-                        ("page", page.index()),
-                        0.0,
-                    ))
-                    .vertical_scrollbar(&handle),
+                smooth_scroll::smooth_scroll(
+                    ("smooth", page.index()),
+                    &handle,
+                    div()
+                        .id(("content", page.index()))
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&handle)
+                        .child(anim::enter(
+                            div().w_full().px(dp(m.pad)).pb_5().pt(dp(top_pad)).max_w(dp(1180. + m.pad * 2.0)).child(content),
+                            ("page", page.index()),
+                            0.0,
+                        )),
+                ),
             )
+            .size_full()
             .into_any_element()
         };
 
@@ -558,7 +613,7 @@ impl Render for MainView {
                 .size_full()
                 .text_color(fg)
                 .when(!mica, |d| d.bg(sidebar_bg))
-                .child(self.render_sidebar(page, mica, window, cx))
+                .child(self.render_sidebar(page, mica, m, window, cx))
                 .child(
                     v_flex()
                         .flex_1()
@@ -572,7 +627,7 @@ impl Render for MainView {
                                 .min_h_0()
                                 // With Mica the content sits on a raised sheet, as in Windows 11 apps.
                                 .when(mica, |d| {
-                                    d.bg(bg).border_l_1().border_t_1().border_color(border).rounded_tl(px(8.))
+                                    d.bg(bg).border_l_1().border_t_1().border_color(border).rounded_tl(dp(8.))
                                 })
                                 .child(body),
                         ),

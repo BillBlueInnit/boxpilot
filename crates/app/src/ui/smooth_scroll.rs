@@ -4,15 +4,26 @@
 //! [`ScrollHandle`]: whenever the offset jumps (wheel notch, keyboard, scrollbar,
 //! programmatic scroll), the jump becomes the new *target* and the visible
 //! offset follows it on a critically damped spring. Consecutive notches add to
-//! the target, so a fast spin travels the full distance, and a precise
-//! touchpad (already smooth) just gets a touch of inertia.
+//! the target, so a fast spin travels the full distance.
+//!
+//! Direct manipulation is never smoothed: dragging the scrollbar thumb and
+//! precision touchpads (whose deltas are already continuous) track 1:1.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use gpui_kit::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Point, ScrollHandle, SpringConfig, SpringState, Window, point, px,
+    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, SpringConfig,
+    SpringState, Window, point, px,
 };
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarAxis, ScrollbarHandle};
+use gpui_kit::prelude::*;
+use gpui_kit::{Div, div};
+
+/// Width of the scrollbar strip at the right edge: presses there drag the thumb.
+const SCROLLBAR_ZONE: f32 = 18.0;
 
 /// ζ = 1.0 (critically damped): fast, no overshoot past the scroll target.
 const SCROLL_SPRING: SpringConfig = SpringConfig::new(520.0, 45.6, 1.0);
@@ -46,6 +57,10 @@ struct State {
     /// The offset this element last wrote; anything else is a new jump.
     written: Point<Pixels>,
     updated: Instant,
+    /// The last wheel event came from a precision touchpad.
+    precise: Rc<Cell<bool>>,
+    /// The scrollbar thumb or track is being pressed.
+    dragging: Rc<Cell<bool>>,
 }
 
 impl IntoElement for SmoothScroll {
@@ -72,7 +87,7 @@ fn step(axis: &mut Axis, jump: f32, min: f32, dt: f32) -> bool {
 
 impl Element for SmoothScroll {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type PrepaintState = (Rc<Cell<bool>>, Rc<Cell<bool>>);
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -104,7 +119,7 @@ impl Element for SmoothScroll {
     ) -> Self::PrepaintState {
         let handle = self.handle.clone();
         let reduce_motion = cx.reduce_motion();
-        window.with_element_state(id.unwrap(), |state: Option<State>, window| {
+        let flags = window.with_element_state(id.unwrap(), |state: Option<State>, window| {
             let now = Instant::now();
             let actual = handle.offset();
             let max = handle.max_offset();
@@ -113,12 +128,15 @@ impl Element for SmoothScroll {
                 y: Axis { spring: SpringState { position: actual.y.as_f32(), velocity: 0.0 }, target: actual.y.as_f32() },
                 written: actual,
                 updated: now,
+                precise: Rc::default(),
+                dragging: Rc::default(),
             });
             let jump = actual - state.written;
             let dt = now.duration_since(state.updated).as_secs_f32().min(1.0 / 20.0);
             let settled_x = step(&mut state.x, jump.x.as_f32(), -max.x.as_f32(), dt);
             let settled_y = step(&mut state.y, jump.y.as_f32(), -max.y.as_f32(), dt);
-            if reduce_motion {
+            let direct = state.precise.get() || state.dragging.get();
+            if reduce_motion || (direct && jump != Point::default()) {
                 state.x.spring = SpringState { position: state.x.target, velocity: 0.0 };
                 state.y.spring = SpringState { position: state.y.target, velocity: 0.0 };
             } else if !(settled_x && settled_y) {
@@ -128,23 +146,63 @@ impl Element for SmoothScroll {
             handle.set_offset(visual);
             state.written = visual;
             state.updated = now;
-            ((), state)
+            let flags = (state.precise.clone(), state.dragging.clone());
+            (flags, state)
         });
         child.prepaint(window, cx);
+        flags
     }
 
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        (precise, dragging): &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         child.paint(window, cx);
+        let precise = precise.clone();
+        window.on_mouse_event(move |e: &ScrollWheelEvent, phase, _, _| {
+            if phase == DispatchPhase::Capture && bounds.contains(&e.position) {
+                precise.set(e.delta.precise());
+            }
+        });
+        let pressing = dragging.clone();
+        window.on_mouse_event(move |e: &MouseDownEvent, phase, _, _| {
+            if phase == DispatchPhase::Capture
+                && e.button == MouseButton::Left
+                && bounds.contains(&e.position)
+                && e.position.x >= bounds.right() - px(SCROLLBAR_ZONE)
+            {
+                pressing.set(true);
+            }
+        });
+        let released = dragging.clone();
+        window.on_mouse_event(move |e: &MouseUpEvent, phase, _, _| {
+            if phase == DispatchPhase::Capture && e.button == MouseButton::Left {
+                released.set(false);
+            }
+        });
     }
+}
+
+/// Puts a scrollbar beside `scroller` as an overlay, the way gpui-component
+/// mounts it: the bar measures its own (non-scrolling) box as the viewport.
+/// Size the returned container like the scroll area it replaces.
+pub fn with_scrollbar<H: ScrollbarHandle + Clone + 'static>(
+    id: impl Into<ElementId>,
+    handle: &H,
+    scroller: impl IntoElement,
+) -> Div {
+    div().relative().flex().flex_col().child(scroller).child(
+        div()
+            .absolute()
+            .inset_0()
+            .child(Scrollbar::new(handle).id(id).axis(ScrollbarAxis::Vertical).viewport_from_layout()),
+    )
 }
 
 #[cfg(test)]
