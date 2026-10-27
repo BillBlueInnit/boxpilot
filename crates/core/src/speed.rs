@@ -24,6 +24,16 @@ pub struct SpeedResult {
     pub bytes_per_sec: Option<u64>,
 }
 
+/// Real-connection latency alone: one empty HTTPS request over a fresh
+/// connection through the node. `None` when it fails.
+pub async fn latency(proxy_url: &str) -> Option<u32> {
+    let client = fetch::client(&Route::Proxy(proxy_url.to_string()), Duration::from_secs(10), "BoxPilot").ok()?;
+    let start = Instant::now();
+    let resp = client.get(LATENCY_URL).send().await.ok()?.error_for_status().ok()?;
+    let _ = resp.bytes().await;
+    Some(start.elapsed().as_millis().min(u32::MAX as u128) as u32)
+}
+
 /// Measures through the HTTP proxy at `proxy_url` (the probe inbound, already
 /// pointed at the node). A fresh client, so nothing is reused from earlier tests.
 pub async fn measure(proxy_url: &str, bytes: u64) -> SpeedResult {

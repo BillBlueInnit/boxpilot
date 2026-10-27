@@ -23,6 +23,21 @@ const BASE_FONT: f32 = 16.0;
 static SCALE: AtomicU32 = AtomicU32::new(0x3F80_0000);
 /// The OS text-size factor, read at start-up and when the window regains focus.
 static SYSTEM_SCALE: AtomicU32 = AtomicU32::new(0x3F80_0000);
+/// Opacity of page sheets and cards: below 1 when the window is translucent.
+static SURFACE_ALPHA: AtomicU32 = AtomicU32::new(0x3F80_0000);
+
+pub fn surface_alpha() -> f32 {
+    f32::from_bits(SURFACE_ALPHA.load(Ordering::Relaxed))
+}
+
+/// Sets how opaque sheets and cards are; returns whether it changed.
+pub fn set_surface_alpha(translucent: bool, transparency: u32) -> bool {
+    // Never fully clear: text needs something to sit on.
+    let a = if translucent { 1.0 - transparency.min(80) as f32 / 100.0 } else { 1.0 };
+    let changed = (a - surface_alpha()).abs() > f32::EPSILON;
+    SURFACE_ALPHA.store(a.to_bits(), Ordering::Relaxed);
+    changed
+}
 
 pub fn scale() -> f32 {
     f32::from_bits(SCALE.load(Ordering::Relaxed))

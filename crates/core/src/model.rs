@@ -123,6 +123,23 @@ pub enum ThemePref {
     Dark,
 }
 
+/// Window material behind translucent surfaces (Windows 11).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Backdrop {
+    /// Tinted by the desktop wallpaper.
+    #[default]
+    Mica,
+    /// Mica with a stronger wallpaper tint.
+    MicaAlt,
+    /// Blurs whatever is behind the window.
+    Acrylic,
+}
+
+impl Backdrop {
+    pub const ALL: [Backdrop; 3] = [Self::Mica, Self::MicaAlt, Self::Acrylic];
+}
+
 /// How the Auto group picks its node.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -252,6 +269,9 @@ pub struct Settings {
     pub theme: ThemePref,
     /// Windows 11 Mica backdrop behind the sidebar.
     pub mica: bool,
+    pub backdrop: Backdrop,
+    /// How much of the backdrop shows through pages and cards, in percent.
+    pub transparency: u32,
     pub gpu: GpuPreference,
     pub update_mode: UpdateMode,
     /// Unix time of the last update check.
@@ -326,6 +346,8 @@ impl Default for Settings {
             lightweight: true,
             theme: ThemePref::System,
             mica: true,
+            backdrop: Backdrop::Mica,
+            transparency: 60,
             gpu: GpuPreference::Auto,
             update_mode: UpdateMode::Notify,
             last_update_check: 0,

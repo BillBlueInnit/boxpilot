@@ -1,4 +1,3 @@
-use boxpilot_core::geo::{Country, Origin};
 use boxpilot_core::model::AutoStrategy;
 use boxpilot_core::{ProxyGroup, ProxyMember};
 use gpui_kit::assets::IconName as Lucide;
@@ -81,14 +80,8 @@ impl ProxiesPage {
         let engine = self.state.read(cx).engine.clone();
         let t = cx.theme();
         let selected = member.name == group.now;
-        let testing = engine.is_testing(&member.name);
-        let delay = engine.delay(&member.name);
         let country = (!member.is_group).then(|| engine.country(&member.name)).flatten();
         let measurable = !member.is_group && member.name != "direct";
-        let speed_testing = engine.is_speed_testing(&member.name);
-        let speed = engine.speed(&member.name);
-        let e_speed = engine.clone();
-        let speed_name = member.name.clone();
         let subtitle = if member.is_group {
             groups
                 .iter()
@@ -100,21 +93,52 @@ impl ProxiesPage {
         } else {
             member.protocol.to_uppercase()
         };
-        let (delay_text, delay_c, delay_key) = match delay {
-            _ if testing => ("…".to_string(), t.muted_foreground, "testing".to_string()),
-            None => ("—".to_string(), t.muted_foreground, "none".to_string()),
-            Some(None) => (t!("latency.timeout").to_string(), t.danger, "timeout".to_string()),
-            Some(Some(d)) => (format!("{d} ms"), delay_color(Some(d), cx), d.to_string()),
+
+        // Three measurements, each tested on its own by clicking it.
+        let latency = match engine.delay(&member.name) {
+            _ if engine.is_testing(&member.name) => Metric::Testing,
+            None => Metric::Untested,
+            Some(None) => Metric::Failed,
+            Some(Some(d)) => Metric::Ms(d),
         };
+        let real = match engine.real_delay(&member.name) {
+            _ if engine.is_real_testing(&member.name) || engine.is_speed_testing(&member.name) => Metric::Testing,
+            None => Metric::Untested,
+            Some(None) => Metric::Failed,
+            Some(Some(d)) => Metric::Ms(d),
+        };
+        let speed = match engine.speed(&member.name) {
+            _ if engine.is_speed_testing(&member.name) => Metric::Testing,
+            None => Metric::Untested,
+            Some(r) => r.bytes_per_sec.map_or(Metric::Failed, Metric::Speed),
+        };
+        let name = member.name.clone();
+        let (e1, e2, e3) = (engine.clone(), engine.clone(), engine.clone());
+        let (n1, n2, n3) = (name.clone(), name.clone(), name.clone());
+        let id = |kind: &str| SharedString::from(format!("{kind}-{}-{idx}", group.name));
+        let metrics = h_flex()
+            .gap_1()
+            .items_center()
+            .child(metric_chip(id("lat"), Lucide::Zap, latency, t!("tip.chip_latency"), cx, move |_, _| {
+                e1.test_delays(vec![n1.clone()])
+            }))
+            .child(metric_chip(id("real"), Lucide::Activity, real, t!("tip.chip_real"), cx, move |_, _| {
+                e2.test_real_latency(vec![n2.clone()])
+            }))
+            .child(div().flex_1())
+            .child(metric_chip(id("spd"), Lucide::Gauge, speed, t!("tip.speed_one"), cx, move |_, _| {
+                e3.speed_test(vec![n3.clone()])
+            }));
+
         let selectable = group.selectable();
         let (g, n) = (group.name.clone(), member.name.clone());
         let e_sel = engine.clone();
-        let e_test = engine.clone();
-        let test_name = member.name.clone();
-        let (primary, border, bg) = (t.primary, t.border, t.background);
+        let (primary, border, bg) = (t.primary, t.border, surface(cx));
         div()
             .id(SharedString::from(format!("node-{}-{idx}", group.name)))
             .w_full()
+            // Cards in a row share its height whatever they show.
+            .h_full()
             .p_3()
             .rounded(t.radius_lg)
             .border_1()
@@ -123,6 +147,7 @@ impl ProxiesPage {
             })
             .child(
                 v_flex()
+                    .h_full()
                     .gap_1p5()
                     .child(
                         h_flex()
@@ -144,79 +169,9 @@ impl ProxiesPage {
                                 d.child(div().flex_none().text_color(t.primary).child(IconName::Check))
                             }),
                     )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .justify_between()
-                            .items_center()
-                            .child(div().flex_1().min_w_0().text_xs().text_color(t.muted_foreground).truncate().child(subtitle))
-                            .when(measurable, |d| {
-                                d.child(
-                                    div()
-                                        .id(SharedString::from(format!("speed-{}-{idx}", group.name)))
-                                        .flex_none()
-                                        .px_1()
-                                        .rounded(dp(4.))
-                                        .text_xs()
-                                        .text_color(t.muted_foreground)
-                                        .cursor_pointer()
-                                        .hover(|d| d.bg(t.muted).text_color(t.foreground))
-                                        .tooltip(|window, cx| {
-                                            gpui_kit::component::tooltip::Tooltip::new(t!("tip.speed_one")).build(window, cx)
-                                        })
-                                        .on_click(move |_, _, cx| {
-                                            cx.stop_propagation();
-                                            e_speed.speed_test(vec![speed_name.clone()]);
-                                        })
-                                        .child(if speed_testing { "…".into_any_element() } else { extra_icon(Lucide::Gauge).into_any_element() }),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("delay-{}-{idx}", group.name)))
-                                    .flex_none()
-                                    .px_1()
-                                    .rounded(dp(4.))
-                                    .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(delay_c)
-                                    .cursor_pointer()
-                                    .hover(|d| d.bg(t.muted))
-                                    .on_click(move |_, _, cx| {
-                                        cx.stop_propagation();
-                                        e_test.test_delays(vec![test_name.clone()]);
-                                    })
-                                    // A new result remounts the badge, which fades in.
-                                    .child(
-                                        div()
-                                            .with_spring(
-                                                SharedString::from(format!("d-{}-{}", member.name, delay_key)),
-                                                SpringAnimation::new(anim::SNAPPY).to(1.0f32).from(0.0),
-                                                |d, p| d.opacity(p.clamp(0.0, 1.0)),
-                                            )
-                                            .child(delay_text),
-                                    ),
-                            ),
-                    )
-                    // Speed test result: real latency over a fresh connection, then download speed.
-                    .when_some(speed.filter(|_| !speed_testing), |d, r| {
-                        d.child(match (r.latency_ms, r.bytes_per_sec) {
-                            (None, _) => div().text_xs().text_color(t.danger).child(t!("speed.failed")),
-                            (Some(ms), bps) => h_flex()
-                                .gap_1()
-                                .text_xs()
-                                .text_color(t.muted_foreground)
-                                .child(t!("speed.real"))
-                                .child(div().text_color(delay_color(Some(ms), cx)).child(format!("{ms} ms")))
-                                .child("·")
-                                .child(
-                                    div()
-                                        .text_color(t.foreground)
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(bps.map_or_else(|| "—".to_string(), |b| format!("↓ {}", fmt_speed(b)))),
-                                ),
-                        })
-                    }),
+                    .child(div().text_xs().text_color(t.muted_foreground).truncate().child(subtitle))
+                    .child(div().flex_1())
+                    .when(measurable, |d| d.child(metrics)),
             )
             .with_spring(
                 SharedString::from(format!("sel-{}-{}", group.name, member.name)),
@@ -229,8 +184,8 @@ impl ProxiesPage {
     }
 }
 
-/// How the Auto group picks its node, and which region it draws from.
-fn auto_bar(engine: &std::sync::Arc<boxpilot_core::Engine>, cx: &App) -> impl IntoElement {
+/// The Auto group's line: how it picks, which region, and what it uses now.
+fn auto_line(engine: &std::sync::Arc<boxpilot_core::Engine>, group: &ProxyGroup, cx: &App) -> impl IntoElement {
     let t = cx.theme();
     let s = engine.settings();
     let (e_mode, e_region) = (engine.clone(), engine.clone());
@@ -245,24 +200,28 @@ fn auto_bar(engine: &std::sync::Arc<boxpilot_core::Engine>, cx: &App) -> impl In
     let current_region = regions.iter().position(|(_, c)| *c == s.auto_region).unwrap_or(0);
     let region_codes: Vec<String> = regions.iter().map(|(_, c)| c.clone()).collect();
     let region_options: Vec<(SharedString, usize)> = regions.into_iter().enumerate().map(|(i, (label, _))| (label, i)).collect();
-    card(cx)
+    let hint = auto_hint(s.auto_strategy);
+    h_flex()
         .gap_2()
-        .p_3()
+        .flex_wrap()
+        .items_center()
+        .min_w_0()
+        .text_sm()
+        .text_color(t.muted_foreground)
+        .child(choice("auto-strategy", s.auto_strategy, strategies, move |v, _, _| e_mode.update_settings(|s| s.auto_strategy = v)))
+        .child(choice("auto-region", current_region, region_options, move |i, _, _| {
+            let code = region_codes.get(i).cloned().unwrap_or_default();
+            e_region.update_settings(move |s| s.auto_region = code)
+        }))
         .child(
-            h_flex()
-                .gap_3()
-                .flex_wrap()
-                .items_center()
-                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("auto.title")))
-                .child(choice("auto-strategy", s.auto_strategy, strategies, move |v, _, _| {
-                    e_mode.update_settings(|s| s.auto_strategy = v)
-                }))
-                .child(choice("auto-region", current_region, region_options, move |i, _, _| {
-                    let code = region_codes.get(i).cloned().unwrap_or_default();
-                    e_region.update_settings(move |s| s.auto_region = code)
-                })),
+            div()
+                .id("auto-hint")
+                .flex_none()
+                .child(IconName::Info)
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint).build(window, cx)),
         )
-        .child(div().text_xs().text_color(t.muted_foreground).child(auto_hint(s.auto_strategy)))
+        .child("·")
+        .child(div().min_w_0().truncate().text_color(t.foreground).child(t!("proxies.current", outbound_label(&group.now))))
 }
 
 fn auto_label(a: AutoStrategy) -> &'static str {
@@ -281,30 +240,6 @@ fn auto_hint(a: AutoStrategy) -> &'static str {
         AutoStrategy::Ordered => t!("auto.ordered_hint"),
         AutoStrategy::Bandwidth => t!("auto.bandwidth_hint"),
     }
-}
-
-/// A two-letter country code; hovering tells where it came from.
-fn country_badge(c: &Country, id: SharedString, cx: &App) -> impl IntoElement {
-    let t = cx.theme();
-    let tip: SharedString = match &c.origin {
-        Origin::Name => t!("geo.from_name").into(),
-        Origin::Ip(ip) => t!("geo.from_ip", ip).into(),
-        Origin::Exit(ip) => t!("geo.from_exit", ip).into(),
-    };
-    div()
-        .id(id)
-        .flex_none()
-        .px_1()
-        .rounded(dp(4.))
-        .border_1()
-        .border_color(t.border)
-        .bg(t.muted)
-        .text_xs()
-        .font_family(t.mono_font_family.clone())
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(t.muted_foreground)
-        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
-        .child(c.code.clone())
 }
 
 /// Colour interpolation on an animation phase.
@@ -378,8 +313,10 @@ impl Render for ProxiesPage {
             .collect();
         let testing = engine.any_testing();
         let speed_testing = engine.any_speed_testing();
+        let real_testing = engine.any_real_testing();
         let e = engine.clone();
         let e_speed = engine.clone();
+        let e_real = engine.clone();
         // Speed tests download data, so only what is on screen.
         let speed_targets: Vec<String> =
             members.iter().filter(|(_, m)| !m.is_group && m.name != "direct").map(|(_, m)| m.name.clone()).collect();
@@ -392,9 +329,22 @@ impl Render for ProxiesPage {
                 .small()
                 .icon(extra_icon(Lucide::Zap))
                 .label(t!("btn.test_latency"))
+                .tooltip(t!("tip.url_latency"))
                 .loading(testing)
                 .disabled(testable.is_empty())
                 .on_click(move |_, _, _| e.test_delays(testable.clone()))
+                .into_any_element(),
+            Button::new("real-latency")
+                .small()
+                .icon(extra_icon(Lucide::Activity))
+                .label(t!("btn.real_latency"))
+                .tooltip(t!("tip.real_latency"))
+                .loading(real_testing)
+                .disabled(speed_targets.is_empty())
+                .on_click({
+                    let targets = speed_targets.clone();
+                    move |_, _, _| e_real.test_real_latency(targets.clone())
+                })
                 .into_any_element(),
             Button::new("speed-test")
                 .small()
@@ -414,7 +364,9 @@ impl Render for ProxiesPage {
             cx,
         )
         .child(tabs)
-        .child(
+        .child(if group.name == boxpilot_core::config::TAG_AUTO {
+            auto_line(&engine, &group, cx).into_any_element()
+        } else {
             h_flex()
                 .gap_2()
                 .items_center()
@@ -423,9 +375,9 @@ impl Render for ProxiesPage {
                 .text_color(t.muted_foreground)
                 .child(div().flex_none().child(if group.selectable() { t!("proxies.selector") } else { t!("proxies.urltest") }))
                 .child("·")
-                .child(div().min_w_0().truncate().text_color(t.foreground).child(t!("proxies.current", outbound_label(&group.now)))),
-        )
-        .when(group.name == boxpilot_core::config::TAG_AUTO, |d| d.child(auto_bar(&engine, cx)))
+                .child(div().min_w_0().truncate().text_color(t.foreground).child(t!("proxies.current", outbound_label(&group.now))))
+                .into_any_element()
+        })
         .child(
             div().grid().grid_cols(cols).gap_3().children(
                 members
@@ -433,7 +385,7 @@ impl Render for ProxiesPage {
                     .enumerate()
                     .map(|(pos, (i, m))| {
                         anim::enter(
-                            div().min_w_0().child(self.node_card(&group, *i, m, &groups, cx)),
+                            div().min_w_0().h_full().child(self.node_card(&group, *i, m, &groups, cx)),
                             SharedString::from(format!("enter-{}-{}", group.name, m.name)),
                             anim::stagger(pos.min(12)) * 0.5,
                         )

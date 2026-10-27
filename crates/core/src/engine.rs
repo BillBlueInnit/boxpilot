@@ -194,6 +194,9 @@ struct State {
     exit_checked: HashMap<String, (geo::Country, Instant)>,
     update: UpdateInfo,
     speeds: HashMap<String, speed::SpeedResult>,
+    /// Latest real-connection latency per node (`None` = failed).
+    real_delays: HashMap<String, Option<u32>>,
+    real_testing: HashSet<String>,
     speed_testing: HashSet<String>,
     /// Recent unexpected core exits, for the automatic restart's limit.
     crashes: Vec<Instant>,
@@ -272,6 +275,8 @@ impl Engine {
                 exit_checked: HashMap::new(),
                 update: UpdateInfo::default(),
                 speeds: HashMap::new(),
+                real_delays: HashMap::new(),
+                real_testing: HashSet::new(),
                 speed_testing: HashSet::new(),
                 crashes: Vec::new(),
             }),
@@ -1697,6 +1702,52 @@ impl Engine {
         self.with(|s| s.speed_testing.contains(tag))
     }
 
+    pub fn real_delay(&self, tag: &str) -> Option<Option<u32>> {
+        self.with(|s| s.real_delays.get(tag).copied())
+    }
+
+    pub fn is_real_testing(&self, tag: &str) -> bool {
+        self.with(|s| s.real_testing.contains(tag))
+    }
+
+    pub fn any_real_testing(&self) -> bool {
+        self.with(|s| !s.real_testing.is_empty())
+    }
+
+    /// Real-connection latency through each node: a fresh HTTPS request, one
+    /// node at a time via the probe selector (no data beyond the handshake).
+    pub fn test_real_latency(self: &Arc<Self>, tags: Vec<String>) {
+        if !self.status().is_running() {
+            self.notice(NoticeKind::Warning, Msg::new("notice.start_core_first"));
+            return;
+        }
+        let queued: Vec<String> = self.with(|s| tags.into_iter().filter(|t| s.real_testing.insert(t.clone())).collect());
+        if queued.is_empty() {
+            return;
+        }
+        self.emit(Event::Proxies);
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let port = this.with(|s| s.settings.probe_port);
+            for tag in queued {
+                let d = if port == 0 || !this.status().is_running() {
+                    None
+                } else {
+                    let _probe = this.probe_lock.lock().await;
+                    match this.api().select(crate::config::TAG_PROBE, &tag).await {
+                        Ok(()) => speed::latency(&format!("http://127.0.0.1:{port}")).await,
+                        Err(_) => None,
+                    }
+                };
+                this.with(|s| {
+                    s.real_testing.remove(&tag);
+                    s.real_delays.insert(tag.clone(), d);
+                });
+                this.emit(Event::Proxies);
+            }
+        });
+    }
+
     pub fn any_speed_testing(&self) -> bool {
         self.with(|s| !s.speed_testing.is_empty())
     }
@@ -1716,6 +1767,7 @@ impl Engine {
                 this.with(|s| {
                     s.speed_testing.remove(&tag);
                     s.speeds.insert(tag.clone(), result);
+                    s.real_delays.insert(tag.clone(), result.latency_ms);
                 });
                 this.emit(Event::Proxies);
             }

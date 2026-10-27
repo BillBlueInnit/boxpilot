@@ -2,6 +2,9 @@
 
 use std::rc::Rc;
 
+use boxpilot_core::geo::{Country, Origin};
+use gpui_kit::assets::IconName as Lucide;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
@@ -28,7 +31,7 @@ pub fn card(cx: &App) -> Div {
         .rounded(t.radius_lg)
         .border_1()
         .border_color(t.border)
-        .bg(t.background)
+        .bg(surface(cx))
         .shadow_xs()
 }
 
@@ -355,7 +358,31 @@ pub fn outbound_label(tag: &str) -> String {
         "Proxy" => t!("group.proxy").to_string(),
         "Auto" => t!("group.auto").to_string(),
         "direct" => t!("group.direct").to_string(),
-        other => other.to_string(),
+        other => strip_flags(other),
+    }
+}
+
+/// Removes flag emoji (regional-indicator pairs): Windows draws them as bare
+/// letters, and the country badge already says where a node is.
+fn strip_flags(name: &str) -> String {
+    let is_flag = |c: char| ('\u{1F1E6}'..='\u{1F1FF}').contains(&c);
+    if !name.chars().any(is_flag) {
+        return name.to_string();
+    }
+    let cleaned: String = name.chars().filter(|c| !is_flag(*c)).collect();
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.is_empty() { name.to_string() } else { cleaned }
+}
+
+/// Fill for cards. On a translucent window it is a faint veil over the
+/// backdrop (light in light mode), so cards read as raised, as in Windows 11.
+pub fn surface(cx: &App) -> Hsla {
+    let t = cx.theme();
+    if super::layout::surface_alpha() < 1.0 {
+        let white = gpui_kit::white();
+        if t.is_dark() { white.opacity(0.045) } else { white.opacity(0.55) }
+    } else {
+        t.background
     }
 }
 
@@ -464,4 +491,86 @@ pub fn bulk_actions(count: usize, all: bool, ops: BulkOps, cx: &App) -> Vec<AnyE
             .on_click(move |_, window, cx| done(window, cx))
             .into_any_element(),
     ]
+}
+
+/// One measurement on a node card.
+#[derive(Clone, Copy)]
+pub enum Metric {
+    Untested,
+    Testing,
+    Failed,
+    Ms(u32),
+    Speed(u64),
+}
+
+/// A small clickable value: shows the result, runs its test on click.
+pub fn metric_chip(
+    id: SharedString,
+    icon: Lucide,
+    value: Metric,
+    tip: &'static str,
+    cx: &App,
+    on_test: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let t = cx.theme();
+    let (text, color) = match value {
+        Metric::Untested => ("—".to_string(), t.muted_foreground),
+        Metric::Testing => ("…".to_string(), t.muted_foreground),
+        Metric::Failed => (t!("latency.timeout").to_string(), t.danger),
+        Metric::Ms(ms) => (format!("{ms} ms"), delay_color(Some(ms), cx)),
+        Metric::Speed(b) => (fmt_speed(b), t.foreground),
+    };
+    let key = SharedString::from(format!("{id}-{text}"));
+    div()
+        .id(id)
+        .flex_none()
+        .px_1()
+        .py_0p5()
+        .rounded(dp(4.))
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .cursor_pointer()
+        .hover(|d| d.bg(t.muted))
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx))
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            on_test(window, cx);
+        })
+        .child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().text_color(t.muted_foreground).child(extra_icon(icon).xsmall()))
+                // A new result remounts the value, which fades in.
+                .child(
+                    div()
+                        .with_spring(key, SpringAnimation::new(anim::SNAPPY).to(1.0f32).from(0.0), |d, p| d.opacity(p.clamp(0.0, 1.0)))
+                        .child(text),
+                ),
+        )
+}
+
+/// A two-letter country code; hovering tells where it came from.
+pub fn country_badge(c: &Country, id: SharedString, cx: &App) -> impl IntoElement {
+    let t = cx.theme();
+    let tip: SharedString = match &c.origin {
+        Origin::Name => t!("geo.from_name").into(),
+        Origin::Ip(ip) => t!("geo.from_ip", ip).into(),
+        Origin::Exit(ip) => t!("geo.from_exit", ip).into(),
+    };
+    div()
+        .id(id)
+        .flex_none()
+        .px_1()
+        .rounded(dp(4.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.muted)
+        .text_xs()
+        .font_family(t.mono_font_family.clone())
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(t.muted_foreground)
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+        .child(c.code.clone())
 }

@@ -116,6 +116,62 @@ pub fn set_dark_frame(window: &Window, dark: bool) {
     let _ = (window, dark);
 }
 
+/// Lets the Mica backdrop show through the client area. DWM paints it in the
+/// window frame only, and the custom title bar leaves no visible frame, so the
+/// frame is extended over the whole window (content painted on top hides it).
+pub fn set_mica_frame(window: &Window, on: bool) {
+    #[cfg(windows)]
+    if let Some(h) = hwnd(window) {
+        use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+        use windows_sys::Win32::UI::Controls::MARGINS;
+        let m = if on { -1 } else { 0 };
+        let margins = MARGINS { cxLeftWidth: m, cxRightWidth: m, cyTopHeight: m, cyBottomHeight: m };
+        unsafe { DwmExtendFrameIntoClientArea(h, &margins) };
+    }
+    let _ = (window, on);
+}
+
+/// Acrylic with a tint. GPUI's blur has none, so a bright window behind washes
+/// out the text. `argb` is the tint with alpha in the top byte (0xAARRGGBB).
+pub fn set_acrylic_tint(window: &Window, argb: u32) {
+    #[cfg(windows)]
+    if let Some(h) = hwnd(window) {
+        #[repr(C)]
+        struct AccentPolicy {
+            state: u32,
+            flags: u32,
+            /// AABBGGRR.
+            color: u32,
+            animation: u32,
+        }
+        #[repr(C)]
+        struct CompositionData {
+            attribute: u32,
+            data: *mut core::ffi::c_void,
+            size: usize,
+        }
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+        type SetAttribute = unsafe extern "system" fn(windows_sys::Win32::Foundation::HWND, *mut CompositionData) -> i32;
+        // Undocumented and absent from user32.lib, so it is looked up at run time.
+        let user32: Vec<u16> = "user32.dll".encode_utf16().chain(Some(0)).collect();
+        let Some(proc) = (unsafe { GetProcAddress(GetModuleHandleW(user32.as_ptr()), c"SetWindowCompositionAttribute".as_ptr().cast()) })
+        else {
+            return;
+        };
+        let set_attribute: SetAttribute = unsafe { std::mem::transmute(proc) };
+        let (a, r, g, b) = (argb >> 24, (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
+        // ACCENT_ENABLE_ACRYLICBLURBEHIND, the same accent GPUI uses for its blur.
+        let mut policy = AccentPolicy { state: 4, flags: 0, color: a << 24 | b << 16 | g << 8 | r, animation: 0 };
+        let mut data = CompositionData {
+            attribute: 19, // WCA_ACCENT_POLICY
+            data: &mut policy as *mut AccentPolicy as *mut _,
+            size: std::mem::size_of::<AccentPolicy>(),
+        };
+        unsafe { set_attribute(h, &mut data) };
+    }
+    let _ = (window, argb);
+}
+
 /// Ensures only one instance runs. Returns `None` when another instance was
 /// found (and asked to show itself); otherwise a receiver that fires whenever a
 /// later instance asks this one to come to the front.
@@ -125,7 +181,9 @@ pub fn single_instance() -> Option<tokio::sync::mpsc::UnboundedReceiver<()>> {
     {
         use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
         use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForSingleObject};
-        let name: Vec<u16> = "Local\\BoxPilot.SingleInstance.Show".encode_utf16().chain(Some(0)).collect();
+        // BOXPILOT_INSTANCE gives a development copy its own lock.
+        let suffix = std::env::var("BOXPILOT_INSTANCE").map(|s| format!(".{s}")).unwrap_or_default();
+        let name: Vec<u16> = format!("Local\\BoxPilot.SingleInstance.Show{suffix}").encode_utf16().chain(Some(0)).collect();
         // After an elevated restart the previous instance may still be exiting.
         let restarted = std::env::args().any(|a| a == "--restarted");
         let mut attempts = if restarted { 50 } else { 1 };

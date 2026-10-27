@@ -13,7 +13,7 @@ mod subscriptions;
 pub mod widgets;
 
 use boxpilot_core::CoreStatus;
-use boxpilot_core::model::{Settings, ThemePref};
+use boxpilot_core::model::{Backdrop, Settings, ThemePref};
 use gpui_kit::AnimationExt as _;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -44,7 +44,9 @@ pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
                 ThemePref::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
             }
             // Keep the native frame and Mica tint in step with the app theme.
-            crate::platform::set_dark_frame(window, cx.theme().is_dark());
+            let dark = cx.theme().is_dark();
+            crate::platform::set_dark_frame(window, dark);
+            apply_backdrop(&AppState::engine(cx).settings(), dark, window);
         }
         None => match pref {
             ThemePref::System => Theme::sync_system_appearance(None, cx),
@@ -60,17 +62,37 @@ pub fn platform_mica_supported() -> bool {
     crate::platform::mica_supported()
 }
 
-/// Whether the Mica backdrop is in use (Windows 11 22H2+ and enabled).
+/// Whether the window is translucent (Windows 11 22H2+ and enabled).
 pub fn mica_active(settings: &Settings) -> bool {
     settings.mica && crate::platform::mica_supported()
 }
 
 fn backdrop(settings: &Settings) -> WindowBackgroundAppearance {
-    if mica_active(settings) {
-        WindowBackgroundAppearance::MicaBackdrop
-    } else {
-        WindowBackgroundAppearance::Opaque
+    if !mica_active(settings) {
+        return WindowBackgroundAppearance::Opaque;
     }
+    match settings.backdrop {
+        Backdrop::Mica => WindowBackgroundAppearance::MicaBackdrop,
+        Backdrop::MicaAlt => WindowBackgroundAppearance::MicaAltBackdrop,
+        Backdrop::Acrylic => WindowBackgroundAppearance::Blurred,
+    }
+}
+
+/// Applies the backdrop material, the frame it needs and surface opacity.
+fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
+    window.set_background_appearance(backdrop(settings));
+    let active = mica_active(settings);
+    // DWM paints Mica only in the frame; Acrylic (accent blur) covers the client by itself.
+    crate::platform::set_mica_frame(window, active && settings.backdrop != Backdrop::Acrylic);
+    if active && settings.backdrop == Backdrop::Acrylic {
+        // Plain blur lets a bright window behind wash out the text; tint it
+        // like Windows 11 Acrylic. Transparency thins the tint, never below 60%.
+        let t = settings.transparency.min(80) as f32 / 100.0;
+        let alpha = (0.6 + (0.8 - t) / 0.8 * 0.35).clamp(0.6, 0.95);
+        let rgb: u32 = if dark { 0x20_20_20 } else { 0xF3_F3_F3 };
+        crate::platform::set_acrylic_tint(window, ((alpha * 255.0) as u32) << 24 | rgb);
+    }
+    layout::set_surface_alpha(active, settings.transparency);
 }
 
 pub fn open_main_window(cx: &mut App, show: bool) {
@@ -95,15 +117,19 @@ pub fn open_main_window(cx: &mut App, show: bool) {
         window_background: backdrop(&settings),
         ..TitleBar::window_options()
     };
-    let result = gpui_kit::open_window(options, cx, |window, cx| {
+    // Like gpui_kit::open_window, but the root surface is transparent: the
+    // component layer fills it with the theme background, which would cover
+    // the Mica backdrop. MainView paints everything itself when Mica is off.
+    let result = cx.open_window(options, |window, cx| {
         apply_theme(Some(window), cx);
         window.on_window_should_close(cx, handle_close_request);
-        cx.new(|cx| MainView::new(window, cx))
+        let view = cx.new(|cx| MainView::new(window, cx));
+        cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(gpui_kit::transparent_black()))
     });
     match result {
-        Ok((handle, _)) => {
+        Ok(handle) => {
             let state = AppState::global(cx);
-            state.update(cx, |s, _| s.window = Some(handle));
+            state.update(cx, |s, _| s.window = Some(handle.into()));
         }
         Err(e) => log::error!("failed to open window: {e:#}"),
     }
@@ -324,7 +350,8 @@ pub struct MainView {
     /// One scroll position per page, kept while switching pages.
     scroll: Vec<ScrollHandle>,
     last_theme: ThemePref,
-    last_mica: bool,
+    /// Translucency, material and transparency last applied to the window.
+    last_look: (bool, Backdrop, u32),
     last_page: Page,
     moving_down: bool,
     _subscriptions: Vec<Subscription>,
@@ -344,10 +371,11 @@ impl MainView {
                 if layout::apply_scale(&settings, cx) {
                     window.refresh();
                 }
-                let mica = mica_active(&settings);
-                if mica != this.last_mica {
-                    this.last_mica = mica;
-                    window.set_background_appearance(backdrop(&settings));
+                let look = (mica_active(&settings), settings.backdrop, settings.transparency);
+                if look != this.last_look {
+                    this.last_look = look;
+                    apply_backdrop(&settings, cx.theme().is_dark(), window);
+                    window.refresh();
                 }
                 cx.notify();
             }),
@@ -378,7 +406,7 @@ impl MainView {
             scroll: Page::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             state,
             last_theme: settings.theme,
-            last_mica: mica_active(&settings),
+            last_look: (mica_active(&settings), settings.backdrop, settings.transparency),
             last_page: Page::Dashboard,
             moving_down: true,
             _subscriptions: subs,
@@ -585,7 +613,7 @@ impl Render for MainView {
             self.moving_down = page.index() > self.last_page.index();
             self.last_page = page;
         }
-        let mica = self.last_mica;
+        let mica = self.last_look.0;
         let t = cx.theme();
         let content: gpui_kit::AnyView = match page {
             Page::Dashboard => self.dashboard.clone().into(),
@@ -654,7 +682,11 @@ impl Render for MainView {
                                 .min_h_0()
                                 // With Mica the content sits on a raised sheet, as in Windows 11 apps.
                                 .when(mica, |d| {
-                                    d.bg(bg).border_l_1().border_t_1().border_color(border).rounded_tl(dp(8.))
+                                    d.bg(bg.opacity(layout::surface_alpha()))
+                                        .border_l_1()
+                                        .border_t_1()
+                                        .border_color(border)
+                                        .rounded_tl(dp(8.))
                                 })
                                 .child(body),
                         ),

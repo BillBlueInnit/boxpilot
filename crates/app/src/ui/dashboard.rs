@@ -349,6 +349,92 @@ impl DashboardPage {
             ))
     }
 
+    /// The node traffic actually leaves through, followed from Proxy through
+    /// any groups, with the same quick tests as the Proxies page.
+    fn now_using(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let engine = self.state.read(cx).engine.clone();
+        let t = cx.theme();
+        let groups = engine.groups();
+        let mut path: Vec<String> = Vec::new();
+        let mut now = groups.iter().find(|g| g.name == "Proxy").map(|g| g.now.clone()).unwrap_or_default();
+        while let Some(g) = groups.iter().find(|g| g.name == now && !g.now.is_empty()) {
+            if path.len() > 4 {
+                break;
+            }
+            path.push(outbound_label(&g.name));
+            now = g.now.clone();
+        }
+        let protocol = groups
+            .iter()
+            .flat_map(|g| g.members.iter())
+            .find(|m| m.name == now)
+            .map(|m| m.protocol.to_uppercase())
+            .unwrap_or_default();
+        let state = self.state.clone();
+        let header = h_flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .child(section_title(t!("dash.now_using"), cx))
+            .child(
+                Button::new("dash-change-node")
+                    .small()
+                    .ghost()
+                    .icon(extra_icon(Lucide::Earth))
+                    .label(t!("btn.change_node"))
+                    .on_click(move |_, _, cx| state.update(cx, |s, cx| s.set_page(Page::Proxies, cx))),
+            );
+        let card = card(cx).gap_2().child(header);
+        if !engine.status().is_running() || now.is_empty() {
+            return card.child(div().text_sm().text_color(t.muted_foreground).child(t!("status.disconnected")));
+        }
+        let latency = match engine.delay(&now) {
+            _ if engine.is_testing(&now) => Metric::Testing,
+            None => Metric::Untested,
+            Some(None) => Metric::Failed,
+            Some(Some(d)) => Metric::Ms(d),
+        };
+        let real = match engine.real_delay(&now) {
+            _ if engine.is_real_testing(&now) || engine.is_speed_testing(&now) => Metric::Testing,
+            None => Metric::Untested,
+            Some(None) => Metric::Failed,
+            Some(Some(d)) => Metric::Ms(d),
+        };
+        let speed = match engine.speed(&now) {
+            _ if engine.is_speed_testing(&now) => Metric::Testing,
+            None => Metric::Untested,
+            Some(r) => r.bytes_per_sec.map_or(Metric::Failed, Metric::Speed),
+        };
+        let (e1, e2, e3) = (engine.clone(), engine.clone(), engine.clone());
+        let (n1, n2, n3) = (now.clone(), now.clone(), now.clone());
+        let route = if protocol.is_empty() { path.join(" → ") } else { format!("{} · {protocol}", path.join(" → ")) };
+        card.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .min_w_0()
+                .when_some(engine.country(&now), |d, c| d.child(country_badge(&c, "dash-cc".into(), cx)))
+                .child(div().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(outbound_label(&now))),
+        )
+        .when(!route.is_empty(), |d| d.child(div().text_xs().text_color(t.muted_foreground).truncate().child(route)))
+        .when(now != "direct", |d| {
+            d.child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(metric_chip("dash-lat".into(), Lucide::Zap, latency, t!("tip.chip_latency"), cx, move |_, _| {
+                        e1.test_delays(vec![n1.clone()])
+                    }))
+                    .child(metric_chip("dash-real".into(), Lucide::Activity, real, t!("tip.chip_real"), cx, move |_, _| {
+                        e2.test_real_latency(vec![n2.clone()])
+                    }))
+                    .child(metric_chip("dash-spd".into(), Lucide::Gauge, speed, t!("tip.speed_one"), cx, move |_, _| {
+                        e3.speed_test(vec![n3.clone()])
+                    })),
+            )
+        })
+    }
+
     fn subscriptions(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let engine = self.state.read(cx).engine.clone();
         let subs = engine.subscriptions();
@@ -358,7 +444,6 @@ impl DashboardPage {
         let state = self.state.clone();
         card(cx)
             .flex_1()
-            .min_w(dp(340.))
             .child(
                 h_flex()
                     .justify_between()
@@ -500,12 +585,20 @@ impl Render for DashboardPage {
             ))
             .child(anim::enter(div().child(self.chart(cx)), "dash-chart", anim::stagger(2)))
             .child(anim::enter(
+                // Columns share the row height, so neither leaves a hole.
                 h_flex()
                     .gap_4()
                     .flex_wrap()
-                    .items_start()
+                    .items_stretch()
                     .child(self.controls(cx))
-                    .child(self.subscriptions(cx)),
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(dp(340.))
+                            .gap_4()
+                            .child(self.now_using(cx))
+                            .child(self.subscriptions(cx)),
+                    ),
                 "dash-bottom",
                 anim::stagger(3),
             ))

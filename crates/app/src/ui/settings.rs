@@ -1,5 +1,5 @@
 use boxpilot_core::CoreDownloadState;
-use boxpilot_core::model::{GpuPreference, Language, Settings, ThemePref, TunStack, UpdateMode};
+use boxpilot_core::model::{Backdrop, GpuPreference, Language, Settings, ThemePref, TunStack, UpdateMode};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -452,7 +452,37 @@ impl SettingsPage {
                 )
             })
             .when(super::platform_mica_supported(), |d| {
+                let (e_kind, e_glass) = (e_mica.clone(), e_mica.clone());
+                let kinds: Vec<(SharedString, Backdrop)> = Backdrop::ALL
+                    .iter()
+                    .map(|b| {
+                        let label = match b {
+                            Backdrop::Mica => t!("backdrop.mica"),
+                            Backdrop::MicaAlt => t!("backdrop.mica_alt"),
+                            Backdrop::Acrylic => t!("backdrop.acrylic"),
+                        };
+                        (SharedString::from(label), *b)
+                    })
+                    .collect();
+                let levels: Vec<(SharedString, u32)> =
+                    [0u32, 20, 40, 60, 80].iter().map(|v| (SharedString::from(format!("{v}%")), *v)).collect();
                 d.child(switch_row("mica", t!("set.mica"), t!("set.mica_desc"), s.mica, &e_mica, |s, v| s.mica = v, cx))
+                    .when(s.mica, |d| {
+                        d.child(setting_row(
+                            t!("set.backdrop"),
+                            Some(t!("set.backdrop_desc")),
+                            choice("backdrop", s.backdrop, kinds, move |v, _, _| e_kind.update_settings(|s| s.backdrop = v)),
+                            cx,
+                        ))
+                        .child(setting_row(
+                            t!("set.transparency"),
+                            Some(t!("set.transparency_desc")),
+                            choice("transparency", s.transparency, levels, move |v, _, _| {
+                                e_glass.update_settings(|s| s.transparency = v)
+                            }),
+                            cx,
+                        ))
+                    })
             })
     }
 }
