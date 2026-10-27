@@ -16,4 +16,4 @@ pub mod speed;
 pub mod sys;
 pub mod update;
 
-pub use engine::{CoreDownloadState, CoreStatus, Engine, Event, Msg, NoticeKind, ProxyGroup, ProxyMember};
+pub use engine::{CoreDownloadState, CoreStatus, Engine, Event, Msg, NoticeKind, ProxyGroup, ProxyMember, ResetScope};

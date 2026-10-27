@@ -93,8 +93,33 @@ pub fn toggle_maximize(window: &Window) {
 }
 
 /// Mica needs the system backdrop API added in Windows 11 22H2 (build 22621).
+/// What the window can show behind translucent surfaces on this system.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Translucency {
+    /// Opaque only: either nothing is available, or only unblurred
+    /// transparency (GNOME, X11), which would leave text unreadable.
+    None,
+    /// Windows 11 22H2+ DWM backdrops: Mica, Mica Alt, Acrylic.
+    WindowsMaterials,
+    /// One system blur: macOS vibrancy, or KWin's blur on KDE Plasma (Wayland).
+    Blur,
+}
+
+pub fn translucency() -> Translucency {
+    if cfg!(windows) {
+        if boxpilot_core::sys::windows_build() >= 22621 { Translucency::WindowsMaterials } else { Translucency::None }
+    } else if cfg!(target_os = "macos") {
+        Translucency::Blur
+    } else {
+        // GPUI blurs through org_kde_kwin_blur, which only KWin offers.
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"));
+        if wayland && kde { Translucency::Blur } else { Translucency::None }
+    }
+}
+
 pub fn mica_supported() -> bool {
-    cfg!(windows) && boxpilot_core::sys::windows_build() >= 22621
+    translucency() != Translucency::None
 }
 
 /// Tells DWM whether the frame (and the Mica tint) should be dark, so the
@@ -131,45 +156,22 @@ pub fn set_mica_frame(window: &Window, on: bool) {
     let _ = (window, on);
 }
 
-/// Acrylic with a tint. GPUI's blur has none, so a bright window behind washes
-/// out the text. `argb` is the tint with alpha in the top byte (0xAARRGGBB).
-pub fn set_acrylic_tint(window: &Window, argb: u32) {
+/// Picks the DWM system backdrop: 2 Mica, 3 Acrylic, 4 Mica Alt. Windows
+/// tints it for light or dark mode itself, following the dark-frame flag.
+pub fn set_system_backdrop(window: &Window, kind: u32) {
     #[cfg(windows)]
     if let Some(h) = hwnd(window) {
-        #[repr(C)]
-        struct AccentPolicy {
-            state: u32,
-            flags: u32,
-            /// AABBGGRR.
-            color: u32,
-            animation: u32,
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_SYSTEMBACKDROP_TYPE, DwmSetWindowAttribute};
+        unsafe {
+            DwmSetWindowAttribute(
+                h,
+                DWMWA_SYSTEMBACKDROP_TYPE as u32,
+                &kind as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
         }
-        #[repr(C)]
-        struct CompositionData {
-            attribute: u32,
-            data: *mut core::ffi::c_void,
-            size: usize,
-        }
-        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-        type SetAttribute = unsafe extern "system" fn(windows_sys::Win32::Foundation::HWND, *mut CompositionData) -> i32;
-        // Undocumented and absent from user32.lib, so it is looked up at run time.
-        let user32: Vec<u16> = "user32.dll".encode_utf16().chain(Some(0)).collect();
-        let Some(proc) = (unsafe { GetProcAddress(GetModuleHandleW(user32.as_ptr()), c"SetWindowCompositionAttribute".as_ptr().cast()) })
-        else {
-            return;
-        };
-        let set_attribute: SetAttribute = unsafe { std::mem::transmute(proc) };
-        let (a, r, g, b) = (argb >> 24, (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
-        // ACCENT_ENABLE_ACRYLICBLURBEHIND, the same accent GPUI uses for its blur.
-        let mut policy = AccentPolicy { state: 4, flags: 0, color: a << 24 | b << 16 | g << 8 | r, animation: 0 };
-        let mut data = CompositionData {
-            attribute: 19, // WCA_ACCENT_POLICY
-            data: &mut policy as *mut AccentPolicy as *mut _,
-            size: std::mem::size_of::<AccentPolicy>(),
-        };
-        unsafe { set_attribute(h, &mut data) };
     }
-    let _ = (window, argb);
+    let _ = (window, kind);
 }
 
 /// Ensures only one instance runs. Returns `None` when another instance was

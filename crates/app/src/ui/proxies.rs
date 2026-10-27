@@ -133,7 +133,7 @@ impl ProxiesPage {
         let selectable = group.selectable();
         let (g, n) = (group.name.clone(), member.name.clone());
         let e_sel = engine.clone();
-        let (primary, border, bg) = (t.primary, t.border, surface(cx));
+        let (primary, border, bg) = (t.primary, hairline(cx), surface(cx));
         div()
             .id(SharedString::from(format!("node-{}-{idx}", group.name)))
             .w_full()

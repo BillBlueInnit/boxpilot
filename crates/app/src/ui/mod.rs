@@ -71,27 +71,45 @@ fn backdrop(settings: &Settings) -> WindowBackgroundAppearance {
     if !mica_active(settings) {
         return WindowBackgroundAppearance::Opaque;
     }
+    // macOS vibrancy / KWin blur: one material, whatever was picked on Windows.
+    if crate::platform::translucency() == crate::platform::Translucency::Blur {
+        return WindowBackgroundAppearance::Blurred;
+    }
     match settings.backdrop {
         Backdrop::Mica => WindowBackgroundAppearance::MicaBackdrop,
         Backdrop::MicaAlt => WindowBackgroundAppearance::MicaAltBackdrop,
-        Backdrop::Acrylic => WindowBackgroundAppearance::Blurred,
+        // Switched to Acrylic through DWM right after; GPUI's own blur is an
+        // untinted accent effect that also lingers over later materials.
+        Backdrop::Acrylic => WindowBackgroundAppearance::MicaBackdrop,
     }
 }
 
 /// Applies the backdrop material, the frame it needs and surface opacity.
 fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
-    window.set_background_appearance(backdrop(settings));
-    let active = mica_active(settings);
-    // DWM paints Mica only in the frame; Acrylic (accent blur) covers the client by itself.
-    crate::platform::set_mica_frame(window, active && settings.backdrop != Backdrop::Acrylic);
-    if active && settings.backdrop == Backdrop::Acrylic {
-        // Plain blur lets a bright window behind wash out the text; tint it
-        // like Windows 11 Acrylic. Transparency thins the tint, never below 60%.
-        let t = settings.transparency.min(80) as f32 / 100.0;
-        let alpha = (0.6 + (0.8 - t) / 0.8 * 0.35).clamp(0.6, 0.95);
-        let rgb: u32 = if dark { 0x20_20_20 } else { 0xF3_F3_F3 };
-        crate::platform::set_acrylic_tint(window, ((alpha * 255.0) as u32) << 24 | rgb);
+    let mut active = mica_active(settings);
+    if active && cfg!(target_os = "macos") {
+        // Vibrancy always follows the system appearance; under a forced theme
+        // of the other kind it would clash with the content, so stay opaque.
+        let system_dark = matches!(window.appearance(), gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark);
+        active = system_dark == dark;
     }
+    // Going through Opaque first clears an accent blur left by an earlier
+    // material or build; it would sit over the DWM backdrop and hide it.
+    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+    window.set_background_appearance(if active { backdrop(settings) } else { WindowBackgroundAppearance::Opaque });
+    // DWM paints its backdrops only in the frame; extend it over the window.
+    crate::platform::set_mica_frame(window, active);
+    if active && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials {
+        // Every material is a DWM system backdrop, tinted by Windows to match
+        // light or dark mode (the dark-frame flag), so switching is clean.
+        let kind = match settings.backdrop {
+            Backdrop::Mica => 2,
+            Backdrop::Acrylic => 3,
+            Backdrop::MicaAlt => 4,
+        };
+        crate::platform::set_system_backdrop(window, kind);
+    }
+    let _ = dark;
     layout::set_surface_alpha(active, settings.transparency);
 }
 
@@ -195,6 +213,18 @@ pub fn restart_app(cx: &mut App) {
         if let Err(e) = std::process::Command::new(exe).arg("--restarted").spawn() {
             log::error!("restart failed: {e:#}");
             return;
+        }
+    }
+    cx.quit();
+}
+
+/// Clears the chosen data and starts a fresh instance. Unlike a normal
+/// restart nothing is saved on the way out, not even the window position.
+pub fn reset_app(scope: boxpilot_core::ResetScope, cx: &mut App) {
+    AppState::engine(cx).reset_blocking(scope);
+    if let Some(exe) = boxpilot_core::update::restart_target() {
+        if let Err(e) = std::process::Command::new(exe).arg("--restarted").spawn() {
+            log::error!("restart after reset failed: {e:#}");
         }
     }
     cx.quit();
@@ -613,7 +643,8 @@ impl Render for MainView {
             self.moving_down = page.index() > self.last_page.index();
             self.last_page = page;
         }
-        let mica = self.last_look.0;
+        // What was applied (macOS may fall back to opaque), not just the setting.
+        let mica = layout::translucent();
         let t = cx.theme();
         let content: gpui_kit::AnyView = match page {
             Page::Dashboard => self.dashboard.clone().into(),
@@ -625,7 +656,9 @@ impl Render for MainView {
             Page::Settings => self.settings.clone().into(),
         };
         let full_height = matches!(page, Page::Connections | Page::Logs);
-        let (bg, fg, sidebar_bg, border) = (t.background, t.foreground, t.sidebar, t.border);
+        let (bg, fg, sidebar_bg) = (t.background, t.foreground, t.sidebar);
+        // A hairline like Windows 11's content layer, gone at high transparency.
+        let sheet_edge = hairline(cx);
 
         let m = layout::metrics(window);
         let top_pad = if mica { 20.0 } else { 4.0 };
@@ -668,6 +701,8 @@ impl Render for MainView {
                 .size_full()
                 .text_color(fg)
                 .when(!mica, |d| d.bg(sidebar_bg))
+                // KWin's blur has no tint of its own; keep the sidebar text readable.
+                .when(mica && cfg!(target_os = "linux"), |d| d.bg(sidebar_bg.opacity(0.65)))
                 .child(self.render_sidebar(page, mica, m, window, cx))
                 .child(
                     v_flex()
@@ -685,7 +720,7 @@ impl Render for MainView {
                                     d.bg(bg.opacity(layout::surface_alpha()))
                                         .border_l_1()
                                         .border_t_1()
-                                        .border_color(border)
+                                        .border_color(sheet_edge)
                                         .rounded_tl(dp(8.))
                                 })
                                 .child(body),

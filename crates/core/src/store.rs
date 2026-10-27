@@ -69,11 +69,11 @@ impl Paths {
         self.run_dir.join("config.json")
     }
 
-    fn settings_file(&self) -> PathBuf {
+    pub fn settings_file(&self) -> PathBuf {
         self.root.join("settings.json")
     }
 
-    fn rules_file(&self) -> PathBuf {
+    pub fn rules_file(&self) -> PathBuf {
         self.root.join("rule_providers.json")
     }
 
@@ -82,7 +82,7 @@ impl Paths {
         self.run_dir.join("rules")
     }
 
-    fn subs_file(&self) -> PathBuf {
+    pub fn subs_file(&self) -> PathBuf {
         self.root.join("subscriptions.json")
     }
 
@@ -119,12 +119,23 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 #[derive(Clone)]
 pub struct Store {
     pub paths: Paths,
+    /// Set by a reset: nothing may write the deleted files back.
+    frozen: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Store {
     pub fn new(paths: Paths) -> Result<Self> {
         paths.ensure()?;
-        Ok(Self { paths })
+        Ok(Self { paths, frozen: Default::default() })
+    }
+
+    /// Stops all further saves (the app is about to restart after a reset).
+    pub fn freeze(&self) {
+        self.frozen.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn frozen(&self) -> bool {
+        self.frozen.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn load_settings(&self) -> Settings {
@@ -143,6 +154,9 @@ impl Store {
     }
 
     pub fn save_settings(&self, s: &Settings) -> Result<()> {
+        if self.frozen() {
+            return Ok(());
+        }
         write_json(&self.paths.settings_file(), s)
     }
 
@@ -156,6 +170,9 @@ impl Store {
     }
 
     pub fn save_rule_providers(&self, providers: &[crate::rules::RuleProvider]) -> Result<()> {
+        if self.frozen() {
+            return Ok(());
+        }
         write_json(&self.paths.rules_file(), providers)
     }
 
@@ -169,6 +186,9 @@ impl Store {
     }
 
     pub fn save_subscriptions(&self, subs: &[Subscription]) -> Result<()> {
+        if self.frozen() {
+            return Ok(());
+        }
         write_json(&self.paths.subs_file(), subs)
     }
 
@@ -182,6 +202,9 @@ impl Store {
     }
 
     pub fn save_nodes(&self, id: &str, nodes: &[Node]) -> Result<()> {
+        if self.frozen() {
+            return Ok(());
+        }
         write_json(&self.paths.nodes_file(id), nodes)
     }
 
@@ -192,6 +215,9 @@ impl Store {
 
     /// The last downloaded subscription body, kept so filters can be re-applied offline.
     pub fn save_raw(&self, id: &str, content: &str) -> Result<()> {
+        if self.frozen() {
+            return Ok(());
+        }
         write_atomic(&self.paths.raw_file(id), content.as_bytes())
     }
 

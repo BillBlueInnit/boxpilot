@@ -466,15 +466,19 @@ impl SettingsPage {
                     .collect();
                 let levels: Vec<(SharedString, u32)> =
                     [0u32, 20, 40, 60, 80].iter().map(|v| (SharedString::from(format!("{v}%")), *v)).collect();
+                // Only Windows has several materials; elsewhere it is the system blur.
+                let materials = crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials;
                 d.child(switch_row("mica", t!("set.mica"), t!("set.mica_desc"), s.mica, &e_mica, |s, v| s.mica = v, cx))
-                    .when(s.mica, |d| {
+                    .when(s.mica && materials, |d| {
                         d.child(setting_row(
                             t!("set.backdrop"),
                             Some(t!("set.backdrop_desc")),
                             choice("backdrop", s.backdrop, kinds, move |v, _, _| e_kind.update_settings(|s| s.backdrop = v)),
                             cx,
                         ))
-                        .child(setting_row(
+                    })
+                    .when(s.mica, |d| {
+                        d.child(setting_row(
                             t!("set.transparency"),
                             Some(t!("set.transparency_desc")),
                             choice("transparency", s.transparency, levels, move |v, _, _| {
@@ -485,6 +489,58 @@ impl SettingsPage {
                     })
             })
     }
+}
+
+/// Asks what to reset (everything is ticked), then wipes it and restarts.
+fn open_reset_dialog(window: &mut Window, cx: &mut App) {
+    use boxpilot_core::ResetScope;
+    use gpui_kit::component::checkbox::Checkbox;
+    use gpui_kit::component::dialog::DialogFooter;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let scope = Rc::new(Cell::new(ResetScope::ALL));
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let muted = cx.theme().muted_foreground;
+        let current = scope.get();
+        let item = |id: &'static str, label: &'static str, desc: &'static str, checked: bool, set: fn(&mut ResetScope, bool)| {
+            let scope = scope.clone();
+            v_flex()
+                .gap_0p5()
+                .child(Checkbox::new(id).label(label).checked(checked).on_click(move |v: &bool, window, _| {
+                    let mut s = scope.get();
+                    set(&mut s, *v);
+                    scope.set(s);
+                    window.refresh();
+                }))
+                .child(div().pl(dp(24.)).text_xs().text_color(muted).child(desc))
+        };
+        let confirm = scope.clone();
+        dialog
+            .title(t!("reset.title"))
+            .w(dp(480.))
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(div().text_sm().text_color(muted).child(t!("reset.body")))
+                    .child(item("reset-settings", t!("reset.settings"), t!("reset.settings_desc"), current.settings, |s, v| s.settings = v))
+                    .child(item("reset-subs", t!("reset.subs"), t!("reset.subs_desc"), current.subscriptions, |s, v| s.subscriptions = v))
+                    .child(item("reset-rules", t!("reset.rules"), t!("reset.rules_desc"), current.rule_sets, |s, v| s.rule_sets = v))
+                    .child(item("reset-caches", t!("reset.caches"), t!("reset.caches_desc"), current.caches, |s, v| s.caches = v))
+                    .child(div().text_xs().text_color(muted).child(t!("reset.keeps_core"))),
+            )
+            .footer(
+                DialogFooter::new().child(super::cancel_button()).child(
+                    Button::new("confirm-reset")
+                        .danger()
+                        .label(t!("btn.reset_restart"))
+                        .disabled(current.is_empty())
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            super::reset_app(confirm.get(), cx);
+                        }),
+                ),
+            )
+    });
 }
 
 fn switch_row(
@@ -646,6 +702,17 @@ impl Render for SettingsPage {
                             cx.write_to_clipboard(ClipboardItem::new_string(json));
                             window.push_notification(Notification::success(t!("set.config_copied")), cx);
                         }),
+                    cx,
+                ))
+                .child(setting_row(
+                    t!("set.reset"),
+                    Some(t!("set.reset_desc")),
+                    Button::new("reset-app")
+                        .small()
+                        .danger()
+                        .icon(extra_icon(Lucide::Trash))
+                        .label(t!("btn.reset"))
+                        .on_click(|_, window, cx| open_reset_dialog(window, cx)),
                     cx,
                 ))
                 .child(setting_row(

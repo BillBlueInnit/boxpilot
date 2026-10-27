@@ -30,9 +30,20 @@ pub fn card(cx: &App) -> Div {
         .p_4()
         .rounded(t.radius_lg)
         .border_1()
-        .border_color(t.border)
+        .border_color(hairline(cx))
         .bg(surface(cx))
         .shadow_xs()
+}
+
+/// Edge colour for cards and the page sheet. An opaque window keeps the theme
+/// border. A translucent one uses Fluent's card stroke: black at low opacity,
+/// which reads as a soft edge over any backdrop instead of a bright grey line.
+pub fn hairline(cx: &App) -> Hsla {
+    let t = cx.theme();
+    if !super::layout::translucent() {
+        return t.border;
+    }
+    gpui_kit::black().opacity(if t.is_dark() { 0.1 } else { 0.06 })
 }
 
 /// Page header with title, optional subtitle and right-aligned actions that
@@ -380,7 +391,8 @@ pub fn surface(cx: &App) -> Hsla {
     let t = cx.theme();
     if super::layout::surface_alpha() < 1.0 {
         let white = gpui_kit::white();
-        if t.is_dark() { white.opacity(0.045) } else { white.opacity(0.55) }
+        // Fluent's card fills over Mica/Acrylic.
+        if t.is_dark() { white.opacity(0.05) } else { white.opacity(0.7) }
     } else {
         t.background
     }

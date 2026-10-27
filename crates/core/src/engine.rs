@@ -151,6 +151,27 @@ struct Running {
     generation: u64,
 }
 
+/// What a reset clears. The downloaded sing-box core is always kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetScope {
+    /// Settings (and the login start they set up).
+    pub settings: bool,
+    /// Subscriptions with their nodes.
+    pub subscriptions: bool,
+    /// Imported rule-sets.
+    pub rule_sets: bool,
+    /// Generated config, core cache (selections, fake-IP), downloaded rule-sets, GeoIP data.
+    pub caches: bool,
+}
+
+impl ResetScope {
+    pub const ALL: ResetScope = ResetScope { settings: true, subscriptions: true, rule_sets: true, caches: true };
+
+    pub fn is_empty(&self) -> bool {
+        !(self.settings || self.subscriptions || self.rule_sets || self.caches)
+    }
+}
+
 /// The app-update state shown in Settings.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateInfo {
@@ -563,6 +584,46 @@ impl Engine {
         self.rt.spawn(async move {
             let _ = this.start_async().await;
         });
+    }
+
+    /// Back to a fresh install for the chosen parts: stops the core (restoring
+    /// the system proxy), removes login start when settings go, and deletes
+    /// the files. Nothing is saved afterwards; the caller restarts the app.
+    pub fn reset_blocking(&self, scope: ResetScope) {
+        self.store.freeze();
+        self.shutdown_blocking();
+        let paths = &self.store.paths;
+        let remove = |path: PathBuf| {
+            let result = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+            if let Err(e) = result.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }) {
+                log::warn!("reset: could not remove {}: {e}", path.display());
+            }
+        };
+        if scope.settings {
+            if let Err(e) = sys::set_launch_at_login(APP_NAME, None) {
+                log::warn!("reset: could not remove login start: {e:#}");
+            }
+            if sys::elevated_login_task_exists(APP_NAME) {
+                if let Err(e) = sys::set_elevated_login_task(APP_NAME, None) {
+                    log::warn!("reset: could not remove the elevated login task: {e:#}");
+                }
+            }
+            remove(paths.settings_file());
+            remove(paths.root.join("settings.broken.json"));
+        }
+        if scope.subscriptions {
+            remove(paths.subs_file());
+            remove(paths.subs_dir.clone());
+        }
+        if scope.rule_sets {
+            remove(paths.rules_file());
+            remove(paths.rules_dir());
+        }
+        if scope.caches {
+            remove(paths.run_dir.clone());
+            remove(paths.root.join("geoip"));
+        }
+        log::info!("reset: {scope:?}");
     }
 
     pub fn stop(self: &Arc<Self>) {

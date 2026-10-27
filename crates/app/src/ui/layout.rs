@@ -31,7 +31,16 @@ pub fn surface_alpha() -> f32 {
 }
 
 /// Sets how opaque sheets and cards are; returns whether it changed.
+/// Whether the window actually shows a backdrop (set with the material, so
+/// drawing follows what was applied, not just the setting).
+static TRANSLUCENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn translucent() -> bool {
+    TRANSLUCENT.load(Ordering::Relaxed)
+}
+
 pub fn set_surface_alpha(translucent: bool, transparency: u32) -> bool {
+    TRANSLUCENT.store(translucent, Ordering::Relaxed);
     // Never fully clear: text needs something to sit on.
     let a = if translucent { 1.0 - transparency.min(80) as f32 / 100.0 } else { 1.0 };
     let changed = (a - surface_alpha()).abs() > f32::EPSILON;
