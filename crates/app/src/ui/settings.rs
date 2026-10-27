@@ -263,7 +263,6 @@ impl SettingsPage {
                             .child(
                                 Button::new("install-core")
                                     .small()
-                                    .primary()
                                     .icon(extra_icon(Lucide::Download))
                                     .label(install_label)
                                     .loading(busy)
@@ -293,7 +292,6 @@ impl SettingsPage {
                 None,
                 Button::new("open-core")
                     .small()
-                    .ghost()
                     .icon(extra_icon(Lucide::FolderOpen))
                     .label(t!("btn.open"))
                     .on_click(move |_, _, _| crate::platform::open_path(&core_dir)),
@@ -341,7 +339,6 @@ impl SettingsPage {
             actions = actions.child(
                 Button::new("upd-restart")
                     .small()
-                    .primary()
                     .label(t!("btn.restart_apply"))
                     .on_click(|_, _, cx| super::restart_app(cx)),
             );
@@ -350,7 +347,6 @@ impl SettingsPage {
             actions = actions.child(
                 Button::new("upd-notes")
                     .small()
-                    .ghost()
                     .label(t!("btn.release_notes"))
                     .on_click(move |_, _, cx| cx.open_url(&page)),
             );
@@ -359,7 +355,6 @@ impl SettingsPage {
                 actions = actions.child(
                     Button::new("upd-install")
                         .small()
-                        .primary()
                         .icon(extra_icon(Lucide::Download))
                         .label(t!("btn.update_now"))
                         .loading(info.installing)
@@ -444,7 +439,6 @@ impl SettingsPage {
                     h_flex().justify_end().child(
                         Button::new("restart-gpu")
                             .small()
-                            .primary()
                             .label(t!("btn.restart_apply"))
                             .on_click(|_, _, cx| super::restart_app(cx)),
                     ),
@@ -760,7 +754,6 @@ impl Render for SettingsPage {
                     Some(t!("set.reset_desc")),
                     Button::new("reset-app")
                         .small()
-                        .danger()
                         .icon(extra_icon(Lucide::Trash))
                         .label(t!("btn.reset"))
                         .on_click(|_, window, cx| open_reset_dialog(window, cx)),
@@ -771,7 +764,6 @@ impl Render for SettingsPage {
                     Some(&data_dir.display().to_string()),
                     Button::new("open-data")
                         .small()
-                        .ghost()
                         .icon(extra_icon(Lucide::FolderOpen))
                         .label(t!("btn.open"))
                         .on_click({

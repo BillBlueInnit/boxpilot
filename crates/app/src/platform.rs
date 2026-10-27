@@ -174,6 +174,33 @@ pub fn set_system_backdrop(window: &Window, kind: u32) {
     let _ = (window, kind);
 }
 
+/// Whether the backdrop should stay as it is on an inactive window.
+#[cfg(windows)]
+static KEEP_BACKDROP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Windows draws Mica and Acrylic only while a window is active and a flat
+/// colour otherwise, deciding from WM_NCACTIVATE. Answering that message as
+/// "still active" keeps the backdrop live. GPUI tracks focus from WM_ACTIVATE,
+/// so input focus and the dimmed caption buttons are unaffected.
+pub fn keep_backdrop_live(window: &Window, on: bool) {
+    #[cfg(windows)]
+    if let Some(h) = hwnd(window) {
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+        use windows_sys::Win32::UI::WindowsAndMessaging::WM_NCACTIVATE;
+        unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+            if msg == WM_NCACTIVATE && KEEP_BACKDROP.load(std::sync::atomic::Ordering::Relaxed) {
+                return unsafe { DefSubclassProc(hwnd, msg, 1, lparam) };
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        KEEP_BACKDROP.store(on, std::sync::atomic::Ordering::Relaxed);
+        // Installing again with the same id only updates the existing hook.
+        unsafe { SetWindowSubclass(h, Some(subclass), 0xB0C5, 0) };
+    }
+    let _ = (window, on);
+}
+
 /// Ensures only one instance runs. Returns `None` when another instance was
 /// found (and asked to show itself); otherwise a receiver that fires whenever a
 /// later instance asks this one to come to the front.

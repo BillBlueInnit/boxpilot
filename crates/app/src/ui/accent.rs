@@ -1,6 +1,11 @@
-//! The theme colour: one accent for everything that shows state — primary
-//! buttons, switches, selections, focus rings, links, progress — plus the
-//! control colours that change on a translucent window.
+//! BoxPilot's one design language, written into the theme.
+//!
+//! Every mode and material uses the same layers, after Windows 11's Fluent
+//! (whose neutrals macOS and GNOME are close to): a base under the window and
+//! sidebar, a raised content layer, cards with a faint veil, controls with a
+//! subtle fill and a hairline stroke, hairline dividers, and one theme colour
+//! for every selected or active state. A translucent window only swaps the
+//! solid base for the system backdrop; nothing else changes style.
 
 use boxpilot_core::model::{Accent, Settings};
 use gpui_kit::component::Theme;
@@ -41,11 +46,10 @@ pub fn text_on(c: Hsla) -> Hsla {
     if luminance > 0.4 { gpui_kit::hsla(0., 0., 0., 0.9) } else { gpui_kit::white() }
 }
 
-/// Writes the accent and the translucent control colours into the global
-/// theme, on both the colours and the component tokens (some controls read
-/// the tokens). Runs after every theme change, since that resets them.
+/// Writes the palette and the theme colour into the global theme, on both the
+/// colours and the component tokens (some controls read the tokens). Runs
+/// after every theme change, since that resets them.
 pub fn apply(settings: &Settings, cx: &mut App) {
-    let translucent = super::layout::translucent();
     let theme = Theme::global_mut(cx);
     let dark = theme.is_dark();
     let c = color(settings.accent, dark);
@@ -78,10 +82,50 @@ pub fn apply(settings: &Settings, cx: &mut App) {
         caret = c,
         chart_1 = c,
     );
-    if translucent {
-        // Text boxes take fill and border from `input`: Fluent's control
-        // stroke, a faint line instead of a grey frame around a dark slab.
-        let stroke = if dark { gpui_kit::white().opacity(0.08) } else { gpui_kit::black().opacity(0.1) };
-        set!(input = stroke);
-    }
+
+    // Neutrals (Fluent): text, strokes, fills. Translucent fills and strokes
+    // read the same over a solid base and over a backdrop.
+    let (white, black) = (gpui_kit::white(), gpui_kit::black());
+    let base: Hsla = rgb(if dark { 0x202020 } else { 0xF3F3F3 }).into();
+    let text: Hsla = if dark { white } else { rgb(0x1A1A1A).into() };
+    let text_secondary = if dark { white.opacity(0.72) } else { black.opacity(0.6) };
+    let divider = if dark { white.opacity(0.084) } else { black.opacity(0.08) };
+    let control_stroke = if dark { white.opacity(0.08) } else { black.opacity(0.1) };
+    let (fill, hover, pressed) = if dark {
+        (white.opacity(0.061), white.opacity(0.084), white.opacity(0.033))
+    } else {
+        (white.opacity(0.7), white.opacity(0.5), white.opacity(0.3))
+    };
+    let subtle = if dark { white.opacity(0.06) } else { black.opacity(0.04) };
+    // Menus, dialogs and tooltips stay solid so they read over anything.
+    let flyout: Hsla = rgb(if dark { 0x2C2C2C } else { 0xF9F9F9 }).into();
+    set!(
+        background = base,
+        foreground = text,
+        muted_foreground = text_secondary,
+        border = divider,
+        sidebar = base,
+        sidebar_foreground = text,
+        sidebar_border = divider,
+        sidebar_accent = subtle,
+        sidebar_accent_foreground = text,
+        popover = flyout,
+        popover_foreground = text,
+        // Standard buttons and text boxes share the control fill and stroke.
+        input = control_stroke,
+        button = fill,
+        button_hover = hover,
+        button_active = pressed,
+        button_foreground = text,
+        secondary = fill,
+        secondary_hover = hover,
+        secondary_active = pressed,
+        secondary_foreground = text,
+        // Hover rows, badges, tracks, menu highlights: the subtle fill.
+        muted = subtle,
+        accent = subtle,
+        accent_foreground = text,
+        list_hover = subtle,
+        list_active = subtle,
+    );
 }

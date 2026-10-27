@@ -39,11 +39,19 @@ pub fn card(cx: &App) -> Div {
 /// border. A translucent one uses Fluent's card stroke: black at low opacity,
 /// which reads as a soft edge over any backdrop instead of a bright grey line.
 pub fn hairline(cx: &App) -> Hsla {
-    let t = cx.theme();
-    if !super::layout::translucent() {
-        return t.border;
+    gpui_kit::black().opacity(if cx.theme().is_dark() { 0.1 } else { 0.06 })
+}
+
+/// The raised content layer behind the pages, as in Windows 11: solid on an
+/// opaque window, a light veil over Mica (Transparency sets how light).
+pub fn layer(cx: &App) -> Hsla {
+    let dark = cx.theme().is_dark();
+    if super::layout::translucent() {
+        let a = super::layout::surface_alpha();
+        if dark { gpui_kit::Hsla::from(gpui_kit::rgb(0x3A3A3A)).opacity(a) } else { gpui_kit::white().opacity(a) }
+    } else {
+        gpui_kit::rgb(if dark { 0x272727 } else { 0xF9F9F9 }).into()
     }
-    gpui_kit::black().opacity(if t.is_dark() { 0.1 } else { 0.06 })
 }
 
 /// Page header with title, optional subtitle and right-aligned actions that
@@ -185,7 +193,7 @@ pub fn segmented<T: Copy + PartialEq + 'static, F: Fn(T, &mut Window, &mut App) 
                 .bottom(dp(pad))
                 .w(dp(seg_w))
                 .rounded(t.radius)
-                .bg(t.background)
+                .bg(t.primary)
                 .shadow_xs()
                 .with_spring(
                     ElementId::from(SharedString::from(format!("{id}-thumb"))),
@@ -213,7 +221,7 @@ pub fn segmented<T: Copy + PartialEq + 'static, F: Fn(T, &mut Window, &mut App) 
                         .text_sm()
                         .truncate()
                         .cursor_pointer()
-                        .when(selected, |d| d.font_weight(FontWeight::MEDIUM).text_color(t.foreground))
+                        .when(selected, |d| d.font_weight(FontWeight::MEDIUM).text_color(t.primary_foreground))
                         .when(!selected, |d| {
                             d.text_color(t.muted_foreground).hover(|d| d.text_color(t.foreground))
                         })
@@ -508,14 +516,10 @@ impl RenderOnce for Toggle {
 /// Fill for cards. On a translucent window it is a faint veil over the
 /// backdrop (light in light mode), so cards read as raised, as in Windows 11.
 pub fn surface(cx: &App) -> Hsla {
-    let t = cx.theme();
-    if super::layout::surface_alpha() < 1.0 {
-        let white = gpui_kit::white();
-        // Fluent's card fills over Mica/Acrylic.
-        if t.is_dark() { white.opacity(0.05) } else { white.opacity(0.7) }
-    } else {
-        t.background
-    }
+    // Fluent's card fill: a veil that reads the same on a solid layer and
+    // over a backdrop.
+    let white = gpui_kit::white();
+    if cx.theme().is_dark() { white.opacity(0.05) } else { white.opacity(0.7) }
 }
 
 /// Human readable rule target (`proxy` / `direct` / `reject` / group name).

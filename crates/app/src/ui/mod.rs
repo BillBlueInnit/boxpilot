@@ -102,6 +102,9 @@ fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
     window.set_background_appearance(if active { backdrop(settings) } else { WindowBackgroundAppearance::Opaque });
     // DWM paints its backdrops only in the frame; extend it over the window.
     crate::platform::set_mica_frame(window, active);
+    // Windows would swap the backdrop for a flat colour whenever the window
+    // is not focused; keep it as it is.
+    crate::platform::keep_backdrop_live(window, active);
     if active && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials {
         // Every material is a DWM system backdrop, tinted by Windows to match
         // light or dark mode (the dark-frame flag), so switching is clean.
@@ -665,11 +668,25 @@ impl Render for MainView {
         };
         let full_height = matches!(page, Page::Connections | Page::Logs);
         let (bg, fg, sidebar_bg) = (t.background, t.foreground, t.sidebar);
-        // A hairline like Windows 11's content layer, gone at high transparency.
         let sheet_edge = hairline(cx);
+        let layer_fill = layer(cx);
+        // Acrylic (and the single blur elsewhere) is drawn as one pane; Mica
+        // keeps Windows 11's content layer.
+        let glass = mica
+            && (self.last_look.1 == Backdrop::Acrylic
+                || crate::platform::translucency() == crate::platform::Translucency::Blur);
+        // Floors keep text readable: KWin's blur has no tint of its own, and a
+        // light pane over dark windows behind would otherwise turn grey.
+        let glass_alpha = if cfg!(target_os = "linux") {
+            layout::surface_alpha().max(0.6)
+        } else if !t.is_dark() {
+            layout::surface_alpha().max(0.5)
+        } else {
+            layout::surface_alpha()
+        };
 
         let m = layout::metrics(window);
-        let top_pad = if mica { 20.0 } else { 4.0 };
+        let top_pad = 20.0;
         // Each page mounts under its own id, so switching pages replays the
         // entrance spring; the scroll position of each page is kept.
         let body = if full_height {
@@ -709,23 +726,25 @@ impl Render for MainView {
                 .size_full()
                 .text_color(fg)
                 .when(!mica, |d| d.bg(sidebar_bg))
-                // KWin's blur has no tint of its own; keep the sidebar text readable.
-                .when(mica && cfg!(target_os = "linux"), |d| d.bg(sidebar_bg.opacity(0.65)))
+                // Acrylic and the macOS/KDE blur are one even pane: Transparency
+                // sets a single tint over the whole window (KWin's blur has no
+                // tint of its own, so it keeps a floor for readable text).
+                .when(glass, |d| d.bg(bg.opacity(glass_alpha)))
                 .child(self.render_sidebar(page, mica, m, window, cx))
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .when(!mica, |d| d.bg(bg))
                         .child(caption)
                         .child(
                             v_flex()
                                 .flex_1()
                                 .min_h_0()
-                                // With Mica the content sits on a raised sheet, as in Windows 11 apps.
-                                .when(mica, |d| {
-                                    d.bg(bg.opacity(layout::surface_alpha()))
+                                // The content sits on a raised layer, as in Windows 11
+                                // apps; on glass (Acrylic, macOS, KDE) it is one pane.
+                                .when(!glass, |d| {
+                                    d.bg(layer_fill)
                                         .border_l_1()
                                         .border_t_1()
                                         .border_color(sheet_edge)
