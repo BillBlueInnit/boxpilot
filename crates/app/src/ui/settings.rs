@@ -1,10 +1,9 @@
 use boxpilot_core::CoreDownloadState;
-use boxpilot_core::model::{Backdrop, GpuPreference, Language, Settings, ThemePref, TunStack, UpdateMode};
+use boxpilot_core::model::{Accent, Backdrop, GpuPreference, Language, Settings, ThemePref, TunStack, UpdateMode};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, Focusable as _, FontWeight, SharedString, Subscription, Window, div};
@@ -281,7 +280,7 @@ impl SettingsPage {
             .child(setting_row(
                 t!("set.prerelease"),
                 Some(t!("set.prerelease_desc")),
-                Switch::new("prerelease").checked(settings.core_prerelease).on_change(move |v, _, _| {
+                Toggle::new("prerelease").checked(settings.core_prerelease).on_change(move |v, _, _| {
                     let v = *v;
                     e3.update_settings(|s| s.core_prerelease = v)
                 }),
@@ -543,6 +542,57 @@ fn open_reset_dialog(window: &mut Window, cx: &mut App) {
     });
 }
 
+/// Theme colour picker: one swatch per accent, in the current mode's shade.
+fn accent_swatches(current: Accent, engine: &std::sync::Arc<boxpilot_core::Engine>, cx: &App) -> impl IntoElement {
+    let t = cx.theme();
+    let dark = t.is_dark();
+    let (ring, edge) = (t.foreground, t.border);
+    h_flex().gap_1().flex_wrap().children(Accent::ALL.iter().map(|a| {
+        let a = *a;
+        let e = engine.clone();
+        let label = accent_label(a);
+        let fill = super::accent::color(a, dark);
+        div()
+            .id(SharedString::from(format!("accent-{a:?}")))
+            .size(dp(28.))
+            .p(dp(3.))
+            .rounded_full()
+            .border_2()
+            .border_color(if a == current { ring } else { gpui_kit::transparent_black() })
+            .cursor_pointer()
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label).build(window, cx))
+            .on_click(move |_, _, _| e.update_settings(|s| s.accent = a))
+            .child(
+                div()
+                    .size_full()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(edge)
+                    .bg(fill)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    // System is marked so it reads as "follows the OS", not one more colour.
+                    .when(a == Accent::System, |d| {
+                        d.text_color(super::accent::text_on(fill)).child(gpui_kit::component::Icon::new(IconName::Settings).xsmall())
+                    }),
+            )
+    }))
+}
+
+fn accent_label(a: Accent) -> &'static str {
+    match a {
+        Accent::System => t!("accent.system"),
+        Accent::Blue => t!("accent.blue"),
+        Accent::Teal => t!("accent.teal"),
+        Accent::Green => t!("accent.green"),
+        Accent::Violet => t!("accent.violet"),
+        Accent::Pink => t!("accent.pink"),
+        Accent::Orange => t!("accent.orange"),
+        Accent::Graphite => t!("accent.graphite"),
+    }
+}
+
 fn switch_row(
     id: &'static str,
     title: &str,
@@ -556,7 +606,7 @@ fn switch_row(
     setting_row(
         title,
         Some(desc),
-        Switch::new(id).checked(checked).on_change(move |v, _, _| {
+        Toggle::new(id).checked(checked).on_change(move |v, _, _| {
             let v = *v;
             engine.update_settings(move |s| set(s, v))
         }),
@@ -609,13 +659,14 @@ impl Render for SettingsPage {
                     choice("theme", s.theme, theme_options, move |v, _, _| et.update_settings(|s| s.theme = v)),
                     cx,
                 ))
+                .child(setting_row(t!("set.accent"), Some(t!("set.accent_desc")), accent_swatches(s.accent, e, cx), cx))
                 .child(switch_row("login", t!("set.launch_login"), t!("set.launch_login_desc"), s.launch_at_login, e, |s, v| s.launch_at_login = v, cx))
                 // macOS / Linux grant TUN to the core binary from the TUN switch instead.
                 .when(cfg!(windows), |d| {
                     d.child(setting_row(
                         t!("set.run_admin"),
                         Some(t!("set.run_admin_desc")),
-                        Switch::new("run-admin").checked(s.run_as_admin).on_change(|v, _, cx| super::toggle_run_as_admin(*v, cx)),
+                        Toggle::new("run-admin").checked(s.run_as_admin).on_change(|v, _, cx| super::toggle_run_as_admin(*v, cx)),
                         cx,
                     ))
                 })
@@ -645,7 +696,7 @@ impl Render for SettingsPage {
                 .child(setting_row(
                     t!("set.tun_enable"),
                     Some(if engine.tun_permitted() { t!("set.tun_enable_desc") } else if cfg!(windows) { t!("set.tun_enable_desc_admin") } else { t!("set.tun_enable_desc_grant") }),
-                    Switch::new("tun2").checked(s.tun_enabled).on_change(|v, _, cx| super::toggle_tun(*v, cx)),
+                    Toggle::new("tun2").checked(s.tun_enabled).on_change(|v, _, cx| super::toggle_tun(*v, cx)),
                     cx,
                 ))
                 .child(setting_row(

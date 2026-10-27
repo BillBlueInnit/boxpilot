@@ -123,6 +123,28 @@ pub enum ThemePref {
     Dark,
 }
 
+/// Theme colour for buttons, switches, selections and focus.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Accent {
+    /// The accent chosen in the OS (Blue when it can't be read).
+    #[default]
+    System,
+    Blue,
+    Teal,
+    Green,
+    Violet,
+    Pink,
+    Orange,
+    /// Black and white.
+    Graphite,
+}
+
+impl Accent {
+    pub const ALL: [Accent; 8] =
+        [Self::System, Self::Blue, Self::Teal, Self::Green, Self::Violet, Self::Pink, Self::Orange, Self::Graphite];
+}
+
 /// Window material behind translucent surfaces (Windows 11).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
@@ -267,6 +289,7 @@ pub struct Settings {
     /// Closing to the tray destroys the window to free UI memory; the proxy keeps running.
     pub lightweight: bool,
     pub theme: ThemePref,
+    pub accent: Accent,
     /// Windows 11 Mica backdrop behind the sidebar.
     pub mica: bool,
     pub backdrop: Backdrop,
@@ -345,6 +368,7 @@ impl Default for Settings {
             close_to_tray: true,
             lightweight: true,
             theme: ThemePref::System,
+            accent: Accent::System,
             mica: true,
             backdrop: Backdrop::Mica,
             transparency: 60,

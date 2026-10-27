@@ -12,7 +12,6 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -193,7 +192,7 @@ impl RulesPage {
                             .gap_1()
                             .items_center()
                             .child(
-                                Switch::new(("rp-en", idx))
+                                Toggle::new(("rp-en", idx))
                                     .checked(p.enabled)
                                     .tooltip(t!("tip.enabled"))
                                     .on_change(move |v, _, _| e3.set_rule_provider_enabled(&id3, *v)),
@@ -253,7 +252,7 @@ fn switch_row(id: &'static str, title: &str, desc: &str, checked: bool, set: fn(
     setting_row(
         title,
         Some(desc),
-        Switch::new(id).checked(checked).on_change(move |v, _, _| {
+        Toggle::new(id).checked(checked).on_change(move |v, _, _| {
             let v = *v;
             engine.update_settings(move |s| set(s, v))
         }),

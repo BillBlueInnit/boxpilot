@@ -287,6 +287,18 @@ mod imp {
         Ok(())
     }
 
+    /// The Windows accent for light or dark mode (0xRRGGBB), from the palette
+    /// Windows builds around it: Light2 on dark, Dark1 on light, as WinUI does.
+    pub fn accent_color(dark: bool) -> Option<u32> {
+        let raw = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent")
+            .and_then(|k| k.get_raw_value("AccentPalette"))
+            .ok()?;
+        // Eight RGBA entries: Light3, Light2, Light1, Accent, Dark1, Dark2, Dark3, unused.
+        let c = raw.bytes.chunks_exact(4).nth(if dark { 1 } else { 4 })?;
+        Some(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]))
+    }
+
     /// Settings > Accessibility > Text size, as a factor (1.0 = 100 %).
     pub fn system_text_scale() -> f32 {
         RegKey::predef(HKEY_CURRENT_USER)
@@ -634,6 +646,61 @@ mod imp {
 
     pub fn windows_build() -> u32 {
         0
+    }
+
+    /// The OS accent for light or dark mode (0xRRGGBB): macOS's accent
+    /// colour, GNOME's accent-color, or KDE's AccentColor.
+    pub fn accent_color(dark: bool) -> Option<u32> {
+        #[cfg(target_os = "macos")]
+        {
+            // Apple's system colours, (light, dark). No key means Multicolor: blue.
+            let index = run("defaults", &["read", "-g", "AppleAccentColor"])
+                .ok()
+                .and_then(|v| v.trim().parse::<i32>().ok())
+                .unwrap_or(4);
+            let (light, dark_c) = match index {
+                -1 => (0x8E8E93, 0x98989D),
+                0 => (0xFF3B30, 0xFF453A),
+                1 => (0xFF9500, 0xFF9F0A),
+                2 => (0xFFCC00, 0xFFD60A),
+                3 => (0x34C759, 0x30D158),
+                5 => (0xAF52DE, 0xBF5AF2),
+                6 => (0xFF2D55, 0xFF375F),
+                _ => (0x007AFF, 0x0A84FF),
+            };
+            Some(if dark { dark_c } else { light })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = dark;
+            // GNOME 47+: one of libadwaita's named accents.
+            if let Ok(v) = run("gsettings", &["get", "org.gnome.desktop.interface", "accent-color"]) {
+                let c = match v.trim().trim_matches('\'') {
+                    "blue" => Some(0x3584E4),
+                    "teal" => Some(0x2190A4),
+                    "green" => Some(0x3A944A),
+                    "yellow" => Some(0xC88800),
+                    "orange" => Some(0xED5B00),
+                    "red" => Some(0xE62D42),
+                    "pink" => Some(0xD56199),
+                    "purple" => Some(0x9141AC),
+                    "slate" => Some(0x6F8396),
+                    _ => None,
+                };
+                if c.is_some() {
+                    return c;
+                }
+            }
+            // KDE: [General] AccentColor=r,g,b in kdeglobals.
+            let home = std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+            let text = std::fs::read_to_string(home.join("kdeglobals")).ok()?;
+            let value = text.lines().find_map(|l| l.trim().strip_prefix("AccentColor="))?;
+            let mut parts = value.split(',').map(|p| p.trim().parse::<u32>().ok());
+            let (r, g, b) = (parts.next()??, parts.next()??, parts.next()??);
+            Some((r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF))
+        }
     }
 
     /// GNOME's "Large text" / text-scaling-factor; macOS has no global setting.

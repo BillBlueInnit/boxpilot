@@ -3,7 +3,6 @@ use boxpilot_core::model::ProxyMode;
 use boxpilot_core::{CoreDownloadState, CoreStatus};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
@@ -324,7 +323,7 @@ impl DashboardPage {
             .child(setting_row(
                 t!("quick.sysproxy"),
                 Some(t!("quick.sysproxy_desc")),
-                Switch::new("sysproxy").checked(s.system_proxy).on_change(move |v, _, _| {
+                Toggle::new("sysproxy").checked(s.system_proxy).on_change(move |v, _, _| {
                     let v = *v;
                     e2.update_settings(|s| s.system_proxy = v)
                 }),
@@ -334,14 +333,14 @@ impl DashboardPage {
             .child(setting_row(
                 t!("quick.tun"),
                 Some(if tun_ok { t!("quick.tun_desc") } else if cfg!(windows) { t!("quick.tun_desc_admin") } else { t!("quick.tun_desc_grant") }),
-                Switch::new("tun").checked(s.tun_enabled).on_change(|v, _, cx| super::toggle_tun(*v, cx)),
+                Toggle::new("tun").checked(s.tun_enabled).on_change(|v, _, cx| super::toggle_tun(*v, cx)),
                 cx,
             ))
             .child(divider(cx))
             .child(setting_row(
                 t!("quick.lan"),
                 Some(t!("quick.lan_desc")),
-                Switch::new("lan").checked(s.allow_lan).on_change(move |v, _, _| {
+                Toggle::new("lan").checked(s.allow_lan).on_change(move |v, _, _| {
                     let v = *v;
                     e3.update_settings(|s| s.allow_lan = v)
                 }),

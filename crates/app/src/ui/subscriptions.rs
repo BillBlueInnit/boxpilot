@@ -7,7 +7,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -139,7 +138,7 @@ impl SubscriptionsPage {
                             .items_center()
                             .flex_none()
                             .child(
-                                Switch::new(SharedString::from(format!("en-{idx}")))
+                                Toggle::new(SharedString::from(format!("en-{idx}")))
                                     .checked(sub.enabled)
                                     .tooltip(t!("tip.enabled"))
                                     .on_change(move |v, _, _| e_toggle.set_subscription_enabled(&id1, *v)),
@@ -601,7 +600,7 @@ impl Render for SubEditor {
                 .child(setting_row(
                     t!("editor.auto_update"),
                     Some(t!("editor.auto_update_desc")),
-                    Switch::new("auto-update").checked(self.auto_update).on_change(move |v, _, cx| {
+                    Toggle::new("auto-update").checked(self.auto_update).on_change(move |v, _, cx| {
                         let v = *v;
                         let _ = w2.update(cx, |s, cx| {
                             s.auto_update = v;
@@ -613,7 +612,7 @@ impl Render for SubEditor {
                 .child(setting_row(
                     t!("editor.update_start"),
                     Some(t!("editor.update_start_desc")),
-                    Switch::new("update-start").checked(self.update_on_start).on_change(move |v, _, cx| {
+                    Toggle::new("update-start").checked(self.update_on_start).on_change(move |v, _, cx| {
                         let v = *v;
                         let _ = w3.update(cx, |s, cx| {
                             s.update_on_start = v;

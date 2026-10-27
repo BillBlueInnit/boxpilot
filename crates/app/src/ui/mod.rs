@@ -1,3 +1,4 @@
+mod accent;
 pub mod anim;
 pub mod layout;
 pub mod assets;
@@ -55,6 +56,8 @@ pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
         },
     }
     let settings = AppState::engine(cx).settings();
+    // Theme changes reset the colours; put the accent back on top.
+    accent::apply(&settings, cx);
     layout::apply_scale(&settings, cx);
 }
 
@@ -380,6 +383,7 @@ pub struct MainView {
     /// One scroll position per page, kept while switching pages.
     scroll: Vec<ScrollHandle>,
     last_theme: ThemePref,
+    last_accent: boxpilot_core::model::Accent,
     /// Translucency, material and transparency last applied to the window.
     last_look: (bool, Backdrop, u32),
     last_page: Page,
@@ -394,8 +398,9 @@ impl MainView {
         let subs = vec![
             cx.observe_in(&state, window, |this: &mut Self, state, window, cx| {
                 let settings = state.read(cx).engine.settings();
-                if settings.theme != this.last_theme {
+                if settings.theme != this.last_theme || settings.accent != this.last_accent {
                     this.last_theme = settings.theme;
+                    this.last_accent = settings.accent;
                     apply_theme(Some(window), cx);
                 }
                 if layout::apply_scale(&settings, cx) {
@@ -405,6 +410,8 @@ impl MainView {
                 if look != this.last_look {
                     this.last_look = look;
                     apply_backdrop(&settings, cx.theme().is_dark(), window);
+                    // Text boxes are restyled for (or back from) a translucent window.
+                    accent::apply(&settings, cx);
                     window.refresh();
                 }
                 cx.notify();
@@ -436,6 +443,7 @@ impl MainView {
             scroll: Page::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             state,
             last_theme: settings.theme,
+            last_accent: settings.accent,
             last_look: (mica_active(&settings), settings.backdrop, settings.transparency),
             last_page: Page::Dashboard,
             moving_down: true,

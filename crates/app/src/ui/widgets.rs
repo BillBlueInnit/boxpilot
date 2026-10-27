@@ -385,6 +385,126 @@ fn strip_flags(name: &str) -> String {
     if cleaned.is_empty() { name.to_string() } else { cleaned }
 }
 
+/// How switches look here: each platform draws its own.
+#[derive(Clone, Copy, PartialEq)]
+enum ToggleLook {
+    /// Windows 11 toggle: outlined ring when off, accent fill when on.
+    Fluent,
+    /// macOS switch: grey or accent track, white knob.
+    Apple,
+    /// GNOME / KDE switch: like macOS, a little wider.
+    Adwaita,
+}
+
+fn toggle_look() -> ToggleLook {
+    if cfg!(windows) {
+        ToggleLook::Fluent
+    } else if cfg!(target_os = "macos") {
+        ToggleLook::Apple
+    } else {
+        ToggleLook::Adwaita
+    }
+}
+
+fn mix(a: Hsla, b: Hsla, p: f32) -> Hsla {
+    let (a, b) = (a.to_rgb(), b.to_rgb());
+    let l = |x: f32, y: f32| x + (y - x) * p;
+    gpui_kit::Rgba { r: l(a.r, b.r), g: l(a.g, b.g), b: l(a.b, b.b), a: l(a.a, b.a) }.into()
+}
+
+/// A switch in the platform's own style. Focus, Space/Enter and the
+/// accessibility role come from gpui-base's headless switch; only the
+/// drawing is ours, eased between states on a spring.
+#[derive(IntoElement)]
+pub struct Toggle {
+    id: ElementId,
+    checked: bool,
+    tooltip: Option<SharedString>,
+    on_change: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
+}
+
+impl Toggle {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self { id: id.into(), checked: false, tooltip: None, on_change: None }
+    }
+
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self
+    }
+
+    pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+
+    pub fn on_change(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_change = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for Toggle {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let t = cx.theme();
+        let dark = t.is_dark();
+        let (accent, on_accent, ring) = (t.primary, t.primary_foreground, t.ring);
+        let look = toggle_look();
+        let checked = self.checked;
+        let (white, black, clear) = (gpui_kit::white(), gpui_kit::black(), gpui_kit::transparent_black());
+        // Track size and the knob's diameter off / on, in dp.
+        let (w, h, knob_off, knob_on) = match look {
+            ToggleLook::Fluent => (40.0, 20.0, 12.0, 14.0),
+            ToggleLook::Apple => (38.0, 22.0, 18.0, 18.0),
+            ToggleLook::Adwaita => (42.0, 24.0, 20.0, 20.0),
+        };
+        let (off_fill, off_stroke, off_knob, on_knob) = match look {
+            // Fluent: ControlAltFillSecondary, ControlStrongStroke, TextFillSecondary, TextOnAccent.
+            ToggleLook::Fluent => (
+                if dark { black.opacity(0.1) } else { black.opacity(0.024) },
+                if dark { white.opacity(0.54) } else { black.opacity(0.45) },
+                if dark { white.opacity(0.79) } else { black.opacity(0.61) },
+                on_accent,
+            ),
+            _ => (if dark { white.opacity(0.18) } else { black.opacity(0.12) }, clear, white, white),
+        };
+        let focus = window.use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle()).read(cx).clone();
+        let focused = focus.is_focused(window);
+        let child_id = |name: &'static str| ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), name.into());
+        let on_change = self.on_change.clone();
+        let tooltip = self.tooltip.clone();
+
+        let knob = div().absolute().rounded_full().when(look != ToggleLook::Fluent, |d| d.shadow_sm()).with_spring(
+            child_id("knob"),
+            SpringAnimation::new(anim::SNAPPY).to(checked),
+            move |d, p| {
+                let p = p.0.clamp(0.0, 1.0);
+                let size = knob_off + (knob_on - knob_off) * p;
+                let left = (h - knob_off) / 2.0 + (w - (h - knob_on) / 2.0 - knob_on - (h - knob_off) / 2.0) * p;
+                d.size(dp(size)).left(dp(left - 1.0)).top(dp((h - size) / 2.0 - 1.0)).bg(mix(off_knob, on_knob, p))
+            },
+        );
+        let track = div().relative().flex_none().w(dp(w)).h(dp(h)).rounded_full().border_1().child(knob).with_spring(
+            child_id("track"),
+            SpringAnimation::new(anim::SNAPPY).to(checked),
+            move |d, p| {
+                let p = p.0.clamp(0.0, 1.0);
+                d.bg(mix(off_fill, accent, p)).border_color(if focused { ring } else { mix(off_stroke, accent, p) })
+            },
+        );
+        gpui_kit::base::Switch::new(self.id.clone())
+            .checked(checked)
+            .track_focus(&focus)
+            .when_some(tooltip.clone(), |s, label| s.accessibility_label(label))
+            .when_some(on_change, |s, f| s.on_change(move |next, _, window, cx| f(&next, window, cx)))
+            .cursor_pointer()
+            .child(track)
+            .when_some(tooltip, |s, text| {
+                s.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx))
+            })
+    }
+}
+
 /// Fill for cards. On a translucent window it is a faint veil over the
 /// backdrop (light in light mode), so cards read as raised, as in Windows 11.
 pub fn surface(cx: &App) -> Hsla {
