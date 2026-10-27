@@ -1,3 +1,4 @@
+use boxpilot_core::geo::{Country, Origin};
 use boxpilot_core::{ProxyGroup, ProxyMember};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -81,6 +82,7 @@ impl ProxiesPage {
         let selected = member.name == group.now;
         let testing = engine.is_testing(&member.name);
         let delay = engine.delay(&member.name);
+        let country = (!member.is_group).then(|| engine.country(&member.name)).flatten();
         let subtitle = if member.is_group {
             groups
                 .iter()
@@ -120,6 +122,9 @@ impl ProxiesPage {
                         h_flex()
                             .gap_2()
                             .items_center()
+                            .when_some(country, |d, c| {
+                                d.child(country_badge(&c, SharedString::from(format!("cc-{}-{idx}", group.name)), cx))
+                            })
                             .child(
                                 div()
                                     .flex_1()
@@ -176,6 +181,30 @@ impl ProxiesPage {
                 },
             )
     }
+}
+
+/// A two-letter country code; hovering tells where it came from.
+fn country_badge(c: &Country, id: SharedString, cx: &App) -> impl IntoElement {
+    let t = cx.theme();
+    let tip: SharedString = match &c.origin {
+        Origin::Name => t!("geo.from_name").into(),
+        Origin::Ip(ip) => t!("geo.from_ip", ip).into(),
+        Origin::Exit(ip) => t!("geo.from_exit", ip).into(),
+    };
+    div()
+        .id(id)
+        .flex_none()
+        .px_1()
+        .rounded(dp(4.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.muted)
+        .text_xs()
+        .font_family(t.mono_font_family.clone())
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(t.muted_foreground)
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+        .child(c.code.clone())
 }
 
 /// Colour interpolation on an animation phase.
@@ -235,7 +264,11 @@ impl Render for ProxiesPage {
             .iter()
             .cloned()
             .enumerate()
-            .filter(|(_, m)| filter.is_empty() || m.name.to_lowercase().contains(&filter))
+            .filter(|(_, m)| {
+                filter.is_empty()
+                    || m.name.to_lowercase().contains(&filter)
+                    || engine.country(&m.name).is_some_and(|c| c.code.eq_ignore_ascii_case(&filter))
+            })
             .collect();
         let testable: Vec<String> = group
             .members

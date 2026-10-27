@@ -3,7 +3,8 @@
 //! through [`Event`]s.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +21,7 @@ use crate::config::{BuildInput, BuiltConfig, CoreVersion, NodeGroup, RuleSetSpec
 use crate::convert::{filter_nodes, parse_subscription};
 use crate::core_download::{self, Release};
 use crate::fetch::{self, Route};
+use crate::geo;
 use crate::model::*;
 use crate::process::{self, LogLevel, LogLine};
 use crate::store::{APP_NAME, Paths, Store};
@@ -168,6 +170,10 @@ struct State {
     last_error: Option<Arc<str>>,
     traffic: Traffic,
     providers: Vec<RuleProvider>,
+    /// Country of each proxy outbound, by tag.
+    countries: HashMap<String, geo::Country>,
+    /// Exit checks are slow-ish; each node's answer is reused for a while.
+    exit_checked: HashMap<String, (geo::Country, Instant)>,
 }
 
 pub struct Engine {
@@ -182,6 +188,8 @@ pub struct Engine {
     #[allow(dead_code)]
     job: Option<sys::KillOnCloseJob>,
     wake_scheduler: Notify,
+    /// One country refresh at a time.
+    geo_lock: tokio::sync::Mutex<()>,
 }
 
 impl Engine {
@@ -195,6 +203,13 @@ impl Engine {
         if settings.clash_api_secret.is_empty() {
             settings.clash_api_secret = random_secret();
             store.save_settings(&settings)?;
+        }
+        if settings.probe_port == 0 {
+            // Any free port, kept from then on so the config stays stable.
+            if let Ok(port) = std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map(|a| a.port()) {
+                settings.probe_port = port;
+                store.save_settings(&settings)?;
+            }
         }
         let subs = store.load_subscriptions();
         let nodes = subs
@@ -224,9 +239,12 @@ impl Engine {
                 last_error: None,
                 traffic: Traffic::default(),
                 providers,
+                countries: HashMap::new(),
+                exit_checked: HashMap::new(),
             }),
             tx,
             proc: tokio::sync::Mutex::new(None),
+            geo_lock: tokio::sync::Mutex::new(()),
             generation: AtomicU64::new(0),
             active: AtomicU64::new(0),
             job: sys::KillOnCloseJob::new(),
@@ -476,6 +494,10 @@ impl Engine {
             {
                 let _ = this.start_async().await;
             }
+            if !this.status().is_running() {
+                // Otherwise the core start already did it.
+                this.refresh_countries();
+            }
             this.scheduler().await;
         });
     }
@@ -656,6 +678,8 @@ impl Engine {
         self.spawn_traffic(generation);
         self.spawn_rule_set_maintenance(generation, built.rule_sets, !built.missing_rule_sets.is_empty());
         let _ = self.refresh_proxies_async().await;
+        // Exit checks go through the core, so they run once it is up.
+        self.refresh_countries();
         Ok(())
     }
 
@@ -865,7 +889,7 @@ impl Engine {
         {
             let tag = ob["tag"].as_str().unwrap_or_default().to_string();
             let ty = ob["type"].as_str().unwrap_or_default().to_string();
-            if ty == "selector" || ty == "urltest" {
+            if (ty == "selector" || ty == "urltest") && tag != crate::config::TAG_PROBE {
                 meta.groups.push(tag.clone());
             }
             meta.types.insert(tag, ty);
@@ -1164,8 +1188,12 @@ impl Engine {
 
     async fn after_nodes_changed(self: &Arc<Self>) {
         if self.status().is_running() {
+            // The restart refreshes countries once the core is back.
             let _ = self.restart_async().await;
-        } else if self.settings().auto_start_core
+            return;
+        }
+        self.refresh_countries();
+        if self.settings().auto_start_core
             && self.total_nodes() > 0
             && self.core_installed()
             && matches!(self.status(), CoreStatus::Stopped)
@@ -1572,11 +1600,20 @@ impl Engine {
 
     /// Downloads a URL through the proxy when running, falling back to direct.
     async fn download(&self, url: &str) -> Result<Vec<u8>> {
-        let routes = if self.status().is_running() {
+        self.download_with(url, Duration::from_secs(30)).await
+    }
+
+    /// Proxy first while the core runs, then direct.
+    fn routes(&self) -> Vec<Route> {
+        if self.status().is_running() {
             vec![Route::Proxy(self.mixed_proxy_url()), Route::Direct]
         } else {
             vec![Route::Direct]
-        };
+        }
+    }
+
+    async fn download_with(&self, url: &str, timeout: Duration) -> Result<Vec<u8>> {
+        let routes = self.routes();
         let mirror = self.settings().github_mirror.trim().to_string();
         let url = if !mirror.is_empty()
             && (url.starts_with("https://raw.githubusercontent.com/") || url.starts_with("https://github.com/"))
@@ -1587,13 +1624,164 @@ impl Engine {
         };
         let mut last = anyhow!("no route");
         for route in &routes {
-            let client = fetch::client(route, Duration::from_secs(30), "BoxPilot")?;
+            let client = fetch::client(route, timeout, "BoxPilot")?;
             match client.get(&url).send().await.and_then(|r| r.error_for_status()) {
                 Ok(resp) => return Ok(resp.bytes().await?.to_vec()),
                 Err(e) => last = e.into(),
             }
         }
         Err(last)
+    }
+
+    // -------------------------------------------------------------- countries
+
+    /// Where a proxy (by outbound tag) is, when known.
+    pub fn country(&self, tag: &str) -> Option<geo::Country> {
+        self.with(|s| s.countries.get(tag).cloned())
+    }
+
+    fn geoip_file(&self) -> PathBuf {
+        self.store.paths.root.join("geoip").join("country.mmdb")
+    }
+
+    /// Works out every node's country: hints in the name right away, then a
+    /// GeoIP lookup of the server address for the rest.
+    pub fn refresh_countries(self: &Arc<Self>) {
+        let this = self.clone();
+        self.rt.spawn(async move { this.refresh_countries_async().await });
+    }
+
+    async fn refresh_countries_async(self: &Arc<Self>) {
+        let _one_at_a_time = self.geo_lock.lock().await;
+        let mut named = HashMap::new();
+        let mut pending = Vec::new();
+        for (tag, host) in geo::servers(&self.current_config_json()) {
+            match geo::from_name(&tag) {
+                Some(code) => {
+                    named.insert(tag, geo::Country { code: code.to_string(), origin: geo::Origin::Name });
+                }
+                None => pending.push((tag, host)),
+            }
+        }
+        // Earlier GeoIP answers stay visible while new ones load.
+        self.with(|s| {
+            let old = std::mem::replace(&mut s.countries, named);
+            for (tag, _) in &pending {
+                if let Some(c) = old.get(tag) {
+                    s.countries.insert(tag.clone(), c.clone());
+                }
+            }
+        });
+        self.emit(Event::Proxies);
+        if pending.is_empty() {
+            return;
+        }
+
+        let db = self.geoip_file();
+        if let Err(e) = self.ensure_geoip_db(&db).await {
+            self.log_app(LogLevel::Warn, format!("GeoIP database unavailable: {e:#}"));
+            return;
+        }
+        let routes = self.routes();
+        let hosts: HashSet<String> = pending.iter().map(|(_, h)| h.clone()).collect();
+        let resolved: HashMap<String, IpAddr> = futures_util::stream::iter(hosts)
+            .map(|host| {
+                let routes = routes.clone();
+                async move {
+                    let ip = geo::resolve(&host, &routes).await;
+                    (host, ip)
+                }
+            })
+            .buffer_unordered(8)
+            .filter_map(|(host, ip)| async move { ip.map(|ip| (host, ip)) })
+            .collect()
+            .await;
+        let ips: Vec<IpAddr> = resolved.values().copied().collect::<HashSet<_>>().into_iter().collect();
+        let codes = match tokio::task::spawn_blocking(move || geo::lookup(&db, &ips)).await {
+            Ok(Ok(codes)) => codes,
+            Ok(Err(e)) => {
+                self.log_app(LogLevel::Warn, format!("GeoIP lookup failed: {e:#}"));
+                return;
+            }
+            Err(_) => return,
+        };
+        // Nodes whose server address can't place them get an exit check instead.
+        let unsure: Vec<String> = self.with(|s| {
+            let mut unsure = Vec::new();
+            for (tag, host) in &pending {
+                let ip = resolved.get(host);
+                match (ip, ip.and_then(|ip| codes.get(ip))) {
+                    (Some(ip), Some(code)) if !geo::needs_exit_check(ip) => {
+                        s.countries.insert(tag.clone(), geo::Country { code: code.clone(), origin: geo::Origin::Ip(*ip) });
+                    }
+                    _ => unsure.push(tag.clone()),
+                }
+            }
+            unsure
+        });
+        self.emit(Event::Proxies);
+        self.check_exits(unsure).await;
+    }
+
+    /// Asks an IP service through each node (via the hidden probe selector)
+    /// where its traffic leaves. Needs the core running; answers are reused for 6 h.
+    async fn check_exits(self: &Arc<Self>, tags: Vec<String>) {
+        const REUSE: Duration = Duration::from_secs(6 * 3600);
+        let port = self.with(|s| s.settings.probe_port);
+        if tags.is_empty() || port == 0 || !self.status().is_running() {
+            return;
+        }
+        let probe_url = format!("http://127.0.0.1:{port}");
+        let api = self.api();
+        for tag in tags {
+            let cached = self.with(|s| s.exit_checked.get(&tag).filter(|(_, at)| at.elapsed() < REUSE).map(|(c, _)| c.clone()));
+            let country = match cached {
+                Some(c) => Some(c),
+                None => {
+                    if !self.status().is_running() {
+                        return;
+                    }
+                    if api.select(crate::config::TAG_PROBE, &tag).await.is_err() {
+                        continue;
+                    }
+                    geo::exit_country(&probe_url).await.map(|(ip, code)| geo::Country { code, origin: geo::Origin::Exit(ip) })
+                }
+            };
+            if let Some(c) = country {
+                self.with(|s| {
+                    s.exit_checked.insert(tag.clone(), (c.clone(), Instant::now()));
+                    s.countries.insert(tag, c);
+                });
+                self.emit(Event::Proxies);
+            }
+        }
+    }
+
+    /// Downloads the GeoIP database when missing or older than 30 days; a
+    /// stale copy is still used when the download fails.
+    async fn ensure_geoip_db(&self, path: &Path) -> Result<()> {
+        let age = std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+        if age.is_some_and(|a| a < Duration::from_secs(30 * 86400)) {
+            return Ok(());
+        }
+        let mut last = anyhow!("no source");
+        for url in geo::DB_URLS {
+            match self.download_with(url, Duration::from_secs(300)).await {
+                Ok(bytes) if geo::is_database(&bytes) => {
+                    if let Some(dir) = path.parent() {
+                        std::fs::create_dir_all(dir)?;
+                    }
+                    let tmp = path.with_extension("tmp");
+                    std::fs::write(&tmp, &bytes)?;
+                    std::fs::rename(&tmp, path)?;
+                    self.log_app(LogLevel::Info, "GeoIP database updated");
+                    return Ok(());
+                }
+                Ok(_) => last = anyhow!("{url}: not a GeoIP database"),
+                Err(e) => last = e.context(url.to_string()),
+            }
+        }
+        if age.is_some() { Ok(()) } else { Err(last) }
     }
 
     async fn fetch_provider(&self, p: &RuleProvider) -> Result<rules::Converted> {

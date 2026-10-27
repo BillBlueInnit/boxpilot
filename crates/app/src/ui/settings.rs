@@ -546,13 +546,31 @@ impl Render for SettingsPage {
                 .into_any_element(),
         ];
 
+        let sections: Vec<gpui_kit::AnyElement> = sections
+            .into_iter()
+            .enumerate()
+            .map(|(i, el)| anim::enter(div().child(el), ("settings-section", i), anim::stagger(i) * 0.6).into_any_element())
+            .collect();
+        // Wide windows get two columns instead of a narrow strip with empty space beside it.
+        let body = if m.content >= 1180.0 {
+            let (mut left, mut right) = (Vec::new(), Vec::new());
+            for (i, el) in sections.into_iter().enumerate() {
+                if i % 2 == 0 { left.push(el) } else { right.push(el) }
+            }
+            h_flex()
+                .items_start()
+                .gap_4()
+                .child(v_flex().flex_1().min_w_0().gap_4().children(left))
+                .child(v_flex().flex_1().min_w_0().gap_4().children(right))
+                .into_any_element()
+        } else {
+            v_flex().gap_4().children(sections).into_any_element()
+        };
+
         page(t!("nav.settings"), Some(t!("settings.subtitle").into()), vec![], cx).child(
             v_flex()
                 .gap_4()
-                .max_w(dp(880.))
-                .children(sections.into_iter().enumerate().map(|(i, el)| {
-                    anim::enter(div().child(el), ("settings-section", i), anim::stagger(i) * 0.6)
-                }))
+                .child(body)
                 .child(
                     div()
                         .text_xs()

@@ -10,7 +10,11 @@ use crate::rules::{RuleFormat, RuleProvider};
 pub const TAG_PROXY: &str = "Proxy";
 pub const TAG_AUTO: &str = "Auto";
 pub const TAG_DIRECT: &str = "direct";
-const RESERVED: &[&str] = &[TAG_PROXY, TAG_AUTO, TAG_DIRECT, "GLOBAL", "REJECT", "DIRECT"];
+/// Hidden selector behind the probe inbound: the exit-location check points it
+/// at one node at a time without touching the user's selection.
+pub const TAG_PROBE: &str = "BoxPilot-probe";
+const PROBE_INBOUND: &str = "probe-in";
+const RESERVED: &[&str] = &[TAG_PROXY, TAG_AUTO, TAG_DIRECT, TAG_PROBE, "GLOBAL", "REJECT", "DIRECT"];
 
 /// sing-box version, used to emit options the running core understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -213,6 +217,15 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
             "interrupt_exist_connections": true,
         }));
     }
+    let probe = !all_tags.is_empty() && s.probe_port != 0;
+    if probe {
+        head.push(json!({
+            "type": "selector",
+            "tag": TAG_PROBE,
+            "outbounds": all_tags,
+            "interrupt_exist_connections": false,
+        }));
+    }
     head.extend(group_outbounds);
     head.extend(outbounds);
     head.push(json!({ "type": "direct", "tag": TAG_DIRECT }));
@@ -239,7 +252,13 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
         }
     }
 
-    let route = build_route(s, &mut rule_sets, custom);
+    let mut route = build_route(s, &mut rule_sets, custom);
+    if probe {
+        // Ahead of the mode and private-IP rules, so it always reaches the chosen node.
+        if let Some(rules) = route["rules"].as_array_mut() {
+            rules.insert(0, json!({ "inbound": [PROBE_INBOUND], "outbound": TAG_PROBE }));
+        }
+    }
     let dns = build_dns(s, &mut rule_sets);
 
     let mut config = Map::new();
@@ -248,12 +267,20 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
         json!({ "level": s.log_level, "timestamp": true }),
     );
     config.insert("dns".into(), dns);
-    config.insert("inbounds".into(), json!(build_inbounds(s)));
+    let mut inbounds = build_inbounds(s);
+    if probe {
+        inbounds.push(json!({
+            "type": "mixed",
+            "tag": PROBE_INBOUND,
+            "listen": "127.0.0.1",
+            "listen_port": s.probe_port,
+        }));
+    }
+    config.insert("inbounds".into(), json!(inbounds));
     if !endpoints.is_empty() {
         config.insert("endpoints".into(), json!(endpoints));
     }
     config.insert("outbounds".into(), json!(head));
-    let mut route = route;
     let uses_remote = rule_sets.has_remote();
     let (sets, wanted, missing) = rule_sets.finish();
     route["rule_set"] = json!(sets);

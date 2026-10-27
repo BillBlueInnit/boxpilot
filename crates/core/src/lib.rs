@@ -7,6 +7,7 @@ pub mod convert;
 pub mod core_download;
 pub mod engine;
 pub mod fetch;
+pub mod geo;
 pub mod model;
 pub mod process;
 pub mod rules;

@@ -180,6 +180,8 @@ pub struct Settings {
     /// Keep core log lines in memory for the Logs page.
     pub record_logs: bool,
     pub clash_api_port: u16,
+    /// Local port the exit-location check goes through; picked on first run.
+    pub probe_port: u16,
     pub clash_api_secret: String,
     pub urltest_url: String,
     pub urltest_interval_min: u32,
@@ -254,6 +256,7 @@ impl Default for Settings {
             log_level: "info".into(),
             record_logs: true,
             clash_api_port: 9090,
+            probe_port: 0,
             clash_api_secret: String::new(),
             urltest_url: "https://www.gstatic.com/generate_204".into(),
             urltest_interval_min: 10,

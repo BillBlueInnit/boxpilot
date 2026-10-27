@@ -183,6 +183,14 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("tip.move_down", ["Move down", "下移", "下移", "Ниже"]),
     ("tip.paste", ["Add from a link or content on the clipboard", "从剪贴板中的链接或内容添加", "從剪貼簿中的連結或內容新增", "Добавить ссылку или текст из буфера обмена"]),
     ("tip.clear", ["Clear", "清空", "清除", "Очистить"]),
+    ("geo.from_name", ["Location from the node name", "位置来自节点名称", "位置來自節點名稱", "Расположение по названию узла"]),
+    ("geo.from_exit", [
+        "Exit IP {0}, checked through this node",
+        "出口 IP {0}（通过该节点检测）",
+        "出口 IP {0}（透過該節點檢測）",
+        "Выходной IP {0}, проверен через этот узел",
+    ]),
+    ("geo.from_ip", ["Location of server IP {0}", "服务器 IP {0} 的位置", "伺服器 IP {0} 的位置", "Расположение IP сервера {0}"]),
     ("tip.record", [
         "Keep new log lines in memory. Turn off to save memory; the setting is remembered.",
         "在内存中保留新的日志。关闭可节省内存，设置会被记住。",

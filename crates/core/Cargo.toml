@@ -21,6 +21,7 @@ rand = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
+maxminddb = "0.26"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
