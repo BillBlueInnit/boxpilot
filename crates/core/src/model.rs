@@ -150,9 +150,9 @@ impl Accent {
 #[serde(rename_all = "snake_case")]
 pub enum Backdrop {
     /// Tinted by the desktop wallpaper.
-    #[default]
     Mica,
-    /// Mica with a stronger wallpaper tint.
+    /// Mica with a stronger wallpaper tint (the default: more colour shows).
+    #[default]
     MicaAlt,
     /// Blurs whatever is behind the window.
     Acrylic,
@@ -370,8 +370,8 @@ impl Default for Settings {
             theme: ThemePref::System,
             accent: Accent::System,
             mica: true,
-            backdrop: Backdrop::Mica,
-            transparency: 60,
+            backdrop: Backdrop::MicaAlt,
+            transparency: 80,
             gpu: GpuPreference::Auto,
             update_mode: UpdateMode::Notify,
             last_update_check: 0,

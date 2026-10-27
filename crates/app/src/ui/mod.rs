@@ -210,6 +210,15 @@ fn enter_lightweight(cx: &mut App) {
     .detach();
 }
 
+/// The app icon as an image, drawn from the same shape as the .exe icon.
+fn app_icon() -> std::sync::Arc<gpui_kit::Image> {
+    static ICON: std::sync::OnceLock<std::sync::Arc<gpui_kit::Image>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        std::sync::Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, crate::icon_art::SVG.as_bytes().to_vec()))
+    })
+    .clone()
+}
+
 /// Starts a fresh instance and exits (used to apply start-up settings).
 pub fn restart_app(cx: &mut App) {
     remember_window(cx);
@@ -599,18 +608,8 @@ impl MainView {
                             .pb_4()
                             .gap_2p5()
                             .items_center()
-                            .child(
-                                div()
-                                    .size(dp(30.))
-                                    .flex_none()
-                                    .rounded(dp(8.))
-                                    .bg(t.primary)
-                                    .text_color(t.primary_foreground)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(extra_icon(Lucide::Waypoints).size(dp(16.))),
-                            )
+                            // The app icon itself, as on the taskbar and the .exe.
+                            .child(gpui_kit::img(app_icon()).size(dp(30.)).flex_none())
                             .when(!compact, |d| d.child(
                                 v_flex()
                                     .min_w_0()

@@ -1,6 +1,18 @@
 // Procedurally drawn application icon, shared by build.rs (exe icon) and the
 // tray. Kept dependency-free so it can be `include!`d from the build script.
 
+/// The same icon as SVG for the window (rounded square inset 4 %, radius 23 %,
+/// diagonal blue-to-violet gradient, white paper plane). Keep the geometry in
+/// step with `render_icon`.
+pub const SVG: &str = concat!(
+    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">"##,
+    r##"<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">"##,
+    r##"<stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>"##,
+    r##"<rect x="2.56" y="2.56" width="58.88" height="58.88" rx="14.72" fill="url(#g)"/>"##,
+    r##"<polygon points="12.8,32 51.2,14.08 37.12,51.2 29.44,36.48" fill="#ffffff"/>"##,
+    r##"</svg>"##,
+);
+
 /// Renders the icon as straight RGBA. `active` selects the colored variant;
 /// the inactive one is grey, used by the tray while the core is stopped.
 pub fn render_icon(size: u32, active: bool) -> Vec<u8> {

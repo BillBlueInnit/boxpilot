@@ -47,8 +47,10 @@ pub fn hairline(cx: &App) -> Hsla {
 pub fn layer(cx: &App) -> Hsla {
     let dark = cx.theme().is_dark();
     if super::layout::translucent() {
-        let a = super::layout::surface_alpha();
-        if dark { gpui_kit::Hsla::from(gpui_kit::rgb(0x3A3A3A)).opacity(a) } else { gpui_kit::white().opacity(a) }
+        // The base tone over Mica: Mica is no lighter or darker than it, so
+        // Transparency changes only how much wallpaper colour shows through.
+        // (A lighter layer made higher Transparency look darker, more solid.)
+        cx.theme().background.opacity(super::layout::surface_alpha())
     } else {
         gpui_kit::rgb(if dark { 0x272727 } else { 0xF9F9F9 }).into()
     }
