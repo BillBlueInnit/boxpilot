@@ -103,6 +103,7 @@ impl DashboardPage {
                 .into_any_element()
         } else {
             let running = status.is_running();
+            let engine_restart = engine.clone();
             let engine = engine.clone();
             let mut b = Button::new("hero-toggle")
                 .large()
@@ -118,7 +119,24 @@ impl DashboardPage {
                     }
                 });
             b = if running { b.outline() } else { b.primary() };
-            b.into_any_element()
+            if running {
+                // Restart without a disconnect/connect round trip (applies a stuck core or new files).
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("hero-restart")
+                            .large()
+                            .outline()
+                            .icon(IconName::RefreshCw)
+                            .tooltip(t!("tip.restart_core"))
+                            .disabled(status.is_busy())
+                            .on_click(move |_, _, _| engine_restart.restart()),
+                    )
+                    .child(b)
+                    .into_any_element()
+            } else {
+                b.into_any_element()
+            }
         };
 
         // The ring's colour eases between states on a critically damped spring.

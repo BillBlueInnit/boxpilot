@@ -12,6 +12,7 @@ pub mod model;
 pub mod process;
 pub mod rules;
 pub mod store;
+pub mod speed;
 pub mod sys;
 pub mod update;
 

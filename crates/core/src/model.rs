@@ -123,6 +123,30 @@ pub enum ThemePref {
     Dark,
 }
 
+/// How the Auto group picks its node.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoStrategy {
+    /// Quickest response; moves when another node is clearly quicker (core url-test).
+    #[default]
+    Quickest,
+    /// Picks the quickest, then stays unless it fails or falls far behind (url-test, wide tolerance).
+    Steady,
+    /// First working node in list order; drops down the list only on failure (BoxPilot-driven).
+    Ordered,
+    /// Highest download speed among the quickest nodes, re-measured every few hours (BoxPilot-driven).
+    Bandwidth,
+}
+
+impl AutoStrategy {
+    pub const ALL: [AutoStrategy; 4] = [Self::Quickest, Self::Steady, Self::Ordered, Self::Bandwidth];
+
+    /// Driven by BoxPilot through a selector (sing-box has no such group).
+    pub fn managed(self) -> bool {
+        matches!(self, Self::Ordered | Self::Bandwidth)
+    }
+}
+
 /// What to do when a newer BoxPilot is published.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -171,6 +195,10 @@ pub struct Settings {
     pub tun_stack: TunStack,
     pub tun_strict_route: bool,
     pub tun_mtu: u32,
+    /// UDP (games, calls, QUIC) through the proxy; off sends it direct.
+    pub proxy_udp: bool,
+    /// Reject QUIC so apps fall back to TCP (HTTP/3 over a weak UDP path stalls).
+    pub block_quic: bool,
     pub mode: ProxyMode,
 
     // DNS
@@ -198,6 +226,9 @@ pub struct Settings {
     pub clash_api_secret: String,
     pub urltest_url: String,
     pub urltest_interval_min: u32,
+    pub auto_strategy: AutoStrategy,
+    /// Country code the Auto group is limited to; empty for every node.
+    pub auto_region: String,
     /// Prefix prepended to GitHub download URLs, e.g. `https://ghfast.top/`.
     pub github_mirror: String,
     pub core_prerelease: bool,
@@ -246,6 +277,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             mixed_port: 7890,
+            proxy_udp: true,
+            block_quic: false,
             allow_lan: false,
             system_proxy: false,
             sysproxy_bypass: DEFAULT_BYPASS.into(),
@@ -276,6 +309,8 @@ impl Default for Settings {
             clash_api_secret: String::new(),
             urltest_url: "https://www.gstatic.com/generate_204".into(),
             urltest_interval_min: 10,
+            auto_strategy: AutoStrategy::Quickest,
+            auto_region: String::new(),
             github_mirror: String::new(),
             core_prerelease: false,
             sub_user_agent: "clash.meta".into(),

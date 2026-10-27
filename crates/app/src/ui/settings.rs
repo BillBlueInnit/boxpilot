@@ -548,6 +548,8 @@ impl Render for SettingsPage {
                 .child(section_title(t!("set.proxy"), cx))
                 .child(setting_row(t!("set.mixed_port"), Some(t!("set.mixed_port_desc")), self.input(F::MixedPort), cx))
                 .child(switch_row("lan", t!("set.lan"), t!("set.lan_desc"), s.allow_lan, e, |s, v| s.allow_lan = v, cx))
+                .child(switch_row("udp", t!("set.proxy_udp"), t!("set.proxy_udp_desc"), s.proxy_udp, e, |s, v| s.proxy_udp = v, cx))
+                .child(switch_row("quic", t!("set.block_quic"), t!("set.block_quic_desc"), s.block_quic, e, |s, v| s.block_quic = v, cx))
                 .child(switch_row("sysproxy2", t!("set.sysproxy"), t!("set.sysproxy_desc"), s.system_proxy, e, |s, v| s.system_proxy = v, cx))
                 .child(setting_row(t!("set.bypass"), Some(t!("set.bypass_desc")), self.input(F::Bypass), cx))
                 .into_any_element(),

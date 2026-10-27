@@ -26,11 +26,14 @@ use crate::model::*;
 use crate::process::{self, LogLevel, LogLine};
 use crate::store::{APP_NAME, Paths, Store};
 use crate::rules::{self, RuleProvider};
+use crate::speed;
 use crate::sys;
 use crate::update;
 
 pub const TUN_NEEDS_ADMIN: &str = "TUN mode requires administrator rights";
 const MAX_LOGS: usize = 2000;
+/// Config changes arriving within this window share one core reload.
+const RELOAD_DEBOUNCE: Duration = Duration::from_millis(1200);
 const DELAY_TIMEOUT_MS: u32 = 5000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +193,10 @@ struct State {
     /// Exit checks are slow-ish; each node's answer is reused for a while.
     exit_checked: HashMap<String, (geo::Country, Instant)>,
     update: UpdateInfo,
+    speeds: HashMap<String, speed::SpeedResult>,
+    speed_testing: HashSet<String>,
+    /// Recent unexpected core exits, for the automatic restart's limit.
+    crashes: Vec<Instant>,
 }
 
 pub struct Engine {
@@ -204,8 +211,14 @@ pub struct Engine {
     #[allow(dead_code)]
     job: Option<sys::KillOnCloseJob>,
     wake_scheduler: Notify,
+    /// Wakes the Auto-group driver (core started, strategy changed).
+    wake_auto: Notify,
     /// One country refresh at a time.
     geo_lock: tokio::sync::Mutex<()>,
+    /// The probe selector points at one node at a time (exit and speed checks).
+    probe_lock: tokio::sync::Mutex<()>,
+    /// Latest reload request; an older pending one gives way to it.
+    reload_ticket: AtomicU64,
 }
 
 impl Engine {
@@ -258,14 +271,20 @@ impl Engine {
                 countries: HashMap::new(),
                 exit_checked: HashMap::new(),
                 update: UpdateInfo::default(),
+                speeds: HashMap::new(),
+                speed_testing: HashSet::new(),
+                crashes: Vec::new(),
             }),
             tx,
             proc: tokio::sync::Mutex::new(None),
             geo_lock: tokio::sync::Mutex::new(()),
+            probe_lock: tokio::sync::Mutex::new(()),
+            reload_ticket: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             active: AtomicU64::new(0),
             job: sys::KillOnCloseJob::new(),
             wake_scheduler: Notify::new(),
+            wake_auto: Notify::new(),
         });
         Ok((engine, rx))
     }
@@ -466,6 +485,7 @@ impl Engine {
     /// refreshes subscriptions flagged "update on start" and starts the scheduler.
     pub fn startup(self: &Arc<Self>) {
         self.rt.spawn(self.clone().update_loop());
+        self.rt.spawn(self.clone().auto_loop());
         let this = self.clone();
         self.rt.spawn(async move {
             let s = this.settings();
@@ -694,6 +714,7 @@ impl Engine {
         );
         self.apply_sysproxy();
         self.spawn_traffic(generation);
+        self.wake_auto.notify_one();
         self.spawn_rule_set_maintenance(generation, built.rule_sets, !built.missing_rule_sets.is_empty());
         let _ = self.refresh_proxies_async().await;
         // Exit checks go through the core, so they run once it is up.
@@ -783,7 +804,7 @@ impl Engine {
                     .cloned()
                     .collect();
                 if this.download_rule_sets(&missing, &routes).await > 0 && alive(&this) {
-                    let _ = this.restart_async().await;
+                    this.request_reload();
                     return;
                 }
             }
@@ -827,6 +848,23 @@ impl Engine {
                     self.log_app(LogLevel::Error, &msg);
                     self.set_status(CoreStatus::Failed(msg.clone()));
                     self.notice(NoticeKind::Error, Msg::new("notice.core_exited").arg(msg));
+                    // Bring it back, but at most 3 times in 10 minutes.
+                    let recent = self.with(|s| {
+                        s.crashes.retain(|t| t.elapsed() < Duration::from_secs(600));
+                        s.crashes.push(Instant::now());
+                        s.crashes.len()
+                    });
+                    if recent <= 3 {
+                        let this = self.clone();
+                        self.rt.spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            if matches!(this.status(), CoreStatus::Failed(_)) {
+                                this.log_app(LogLevel::Info, "restarting the core after it exited");
+                                // Not awaited here: the start future spawns this watcher.
+                                this.start();
+                            }
+                        });
+                    }
                 }
             }
             req = &mut kill_rx => {
@@ -888,12 +926,14 @@ impl Engine {
                     nodes: st.nodes.get(&s.id).map(Vec::as_slice).unwrap_or(&[]),
                 })
                 .collect();
+            let countries: HashMap<String, String> = st.countries.iter().map(|(t, c)| (t.clone(), c.code.clone())).collect();
             build_config(&BuildInput {
                 settings,
                 groups,
                 version,
                 rule_set_dir: Some(&rules_dir),
                 providers: &st.providers,
+                countries: Some(&countries),
             })
         });
         let mut meta = BuildMeta::default();
@@ -1026,7 +1066,7 @@ impl Engine {
             let config_changed = this.render_config(&old_cmp, version).config
                 != this.render_config(&new, version).config;
             if config_changed {
-                let _ = this.restart_async().await;
+                this.request_reload();
             } else if old.system_proxy != new.system_proxy
                 || old.sysproxy_bypass != new.sysproxy_bypass
             {
@@ -1206,8 +1246,8 @@ impl Engine {
 
     async fn after_nodes_changed(self: &Arc<Self>) {
         if self.status().is_running() {
-            // The restart refreshes countries once the core is back.
-            let _ = self.restart_async().await;
+            // The reload refreshes countries once the core is back.
+            self.request_reload();
             return;
         }
         self.refresh_countries();
@@ -1466,7 +1506,7 @@ impl Engine {
             if refetch {
                 this.update_providers(vec![id2], false).await;
             } else {
-                this.reload_if_config_changed().await;
+                this.request_reload();
             }
         });
         self.wake_scheduler.notify_one();
@@ -1491,8 +1531,7 @@ impl Engine {
             }
         }
         self.save_providers();
-        let this = self.clone();
-        self.rt.spawn(async move { this.reload_if_config_changed().await });
+        self.request_reload();
     }
 
     /// Removes several rule-sets with a single core reload.
@@ -1508,8 +1547,7 @@ impl Engine {
             }
         }
         self.save_providers();
-        let this = self.clone();
-        self.rt.spawn(async move { this.reload_if_config_changed().await });
+        self.request_reload();
     }
 
     /// Enables or disables several rule-sets with a single core reload.
@@ -1521,8 +1559,7 @@ impl Engine {
         });
         self.save_providers();
         self.wake_scheduler.notify_one();
-        let this = self.clone();
-        self.rt.spawn(async move { this.reload_if_config_changed().await });
+        self.request_reload();
     }
 
     /// Refreshes the given rule-sets and reports one summary.
@@ -1547,8 +1584,7 @@ impl Engine {
             }
         });
         self.save_providers();
-        let this = self.clone();
-        self.rt.spawn(async move { this.reload_if_config_changed().await });
+        self.request_reload();
     }
 
     pub fn update_rule_provider(self: &Arc<Self>, id: &str) {
@@ -1649,6 +1685,156 @@ impl Engine {
             }
         }
         Err(last)
+    }
+
+    // -------------------------------------------------------------- speed test
+
+    pub fn speed(&self, tag: &str) -> Option<speed::SpeedResult> {
+        self.with(|s| s.speeds.get(tag).copied())
+    }
+
+    pub fn is_speed_testing(&self, tag: &str) -> bool {
+        self.with(|s| s.speed_testing.contains(tag))
+    }
+
+    pub fn any_speed_testing(&self) -> bool {
+        self.with(|s| !s.speed_testing.is_empty())
+    }
+
+    /// Download speed and real-connection latency through each node, one node
+    /// at a time via the probe selector (the user's selection is untouched).
+    pub fn speed_test(self: &Arc<Self>, tags: Vec<String>) {
+        let queued: Vec<String> = self.with(|s| tags.into_iter().filter(|t| s.speed_testing.insert(t.clone())).collect());
+        if queued.is_empty() {
+            return;
+        }
+        self.emit(Event::Proxies);
+        let this = self.clone();
+        self.rt.spawn(async move {
+            for tag in queued {
+                let result = this.speed_test_one(&tag, speed::DOWNLOAD_BYTES).await;
+                this.with(|s| {
+                    s.speed_testing.remove(&tag);
+                    s.speeds.insert(tag.clone(), result);
+                });
+                this.emit(Event::Proxies);
+            }
+        });
+    }
+
+    async fn speed_test_one(&self, tag: &str, bytes: u64) -> speed::SpeedResult {
+        let port = self.with(|s| s.settings.probe_port);
+        if port == 0 || !self.status().is_running() {
+            return speed::SpeedResult::default();
+        }
+        let _probe = self.probe_lock.lock().await;
+        if self.api().select(crate::config::TAG_PROBE, tag).await.is_err() {
+            return speed::SpeedResult::default();
+        }
+        speed::measure(&format!("http://127.0.0.1:{port}"), bytes).await
+    }
+
+    // -------------------------------------------------------------- auto group
+
+    /// Countries among the nodes, most nodes first, for the region filter.
+    pub fn country_counts(&self) -> Vec<(String, usize)> {
+        let mut counts: Vec<(String, usize)> = self.with(|s| {
+            let mut m: HashMap<String, usize> = HashMap::new();
+            for c in s.countries.values() {
+                *m.entry(c.code.clone()).or_default() += 1;
+            }
+            m.into_iter().collect()
+        });
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        counts
+    }
+
+    /// Drives the Auto group for the strategies sing-box has no group for:
+    /// a full pick every interval, and a health check of the chosen node
+    /// every two minutes in between.
+    async fn auto_loop(self: Arc<Self>) {
+        let mut last_pick: Option<Instant> = None;
+        loop {
+            let s = self.settings();
+            let wait = if self.status().is_running() && s.auto_strategy.managed() {
+                let every = match s.auto_strategy {
+                    // Speed tests cost data: about 25 MB per round.
+                    AutoStrategy::Bandwidth => Duration::from_secs(6 * 3600),
+                    _ => Duration::from_secs(u64::from(s.urltest_interval_min.max(1)) * 60),
+                };
+                if last_pick.is_none_or(|t| t.elapsed() >= every) || !self.auto_current_alive().await {
+                    self.pick_auto(s.auto_strategy).await;
+                    last_pick = Some(Instant::now());
+                }
+                Duration::from_secs(120)
+            } else {
+                last_pick = None;
+                Duration::from_secs(600)
+            };
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = self.wake_auto.notified() => last_pick = None,
+            }
+        }
+    }
+
+    async fn auto_current_alive(&self) -> bool {
+        let api = self.api();
+        let Some(now) = api.proxies().await.ok().and_then(|p| p.get(crate::config::TAG_AUTO).and_then(|g| g.now.clone())) else {
+            return false;
+        };
+        let d = api.delay(&now, &self.settings().urltest_url, DELAY_TIMEOUT_MS).await.ok();
+        self.with(|s| s.delays.insert(now, d));
+        self.emit(Event::Delays);
+        d.is_some()
+    }
+
+    async fn pick_auto(self: &Arc<Self>, strategy: AutoStrategy) {
+        let api = self.api();
+        let Ok(proxies) = api.proxies().await else { return };
+        let Some(group) = proxies.get(crate::config::TAG_AUTO) else { return };
+        let members = group.all.clone().unwrap_or_default();
+        if members.is_empty() {
+            return;
+        }
+        let url = self.settings().urltest_url;
+        let delays: Vec<Option<u32>> = futures_util::stream::iter(members.clone())
+            .map(|m| {
+                let (api, url) = (api.clone(), url.clone());
+                async move { api.delay(&m, &url, DELAY_TIMEOUT_MS).await.ok() }
+            })
+            .buffered(16)
+            .collect()
+            .await;
+        self.with(|s| {
+            for (m, d) in members.iter().zip(&delays) {
+                s.delays.insert(m.clone(), *d);
+            }
+        });
+        self.emit(Event::Delays);
+        let mut alive: Vec<(&String, u32)> = members.iter().zip(&delays).filter_map(|(m, d)| d.map(|d| (m, d))).collect();
+        let pick = match strategy {
+            AutoStrategy::Ordered => alive.first().map(|(m, _)| (*m).clone()),
+            AutoStrategy::Bandwidth => {
+                alive.sort_by_key(|(_, d)| *d);
+                let mut best: Option<(String, u64)> = None;
+                for (m, _) in alive.iter().take(3) {
+                    let r = self.speed_test_one(m, speed::AUTO_BYTES).await;
+                    self.with(|s| s.speeds.insert((*m).clone(), r));
+                    self.emit(Event::Proxies);
+                    if let Some(bps) = r.bytes_per_sec.filter(|b| best.as_ref().is_none_or(|(_, top)| b > top)) {
+                        best = Some(((*m).clone(), bps));
+                    }
+                }
+                best.map(|(m, _)| m).or_else(|| alive.first().map(|(m, _)| (*m).clone()))
+            }
+            AutoStrategy::Quickest | AutoStrategy::Steady => None,
+        };
+        let Some(pick) = pick else { return };
+        if group.now.as_deref() != Some(pick.as_str()) && api.select(crate::config::TAG_AUTO, &pick).await.is_ok() {
+            self.log_app(LogLevel::Info, format!("Auto ({strategy:?}) → {pick}"));
+            let _ = self.refresh_proxies_async().await;
+        }
     }
 
     // -------------------------------------------------------------- updates
@@ -1859,6 +2045,9 @@ impl Engine {
         });
         self.emit(Event::Proxies);
         self.check_exits(unsure).await;
+        if !self.settings().auto_region.is_empty() {
+            self.request_reload();
+        }
     }
 
     /// Asks an IP service through each node (via the hidden probe selector)
@@ -1879,6 +2068,7 @@ impl Engine {
                     if !self.status().is_running() {
                         return;
                     }
+                    let _probe = self.probe_lock.lock().await;
                     if api.select(crate::config::TAG_PROBE, &tag).await.is_err() {
                         continue;
                     }
@@ -2000,7 +2190,7 @@ impl Engine {
         // A changed file of an existing local rule-set is picked up by sing-box
         // itself; only a different configuration needs a reload.
         if self.current_config_json() != before {
-            self.reload_if_running().await;
+            self.request_reload();
         }
         ok
     }
@@ -2011,12 +2201,35 @@ impl Engine {
         self.render_config(&settings, version).config
     }
 
+    /// Reloads the core once changes settle: a burst (toggling several
+    /// subscriptions, updates finishing together) costs one reload, and none
+    /// when the config ends up as it was. Every reload drops all connections.
+    fn request_reload(self: &Arc<Self>) {
+        let ticket = self.reload_ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        let this = self.clone();
+        self.rt.spawn(async move {
+            tokio::time::sleep(RELOAD_DEBOUNCE).await;
+            if this.reload_ticket.load(Ordering::SeqCst) == ticket {
+                this.reload_if_config_changed().await;
+            }
+        });
+    }
+
     async fn reload_if_config_changed(self: &Arc<Self>) {
+        // The mode is switched live through the API, so the start-up default
+        // in the file may differ without the core needing a reload.
+        let comparable = |mut v: Value| {
+            if let Some(api) = v.pointer_mut("/experimental/clash_api").and_then(Value::as_object_mut) {
+                api.remove("default_mode");
+            }
+            v
+        };
         // Rendering is cheap; compare against the config the core runs with.
         let running = std::fs::read(self.store.paths.config_file())
             .ok()
-            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-        if running.as_ref() != Some(&self.current_config_json()) {
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .map(comparable);
+        if running != Some(comparable(self.current_config_json())) {
             self.reload_if_running().await;
         }
     }
@@ -2049,7 +2262,11 @@ impl Engine {
                 .filter_map(|g| proxies.get(g))
                 .map(|p| ProxyGroup {
                     name: p.name.clone(),
-                    kind: p.kind.clone(),
+                    kind: if p.name == crate::config::TAG_AUTO && s.settings.auto_strategy.managed() {
+                        "URLTest".to_string()
+                    } else {
+                        p.kind.clone()
+                    },
                     now: p.now.clone().unwrap_or_default(),
                     members: p
                         .all

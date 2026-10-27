@@ -32,9 +32,16 @@ Data lives in `%APPDATA%\BoxPilot`. Create a `data` folder next to `boxpilot.exe
   while the app was closed, quicker retry after failures, proxy → direct fallback, custom User-Agent,
   include/exclude regex filters (re-applied offline), traffic/expiry from `subscription-userinfo`,
   provider title and interval hints. The core reloads once after a batch of updates.
-- **Proxy**: Rule / Global / Direct modes (switched live), selector + auto (urltest) groups per
+- **Proxy**: Rule / Global / Direct modes (switched live), selector + Auto groups per
   subscription, latency tests, system proxy (restored on exit and after crashes), TUN mode with a
-  "restart as administrator" flow, LAN sharing.
+  "restart as administrator" flow, LAN sharing, UDP through the proxy (or direct) and an optional
+  QUIC block. Config changes are batched into one core reload, Auto switching never cuts open
+  connections, and a crashed core is restarted automatically.
+- **Auto group**: quickest response, stay steady (switches only on failure or a big gap), list
+  order (failover down your list and back), or most bandwidth (periodic speed tests of the
+  quickest nodes) — each optionally limited to one region.
+- **Speed test**: download speed and real latency (a fresh HTTPS request through the node) per node
+  or for all shown nodes, through a separate local probe so your selection is untouched.
 - **Rules**: import rule-sets from a URL or a local file — sing-box `.srs` / `.json`, Clash rule
   providers (`payload:` YAML, domain / ipcidr / classical) and ACL4SSR `.list` files, which are
   converted to sing-box rule-sets. Each set routes to Proxy, Direct, Reject or any group, in the
