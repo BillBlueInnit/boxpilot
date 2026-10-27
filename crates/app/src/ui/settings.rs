@@ -1,5 +1,5 @@
 use boxpilot_core::CoreDownloadState;
-use boxpilot_core::model::{GpuPreference, Language, Settings, ThemePref, TunStack};
+use boxpilot_core::model::{GpuPreference, Language, Settings, ThemePref, TunStack, UpdateMode};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -314,6 +314,92 @@ fn gpu_label(g: GpuPreference) -> &'static str {
 
 impl SettingsPage {
     /// Interface size, hardware acceleration and window material.
+    fn updates_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let engine = self.state.read(cx).engine.clone();
+        let s = engine.settings();
+        let info = engine.update_info();
+        let t = cx.theme();
+        let (muted, danger) = (t.muted_foreground, t.danger);
+        let status = if let Some(v) = &info.installed {
+            t!("upd.installed", v)
+        } else if let Some(r) = &info.latest {
+            if info.installing {
+                t!("upd.installing", r.version)
+            } else if r.asset.is_none() {
+                format!("{} {}", t!("upd.available", r.version), t!("upd.no_asset"))
+            } else {
+                t!("upd.available", r.version)
+            }
+        } else if info.checking {
+            t!("upd.checking").to_string()
+        } else if s.last_update_check > 0 {
+            format!("{} {}", t!("upd.latest"), t!("upd.checked", fmt_ago(s.last_update_check)))
+        } else {
+            t!("upd.never").to_string()
+        };
+        let mut actions = h_flex().gap_2().flex_wrap().justify_end();
+        if info.installed.is_some() {
+            actions = actions.child(
+                Button::new("upd-restart")
+                    .small()
+                    .primary()
+                    .label(t!("btn.restart_apply"))
+                    .on_click(|_, _, cx| super::restart_app(cx)),
+            );
+        } else if let Some(r) = info.latest.clone() {
+            let page = r.page.clone();
+            actions = actions.child(
+                Button::new("upd-notes")
+                    .small()
+                    .ghost()
+                    .label(t!("btn.release_notes"))
+                    .on_click(move |_, _, cx| cx.open_url(&page)),
+            );
+            if r.asset.is_some() {
+                let e = engine.clone();
+                actions = actions.child(
+                    Button::new("upd-install")
+                        .small()
+                        .primary()
+                        .icon(extra_icon(Lucide::Download))
+                        .label(t!("btn.update_now"))
+                        .loading(info.installing)
+                        .on_click(move |_, _, _| e.install_update()),
+                );
+            }
+        } else {
+            let e = engine.clone();
+            actions = actions.child(
+                Button::new("upd-check")
+                    .small()
+                    .icon(IconName::RefreshCw)
+                    .label(t!("btn.check_now"))
+                    .loading(info.checking)
+                    .on_click(move |_, _, _| e.check_for_update(true)),
+            );
+        }
+        let e_mode = engine.clone();
+        let modes: Vec<(SharedString, UpdateMode)> = vec![
+            (t!("upd.mode_auto").into(), UpdateMode::Auto),
+            (t!("upd.mode_notify").into(), UpdateMode::Notify),
+            (t!("upd.mode_off").into(), UpdateMode::Off),
+        ];
+        card(cx)
+            .gap_1()
+            .child(section_title(t!("set.updates"), cx))
+            .child(setting_row(&format!("BoxPilot {}", boxpilot_core::update::CURRENT), Some(&status), actions, cx))
+            .when_some(info.error.clone().filter(|_| !info.checking && !info.installing), |d, err| {
+                d.child(div().text_xs().text_color(danger).line_clamp(2).child(err))
+            })
+            .child(setting_row(
+                t!("set.update_mode"),
+                Some(t!("set.update_mode_desc")),
+                choice("update-mode", s.update_mode, modes, move |v, _, _| e_mode.update_settings(|s| s.update_mode = v)),
+                cx,
+            ))
+            .child(div().text_xs().text_color(muted).child(format!("github.com/{}", boxpilot_core::update::REPO)))
+    }
+
     fn graphics_section(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let engine = self.state.read(cx).engine.clone();
         let s = engine.settings();
@@ -455,6 +541,7 @@ impl Render for SettingsPage {
                 })
                 .into_any_element(),
             graphics,
+            self.updates_section(cx).into_any_element(),
             self.core_section(cx).into_any_element(),
             card(cx)
                 .gap_1()

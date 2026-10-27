@@ -164,7 +164,8 @@ fn enter_lightweight(cx: &mut App) {
 pub fn restart_app(cx: &mut App) {
     remember_window(cx);
     AppState::engine(cx).shutdown_blocking();
-    if let Ok(exe) = std::env::current_exe() {
+    // After an in-place update this is the new executable.
+    if let Some(exe) = boxpilot_core::update::restart_target() {
         if let Err(e) = std::process::Command::new(exe).arg("--restarted").spawn() {
             log::error!("restart failed: {e:#}");
             return;

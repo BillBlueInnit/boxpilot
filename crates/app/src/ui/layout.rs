@@ -95,11 +95,11 @@ pub fn metrics(window: &Window) -> Metrics {
     Metrics { compact_nav, narrow, sidebar, content, inset }
 }
 
-/// Splits `content` into equal columns of at least `min` (gap included),
-/// returning the column width.
-pub fn grid_column(content: f32, min: f32, gap: f32) -> f32 {
-    let cols = ((content + gap) / (min + gap)).floor().max(1.0);
-    (content - gap * (cols - 1.0)) / cols
+/// How many columns of at least `min` (plus `gap` between them) fit in
+/// `content`. Lay them out with a CSS grid so they share the real width:
+/// fixed card widths computed from this estimate overflow by a pixel and wrap.
+pub fn grid_columns(content: f32, min: f32, gap: f32) -> u16 {
+    ((content + gap) / (min + gap)).floor().clamp(1.0, 12.0) as u16
 }
 
 /// The window's opening bounds: the saved ones when they still fit a
@@ -159,9 +159,9 @@ mod tests {
     #[test]
     fn grid_fills_rows() {
         // 900 dp of content with 236 dp cards and 12 dp gaps: 3 columns.
-        let w = grid_column(900.0, 236.0, 12.0);
-        assert!((w * 3.0 + 24.0 - 900.0).abs() < 0.01 && w >= 236.0);
+        assert_eq!(grid_columns(900.0, 236.0, 12.0), 3);
+        assert_eq!(grid_columns(1468.0, 236.0, 12.0), 5);
         // Narrower than one card: a single full-width column.
-        assert_eq!(grid_column(200.0, 236.0, 12.0), 200.0);
+        assert_eq!(grid_columns(200.0, 236.0, 12.0), 1);
     }
 }

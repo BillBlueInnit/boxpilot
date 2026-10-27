@@ -27,6 +27,7 @@ use crate::process::{self, LogLevel, LogLine};
 use crate::store::{APP_NAME, Paths, Store};
 use crate::rules::{self, RuleProvider};
 use crate::sys;
+use crate::update;
 
 pub const TUN_NEEDS_ADMIN: &str = "TUN mode requires administrator rights";
 const MAX_LOGS: usize = 2000;
@@ -112,6 +113,8 @@ pub enum Event {
     Settings,
     CoreInfo,
     CoreDownload,
+    /// [`Engine::update_info`] changed.
+    Update,
     Proxies,
     Delays,
     Notice(NoticeKind, Msg),
@@ -145,6 +148,18 @@ struct Running {
     generation: u64,
 }
 
+/// The app-update state shown in Settings.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateInfo {
+    pub checking: bool,
+    pub installing: bool,
+    /// A newer release, once found.
+    pub latest: Option<update::Release>,
+    /// Version swapped in, waiting for a restart.
+    pub installed: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Default, Clone)]
 struct BuildMeta {
     groups: Vec<String>,
@@ -174,6 +189,7 @@ struct State {
     countries: HashMap<String, geo::Country>,
     /// Exit checks are slow-ish; each node's answer is reused for a while.
     exit_checked: HashMap<String, (geo::Country, Instant)>,
+    update: UpdateInfo,
 }
 
 pub struct Engine {
@@ -241,6 +257,7 @@ impl Engine {
                 providers,
                 countries: HashMap::new(),
                 exit_checked: HashMap::new(),
+                update: UpdateInfo::default(),
             }),
             tx,
             proc: tokio::sync::Mutex::new(None),
@@ -448,6 +465,7 @@ impl Engine {
     /// Runs once after the UI is up: cleans stale state, auto-starts the core,
     /// refreshes subscriptions flagged "update on start" and starts the scheduler.
     pub fn startup(self: &Arc<Self>) {
+        self.rt.spawn(self.clone().update_loop());
         let this = self.clone();
         self.rt.spawn(async move {
             let s = this.settings();
@@ -1631,6 +1649,126 @@ impl Engine {
             }
         }
         Err(last)
+    }
+
+    // -------------------------------------------------------------- updates
+
+    pub fn update_info(&self) -> UpdateInfo {
+        self.with(|s| s.update.clone())
+    }
+
+    /// Asks GitHub for the latest release. A manual check also reports
+    /// "up to date" and failures.
+    pub fn check_for_update(self: &Arc<Self>, manual: bool) {
+        let this = self.clone();
+        self.rt.spawn(async move { this.check_update_async(manual).await });
+    }
+
+    async fn check_update_async(self: &Arc<Self>, manual: bool) {
+        if self.with(|s| std::mem::replace(&mut s.update.checking, true)) {
+            return;
+        }
+        self.emit(Event::Update);
+        let mut result = Err(anyhow!("no route"));
+        for route in self.routes() {
+            let Ok(client) = fetch::client(&route, Duration::from_secs(20), "BoxPilot") else { continue };
+            result = update::latest(&client).await;
+            if result.is_ok() {
+                break;
+            }
+        }
+        let latest = match result {
+            Ok(latest) => latest,
+            Err(e) => {
+                self.with(|s| {
+                    s.update.checking = false;
+                    s.update.error = Some(format!("{e:#}"));
+                });
+                self.emit(Event::Update);
+                if manual {
+                    self.notice(NoticeKind::Warning, Msg::new("notice.update_failed").arg(format!("{e:#}")));
+                }
+                return;
+            }
+        };
+        self.update_settings(|s| s.last_update_check = now_unix());
+        let newer = latest.filter(update::Release::is_newer);
+        self.with(|s| {
+            s.update.checking = false;
+            s.update.error = None;
+            s.update.latest = newer.clone();
+        });
+        self.emit(Event::Update);
+        let Some(release) = newer else {
+            if manual {
+                self.notice(NoticeKind::Success, Msg::new("notice.update_latest"));
+            }
+            return;
+        };
+        if self.with(|s| s.update.installed.as_deref() == Some(release.version.as_str())) {
+            return;
+        }
+        if !manual && release.asset.is_some() && self.settings().update_mode == UpdateMode::Auto {
+            self.install_update_async().await;
+        } else {
+            self.notice(NoticeKind::Info, Msg::new("notice.update_available").arg(&release.version));
+        }
+    }
+
+    /// Downloads the latest release for this platform and swaps it in.
+    pub fn install_update(self: &Arc<Self>) {
+        let this = self.clone();
+        self.rt.spawn(async move { this.install_update_async().await });
+    }
+
+    async fn install_update_async(self: &Arc<Self>) {
+        let Some(release) = self.with(|s| s.update.latest.clone()) else { return };
+        let Some(asset) = release.asset.clone() else { return };
+        if self.with(|s| std::mem::replace(&mut s.update.installing, true)) {
+            return;
+        }
+        self.emit(Event::Update);
+        self.log_app(LogLevel::Info, format!("downloading BoxPilot {}", release.version));
+        let result: Result<PathBuf> = async {
+            let data = self.download_with(&asset.url, Duration::from_secs(600)).await?;
+            let name = asset.name.clone();
+            tokio::task::spawn_blocking(move || update::install(&update::extract_binary(&data, &name)?)).await?
+        }
+        .await;
+        self.with(|s| {
+            s.update.installing = false;
+            match &result {
+                Ok(_) => {
+                    s.update.installed = Some(release.version.clone());
+                    s.update.error = None;
+                }
+                Err(e) => s.update.error = Some(format!("{e:#}")),
+            }
+        });
+        self.emit(Event::Update);
+        match result {
+            Ok(path) => {
+                self.log_app(LogLevel::Info, format!("BoxPilot {} installed at {}", release.version, path.display()));
+                self.notice(NoticeKind::Success, Msg::new("notice.update_installed").arg(&release.version));
+            }
+            Err(e) => {
+                self.log_app(LogLevel::Warn, format!("update failed: {e:#}"));
+                self.notice(NoticeKind::Error, Msg::new("notice.update_failed").arg(format!("{e:#}")));
+            }
+        }
+    }
+
+    /// Checks once a day unless updates are off.
+    async fn update_loop(self: Arc<Self>) {
+        update::cleanup();
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        loop {
+            let s = self.settings();
+            if s.update_mode != UpdateMode::Off && now_unix() - s.last_update_check >= 86400 {
+                self.check_update_async(false).await;
+            }
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
     }
 
     // -------------------------------------------------------------- countries

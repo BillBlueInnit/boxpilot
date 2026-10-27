@@ -9,8 +9,15 @@ name: CI
 
 on:
   push:
+    branches: [main]
+    tags-ignore: ['v*']
   pull_request:
   workflow_dispatch:
+
+# A newer push supersedes a run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,11 +31,11 @@ jobs:
         include:
           - { name: Windows x64, os: windows-latest, singbox: windows-amd64, ext: zip }
           - { name: macOS arm64, os: macos-14, singbox: darwin-arm64, ext: tar.gz }
-          - { name: macOS x64, os: macos-13, singbox: darwin-amd64, ext: tar.gz }
+          - { name: macOS x64, os: macos-15-intel, singbox: darwin-amd64, ext: tar.gz }
           - { name: Linux x64, os: ubuntu-24.04, singbox: linux-amd64, ext: tar.gz }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -74,9 +81,10 @@ jobs:
         run: |
           set -euo pipefail
           ./target/release/examples/gen_config cfg
+          # -D changes into cfg/ first, so the config path is relative to it.
           for f in cfg/*-1.14.json; do
             echo "checking $f"
-            "$SING_BOX" check -c "$f" -D cfg
+            "$SING_BOX" check -D cfg -c "$(basename "$f")"
           done
 
       - name: Live engine test
@@ -91,18 +99,18 @@ jobs:
         shell: bash
         run: |
           mkdir -p target/release/data
-          echo '{"auto_start_core":false,"mixed_port":27890,"clash_api_port":29090}' > target/release/data/settings.json
+          echo '{"auto_start_core":false,"mixed_port":27890,"clash_api_port":29090,"update_mode":"off"}' > target/release/data/settings.json
           ./target/release/boxpilot --smoke-test
 
       - name: UI starts (Linux, X11 under Xvfb)
         if: runner.os == 'Linux'
         run: |
           mkdir -p target/release/data
-          echo '{"auto_start_core":false,"mixed_port":27890,"clash_api_port":29090}' > target/release/data/settings.json
+          echo '{"auto_start_core":false,"mixed_port":27890,"clash_api_port":29090,"update_mode":"off"}' > target/release/data/settings.json
           xvfb-run -a -s "-screen 0 1280x800x24" ./target/release/boxpilot --smoke-test
 
       - name: Upload build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: boxpilot-${{ matrix.singbox }}
           path: |

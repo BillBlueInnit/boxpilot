@@ -76,7 +76,7 @@ impl ProxiesPage {
         }))
     }
 
-    fn node_card(&self, group: &ProxyGroup, idx: usize, member: &ProxyMember, groups: &[ProxyGroup], width: f32, cx: &App) -> impl IntoElement {
+    fn node_card(&self, group: &ProxyGroup, idx: usize, member: &ProxyMember, groups: &[ProxyGroup], cx: &App) -> impl IntoElement {
         let engine = self.state.read(cx).engine.clone();
         let t = cx.theme();
         let selected = member.name == group.now;
@@ -108,7 +108,7 @@ impl ProxiesPage {
         let (primary, border, bg) = (t.primary, t.border, t.background);
         div()
             .id(SharedString::from(format!("node-{}-{idx}", group.name)))
-            .w(dp(width))
+            .w_full()
             .p_3()
             .rounded(t.radius_lg)
             .border_1()
@@ -221,7 +221,7 @@ impl PhaseExt for f32 {
 impl Render for ProxiesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Cards share each row evenly at any window width.
-        let card_w = super::layout::grid_column(super::layout::metrics(window).content, 236.0, 12.0);
+        let cols = super::layout::grid_columns(super::layout::metrics(window).content, 236.0, 12.0);
         let engine = self.state.read(cx).engine.clone();
         let status = engine.status();
         if !status.is_running() {
@@ -312,13 +312,13 @@ impl Render for ProxiesPage {
                 .child(div().min_w_0().truncate().text_color(t.foreground).child(t!("proxies.current", outbound_label(&group.now)))),
         )
         .child(
-            h_flex().gap_3().flex_wrap().children(
+            div().grid().grid_cols(cols).gap_3().children(
                 members
                     .iter()
                     .enumerate()
                     .map(|(pos, (i, m))| {
                         anim::enter(
-                            div().child(self.node_card(&group, *i, m, &groups, card_w, cx)),
+                            div().min_w_0().child(self.node_card(&group, *i, m, &groups, cx)),
                             SharedString::from(format!("enter-{}-{}", group.name, m.name)),
                             anim::stagger(pos.min(12)) * 0.5,
                         )

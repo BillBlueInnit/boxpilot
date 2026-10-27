@@ -123,6 +123,19 @@ pub enum ThemePref {
     Dark,
 }
 
+/// What to do when a newer BoxPilot is published.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    /// Download and install in the background; it runs from the next start.
+    Auto,
+    /// Only tell the user.
+    #[default]
+    Notify,
+    /// Never check.
+    Off,
+}
+
 /// How a subscription download should be routed.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -209,6 +222,9 @@ pub struct Settings {
     /// Windows 11 Mica backdrop behind the sidebar.
     pub mica: bool,
     pub gpu: GpuPreference,
+    pub update_mode: UpdateMode,
+    /// Unix time of the last update check.
+    pub last_update_check: i64,
     /// Interface size in percent; 0 follows the OS text-size setting.
     pub ui_scale: u32,
     /// Window position and size from the last session (logical pixels).
@@ -276,6 +292,8 @@ impl Default for Settings {
             theme: ThemePref::System,
             mica: true,
             gpu: GpuPreference::Auto,
+            update_mode: UpdateMode::Notify,
+            last_update_check: 0,
             ui_scale: 0,
             window: None,
         }

@@ -13,5 +13,6 @@ pub mod process;
 pub mod rules;
 pub mod store;
 pub mod sys;
+pub mod update;
 
 pub use engine::{CoreDownloadState, CoreStatus, Engine, Event, Msg, NoticeKind, ProxyGroup, ProxyMember};

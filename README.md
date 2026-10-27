@@ -1,9 +1,13 @@
 # BoxPilot
 
-A clean desktop proxy client for Windows, written in Rust with [GPUI](https://gpui.rs) (via gpui-kit).
-It drives the [sing-box](https://sing-box.sagernet.org) core and has a built-in subscription converter.
+A clean desktop proxy client for Windows, macOS and Linux, written in Rust with
+[GPUI](https://gpui.rs) (via gpui-kit). It drives the [sing-box](https://sing-box.sagernet.org) core
+and has a built-in subscription converter.
 
 ## Getting started
+
+Download the archive for your platform from
+[Releases](https://github.com/BillBlueInnit/boxpilot/releases), or build it yourself:
 
 ```
 cargo run --release -p boxpilot
@@ -43,6 +47,11 @@ Data lives in `%APPDATA%\BoxPilot`. Create a `data` folder next to `boxpilot.exe
   live); run as administrator (login start through a highest-privilege scheduled task, so no UAC
   prompt); tray icon with mode/system-proxy/TUN toggles, close to tray, single instance, launch at
   login (optionally minimized), live traffic chart, connections view, log viewer, light/dark themes.
+- **Proxies page**: a country code on every node — from the node name (flag, place, code), else a
+  GeoIP lookup of the server, else (anycast/CDN or private addresses) the exit IP checked through
+  that node. Lightweight mode unloads the UI while the app sits in the tray.
+- **App updates**: checks GitHub Releases once a day; install automatically, just remind, or never
+  notify (Settings → Updates). Updates replace the executable in place and apply on restart.
 - **Motion**: every transition is a damped spring (GPUI's analytic solver), so movement eases and
   settles like a physical object, keeps its velocity when interrupted and respects "reduce motion".
 
@@ -69,6 +78,17 @@ Linux needs an AppIndicator-capable tray (GNOME: the AppIndicator extension) for
 unit tests, every generated config through `sing-box check`, a live engine test against the real
 core (start, groups, selection, latency, mode switch, traffic, reload, stop) and a GUI start-up
 check (`boxpilot --smoke-test`).
+
+`.github/workflows/release.yml` publishes a release when a version tag is pushed. The tag must
+match the workspace version in `Cargo.toml`:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+It attaches `BoxPilot-<version>-<platform>.zip|tar.gz` for Windows x64, macOS arm64/x64 and
+Linux x64 — the names the in-app updater looks for.
 
 ## Layout
 
