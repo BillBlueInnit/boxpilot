@@ -485,7 +485,7 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("backdrop.mica_alt", ["Mica Alt", "云母（浓）", "雲母（濃）", "Mica Alt"]),
     ("backdrop.acrylic", ["Acrylic", "亚克力", "壓克力", "Acrylic"]),
     ("set.transparency", ["Transparency", "透明度", "透明度", "Прозрачность"]),
-    ("set.transparency_desc", ["How much of the backdrop shows through pages and cards.", "页面和卡片透出背景的程度。", "頁面和卡片透出背景的程度。", "Насколько фон просвечивает сквозь страницы и карточки."]),
+    ("set.transparency_desc", ["How much of the backdrop shows through the cards.", "卡片透出背景的程度。", "卡片透出背景的程度。", "Насколько фон просвечивает сквозь карточки."]),
     ("win.minimize", ["Minimize", "最小化", "最小化", "Свернуть"]),
     ("win.maximize", ["Maximize", "最大化", "最大化", "Развернуть"]),
     ("win.restore", ["Restore", "还原", "還原", "Восстановить"]),

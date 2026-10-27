@@ -143,7 +143,9 @@ impl ProxiesPage {
             .rounded(t.radius_lg)
             .border_1()
             .when(selectable, |d| {
-                d.cursor_pointer().hover(|d| d.shadow_sm()).on_click(move |_, _, _| e_sel.select_proxy(&g, &n))
+                // Hover lights the edge in the theme colour (a shadow would show
+                // through the translucent card and grey it).
+                d.cursor_pointer().hover(move |d| d.border_color(primary.opacity(0.5))).on_click(move |_, _, _| e_sel.select_proxy(&g, &n))
             })
             .child(
                 v_flex()

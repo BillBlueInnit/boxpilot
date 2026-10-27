@@ -91,10 +91,12 @@ pub fn apply(settings: &Settings, cx: &mut App) {
     let text_secondary = if dark { white.opacity(0.72) } else { black.opacity(0.6) };
     let divider = if dark { white.opacity(0.084) } else { black.opacity(0.08) };
     let control_stroke = if dark { white.opacity(0.08) } else { black.opacity(0.1) };
-    let (fill, hover, pressed) = if dark {
+    // Light fills are solid: translucent whites stacked on a translucent card
+    // composite grey in GPUI. Dark ones are faint lifts, where that is unseen.
+    let (fill, hover, pressed): (Hsla, Hsla, Hsla) = if dark {
         (white.opacity(0.061), white.opacity(0.084), white.opacity(0.033))
     } else {
-        (white.opacity(0.7), white.opacity(0.5), white.opacity(0.3))
+        (rgb(0xFBFBFB).into(), rgb(0xF5F5F5).into(), rgb(0xEFEFEF).into())
     };
     let subtle = if dark { white.opacity(0.06) } else { black.opacity(0.04) };
     // Menus, dialogs and tooltips stay solid so they read over anything.

@@ -31,8 +31,9 @@ pub fn card(cx: &App) -> Div {
         .rounded(t.radius_lg)
         .border_1()
         .border_color(hairline(cx))
+        // No shadow: Fluent cards are a fill and a stroke, and a shadow would
+        // show through the translucent fill and grey it (badly so in light mode).
         .bg(surface(cx))
-        .shadow_xs()
 }
 
 /// Edge colour for cards and the page sheet. An opaque window keeps the theme
@@ -518,10 +519,25 @@ impl RenderOnce for Toggle {
 /// Fill for cards. On a translucent window it is a faint veil over the
 /// backdrop (light in light mode), so cards read as raised, as in Windows 11.
 pub fn surface(cx: &App) -> Hsla {
-    // Fluent's card fill: a veil that reads the same on a solid layer and
-    // over a backdrop.
+    let dark = cx.theme().is_dark();
     let white = gpui_kit::white();
-    if cx.theme().is_dark() { white.opacity(0.05) } else { white.opacity(0.7) }
+    if super::layout::translucent() {
+        // Cards are the one translucent layer over the backdrop (GPUI adds up
+        // alpha when translucent fills stack, which greys them), so they
+        // carry Transparency: solid at 0 %, half see-through at 80 % in light
+        // mode, a faint lift over the backdrop in dark mode.
+        let a = super::layout::surface_alpha();
+        if dark {
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x2B2B2B)).opacity(a.max(0.25))
+        } else {
+            white.opacity(0.375 + 0.625 * a)
+        }
+    } else if dark {
+        // Fluent's card fill over the solid content layer.
+        white.opacity(0.05)
+    } else {
+        white.opacity(0.7)
+    }
 }
 
 /// Human readable rule target (`proxy` / `direct` / `reject` / group name).

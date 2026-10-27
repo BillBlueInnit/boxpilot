@@ -728,7 +728,7 @@ impl Render for MainView {
                 // Acrylic and the macOS/KDE blur are one even pane: Transparency
                 // sets a single tint over the whole window (KWin's blur has no
                 // tint of its own, so it keeps a floor for readable text).
-                .when(glass, |d| d.bg(bg.opacity(glass_alpha)))
+                .when(glass && cfg!(target_os = "linux"), |d| d.bg(bg.opacity(glass_alpha)))
                 .child(self.render_sidebar(page, mica, m, window, cx))
                 .child(
                     v_flex()
@@ -740,9 +740,11 @@ impl Render for MainView {
                             v_flex()
                                 .flex_1()
                                 .min_h_0()
-                                // The content sits on a raised layer, as in Windows 11
-                                // apps; on glass (Acrylic, macOS, KDE) it is one pane.
-                                .when(!glass, |d| {
+                                // An opaque window puts the content on a raised layer, as
+                                // in Windows 11 apps. A translucent one has none: stacked
+                                // translucent fills composite grey in GPUI, so the pages
+                                // sit straight on the backdrop and only cards are veiled.
+                                .when(!mica, |d| {
                                     d.bg(layer_fill)
                                         .border_l_1()
                                         .border_t_1()
