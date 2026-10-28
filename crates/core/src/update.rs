@@ -6,7 +6,7 @@
 use std::io::Read as _;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 pub const REPO: &str = "BillBlueInnit/boxpilot";
@@ -166,7 +166,7 @@ pub fn install(binary: &[u8]) -> Result<PathBuf> {
         if let Err(e) = std::fs::rename(&new, &exe) {
             let _ = std::fs::rename(&old, &exe);
             let _ = std::fs::remove_file(&new);
-            return Err(anyhow!(e).context("put the new version in place"));
+            return Err(anyhow::Error::new(e).context("put the new version in place"));
         }
     }
     #[cfg(not(windows))]

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
+use futures_util::future::BoxFuture;
 use serde_json::Value;
 use tokio::process::Child;
 use tokio::runtime::Handle;
@@ -151,6 +152,18 @@ struct Running {
     generation: u64,
 }
 
+/// Runs sing-box somewhere other than a child process. The mobile apps embed
+/// libbox in their VPN service: the engine hands over the generated config and
+/// still drives the core only through the Clash API, as on desktop.
+pub trait CoreHost: Send + Sync + 'static {
+    /// Version of the embedded core.
+    fn version(&self) -> CoreVersion;
+    /// Starts the core with this configuration (JSON text). Resolves once the
+    /// platform accepted it; readiness is then checked through the Clash API.
+    fn start(&self, config: String) -> BoxFuture<'static, Result<()>>;
+    fn stop(&self) -> BoxFuture<'static, ()>;
+}
+
 /// What a reset clears. The downloaded sing-box core is always kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResetScope {
@@ -243,6 +256,10 @@ pub struct Engine {
     probe_lock: tokio::sync::Mutex<()>,
     /// Latest reload request; an older pending one gives way to it.
     reload_ticket: AtomicU64,
+    /// Embedded core (mobile); `None` runs the sing-box executable.
+    host: Option<Arc<dyn CoreHost>>,
+    /// Told by the host when the embedded core stops on its own.
+    host_exit: Mutex<Option<oneshot::Sender<String>>>,
 }
 
 impl Engine {
@@ -251,6 +268,23 @@ impl Engine {
     }
 
     pub fn with_paths(rt: Handle, paths: Paths) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<Event>)> {
+        Self::build(rt, paths, None)
+    }
+
+    /// An engine whose core runs inside the platform (see [`CoreHost`]).
+    pub fn with_host(
+        rt: Handle,
+        paths: Paths,
+        host: Arc<dyn CoreHost>,
+    ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<Event>)> {
+        Self::build(rt, paths, Some(host))
+    }
+
+    fn build(
+        rt: Handle,
+        paths: Paths,
+        host: Option<Arc<dyn CoreHost>>,
+    ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<Event>)> {
         let store = Store::new(paths)?;
         let mut settings = store.load_settings();
         if settings.clash_api_secret.is_empty() {
@@ -308,7 +342,9 @@ impl Engine {
             reload_ticket: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             active: AtomicU64::new(0),
-            job: sys::KillOnCloseJob::new(),
+            job: if host.is_none() { sys::KillOnCloseJob::new() } else { None },
+            host,
+            host_exit: Mutex::new(None),
             wake_scheduler: Notify::new(),
             wake_auto: Notify::new(),
         });
@@ -371,13 +407,31 @@ impl Engine {
     }
 
     pub fn core_installed(&self) -> bool {
-        self.core_path().is_file()
+        self.host.is_some() || self.core_path().is_file()
+    }
+
+    /// Whether sing-box is embedded (mobile) rather than a downloaded executable.
+    pub fn embedded_core(&self) -> bool {
+        self.host.is_some()
+    }
+
+    /// The embedded core stopped by itself (VPN revoked, service killed).
+    pub fn core_exited(&self, reason: impl Into<String>) {
+        if let Some(tx) = self.host_exit.lock().unwrap().take() {
+            let _ = tx.send(reason.into());
+        }
+    }
+
+    /// A log line written by the embedded core.
+    pub fn push_core_log(&self, raw: &str) {
+        self.push_log(process::parse_log_line(raw));
     }
 
     /// Whether TUN can be used: an elevated app on Windows; on macOS / Linux
-    /// either root or a core binary granted the privilege.
+    /// either root or a core binary granted the privilege. The platform's VPN
+    /// consent covers an embedded core.
     pub fn tun_permitted(&self) -> bool {
-        sys::is_elevated() || sys::core_tun_privileged(&self.core_path())
+        self.host.is_some() || sys::is_elevated() || sys::core_tun_privileged(&self.core_path())
     }
 
     /// macOS / Linux: asks for an administrator password and grants the core
@@ -510,27 +564,18 @@ impl Engine {
     /// Runs once after the UI is up: cleans stale state, auto-starts the core,
     /// refreshes subscriptions flagged "update on start" and starts the scheduler.
     pub fn startup(self: &Arc<Self>) {
-        self.rt.spawn(self.clone().update_loop());
+        // App self-updates replace the executable; the mobile apps update through their stores.
+        if self.host.is_none() {
+            self.rt.spawn(self.clone().update_loop());
+        }
         self.rt.spawn(self.clone().auto_loop());
         let this = self.clone();
         self.rt.spawn(async move {
             let s = this.settings();
-            // A core from a crashed session would hold the ports; stop it.
-            if let Some(pid) = std::fs::read_to_string(this.pid_file()).ok().and_then(|p| p.trim().parse().ok()) {
-                sys::kill_stale_core(pid);
-                let _ = std::fs::remove_file(this.pid_file());
+            if this.host.is_none() {
+                this.clean_up_after_crash();
             }
-            // A marker means we set the system proxy and did not get to restore it
-            // (crash or power loss). Only then is it safe to clear it.
-            let marker = this.sysproxy_marker();
-            if let Ok(server) = std::fs::read_to_string(&marker) {
-                let state = sys::system_proxy_state();
-                if state.enabled && state.server == server.trim() {
-                    let _ = sys::clear_system_proxy();
-                }
-                let _ = std::fs::remove_file(&marker);
-            }
-            if s.launch_at_login {
+            if this.host.is_none() && s.launch_at_login {
                 this.apply_launch_at_login(true);
             }
             this.refresh_core_version().await;
@@ -566,6 +611,25 @@ impl Engine {
         });
     }
 
+    /// Desktop: what a crashed session left behind.
+    fn clean_up_after_crash(&self) {
+        // A core from a crashed session would hold the ports; stop it.
+        if let Some(pid) = std::fs::read_to_string(self.pid_file()).ok().and_then(|p| p.trim().parse().ok()) {
+            sys::kill_stale_core(pid);
+            let _ = std::fs::remove_file(self.pid_file());
+        }
+        // A marker means we set the system proxy and did not get to restore it
+        // (crash or power loss). Only then is it safe to clear it.
+        let marker = self.sysproxy_marker();
+        if let Ok(server) = std::fs::read_to_string(&marker) {
+            let state = sys::system_proxy_state();
+            if state.enabled && state.server == server.trim() {
+                let _ = sys::clear_system_proxy();
+            }
+            let _ = std::fs::remove_file(&marker);
+        }
+    }
+
     /// Stops the core and restores the system proxy. Blocks; call on quit.
     pub fn shutdown_blocking(&self) {
         let fut = async {
@@ -599,7 +663,7 @@ impl Engine {
                 log::warn!("reset: could not remove {}: {e}", path.display());
             }
         };
-        if scope.settings {
+        if scope.settings && self.host.is_none() {
             if let Err(e) = sys::set_launch_at_login(APP_NAME, None) {
                 log::warn!("reset: could not remove login start: {e:#}");
             }
@@ -608,6 +672,8 @@ impl Engine {
                     log::warn!("reset: could not remove the elevated login task: {e:#}");
                 }
             }
+        }
+        if scope.settings {
             remove(paths.settings_file());
             remove(paths.root.join("settings.broken.json"));
         }
@@ -675,102 +741,101 @@ impl Engine {
     }
 
     async fn launch(self: &Arc<Self>, slot: &mut Option<Running>) -> Result<()> {
-        let core = self.core_path();
-        if !core.is_file() {
-            bail!("{CORE_MISSING}");
-        }
-        let version = match self.core_version() {
-            Some(v) => v,
+        let settings = self.settings();
+        let (version, built, generation) = match self.host.clone() {
+            Some(host) => {
+                let version = host.version();
+                self.with(|s| s.core_version = Some(version));
+                let built = self.prepare_config(&settings, version).await?;
+                // Errors from an earlier run must not explain this one.
+                self.with(|s| s.last_error = None);
+                let (exit_tx, mut exit_rx) = oneshot::channel();
+                *self.host_exit.lock().unwrap() = Some(exit_tx);
+                host.start(serde_json::to_string(&built.config)?)
+                    .await
+                    .context("could not start the core")?;
+                let ready = self.wait_ready(|| exit_rx.try_recv().ok()).await;
+                if let Err(e) = ready {
+                    host.stop().await;
+                    return Err(e);
+                }
+                let (generation, kill_rx) = self.next_run(slot);
+                self.rt.spawn(self.clone().watch_hosted(host, exit_rx, kill_rx, generation));
+                (version, built, generation)
+            }
             None => {
-                let v = process::detect_version(&core).await?;
-                self.with(|s| s.core_version = Some(v));
-                self.emit(Event::CoreInfo);
-                v
+                let core = self.core_path();
+                if !core.is_file() {
+                    bail!("{CORE_MISSING}");
+                }
+                let version = match self.core_version() {
+                    Some(v) => v,
+                    None => {
+                        let v = process::detect_version(&core).await?;
+                        self.with(|s| s.core_version = Some(v));
+                        self.emit(Event::CoreInfo);
+                        v
+                    }
+                };
+                if version < CoreVersion::MIN_SUPPORTED {
+                    bail!(
+                        "sing-box {version} is too old; {} or newer is required",
+                        CoreVersion::MIN_SUPPORTED
+                    );
+                }
+                if settings.tun_enabled && !self.tun_permitted() {
+                    bail!(TUN_NEEDS_ADMIN);
+                }
+                let built = self.prepare_config(&settings, version).await?;
+                let run_dir = self.store.paths.run_dir.clone();
+                let cfg_path = self.store.paths.config_file();
+                process::check_config(&core, &cfg_path, &run_dir)
+                    .await
+                    .context("invalid configuration")?;
+
+                let mut child = process::spawn_core(&core, &cfg_path, &run_dir)?;
+                if let Some(pid) = child.id() {
+                    let _ = std::fs::write(self.pid_file(), pid.to_string());
+                }
+                #[cfg(windows)]
+                if let (Some(job), Some(h)) = (&self.job, child.raw_handle()) {
+                    job.assign(h);
+                }
+                // Errors from an earlier run must not explain this one.
+                self.with(|s| s.last_error = None);
+                for pipe in [
+                    child.stdout.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+                    child.stderr.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let this = Arc::downgrade(self);
+                    process::pipe_lines(pipe, move |line| {
+                        if let Some(e) = this.upgrade() {
+                            e.push_log(line);
+                        }
+                    });
+                }
+
+                let ready = self
+                    .wait_ready(|| match child.try_wait() {
+                        Ok(Some(status)) => Some(status.to_string()),
+                        Ok(None) => None,
+                        Err(e) => Some(e.to_string()),
+                    })
+                    .await;
+                if let Err(e) = ready {
+                    let _ = child.kill().await;
+                    return Err(e);
+                }
+                let (generation, kill_rx) = self.next_run(slot);
+                self.rt.spawn(self.clone().watch(child, kill_rx, generation));
+                (version, built, generation)
             }
         };
-        if version < CoreVersion::MIN_SUPPORTED {
-            bail!(
-                "sing-box {version} is too old; {} or newer is required",
-                CoreVersion::MIN_SUPPORTED
-            );
-        }
-        let settings = self.settings();
-        if settings.tun_enabled && !self.tun_permitted() {
-            bail!(TUN_NEEDS_ADMIN);
-        }
-        let mut built = self.render_config(&settings, version);
-        if !built.missing_rule_sets.is_empty() {
-            let n = self.download_rule_sets(&built.missing_rule_sets, &[Route::Direct]).await;
-            if n > 0 {
-                built = self.render_config(&settings, version);
-            }
-            if !built.missing_rule_sets.is_empty() {
-                let tags: Vec<&str> = built.missing_rule_sets.iter().map(|r| r.tag.as_str()).collect();
-                self.log_app(
-                    LogLevel::Warn,
-                    format!("starting without rule-sets {} (will retry through the proxy)", tags.join(", ")),
-                );
-            }
-        }
-        for w in &built.warnings {
-            self.log_app(LogLevel::Warn, format!("custom rules: {w}"));
-        }
-        let run_dir = self.store.paths.run_dir.clone();
-        let cfg_path = self.store.paths.config_file();
-        crate::store::write_atomic(&cfg_path, &serde_json::to_vec_pretty(&built.config)?)?;
-        process::check_config(&core, &cfg_path, &run_dir)
-            .await
-            .context("invalid configuration")?;
 
-        let mut child = process::spawn_core(&core, &cfg_path, &run_dir)?;
-        if let Some(pid) = child.id() {
-            let _ = std::fs::write(self.pid_file(), pid.to_string());
-        }
-        #[cfg(windows)]
-        if let (Some(job), Some(h)) = (&self.job, child.raw_handle()) {
-            job.assign(h);
-        }
-        // Errors from an earlier run must not explain this one.
-        self.with(|s| s.last_error = None);
-        for pipe in [
-            child.stdout.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-            child.stderr.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let this = Arc::downgrade(self);
-            process::pipe_lines(pipe, move |line| {
-                if let Some(e) = this.upgrade() {
-                    e.push_log(line);
-                }
-            });
-        }
-
-        let api = self.api();
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if let Some(status) = child.try_wait()? {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                bail!("sing-box exited ({status}) {}", self.last_core_error());
-            }
-            if api.version().await.is_ok() {
-                break;
-            }
-            if Instant::now() > deadline {
-                let _ = child.kill().await;
-                bail!("sing-box did not become ready in time. {}", self.last_core_error());
-            }
-            tokio::time::sleep(Duration::from_millis(150)).await;
-        }
-
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let (kill_tx, kill_rx) = oneshot::channel();
-        *slot = Some(Running { kill: kill_tx, generation });
-        self.active.store(generation, Ordering::SeqCst);
-        self.rt.spawn(self.clone().watch(child, kill_rx, generation));
-
-        if let Err(e) = api.set_mode(settings.mode.as_str()).await {
+        if let Err(e) = self.api().set_mode(settings.mode.as_str()).await {
             self.log_app(LogLevel::Warn, format!("could not set mode: {e:#}"));
         }
         self.set_status(CoreStatus::Running);
@@ -786,6 +851,58 @@ impl Engine {
         // Exit checks go through the core, so they run once it is up.
         self.refresh_countries();
         Ok(())
+    }
+
+    /// Renders the configuration (fetching missing rule-sets first) and writes it to disk.
+    async fn prepare_config(&self, settings: &Settings, version: CoreVersion) -> Result<BuiltConfig> {
+        let mut built = self.render_config(settings, version);
+        if !built.missing_rule_sets.is_empty() {
+            let n = self.download_rule_sets(&built.missing_rule_sets, &[Route::Direct]).await;
+            if n > 0 {
+                built = self.render_config(settings, version);
+            }
+            if !built.missing_rule_sets.is_empty() {
+                let tags: Vec<&str> = built.missing_rule_sets.iter().map(|r| r.tag.as_str()).collect();
+                self.log_app(
+                    LogLevel::Warn,
+                    format!("starting without rule-sets {} (will retry through the proxy)", tags.join(", ")),
+                );
+            }
+        }
+        for w in &built.warnings {
+            self.log_app(LogLevel::Warn, format!("custom rules: {w}"));
+        }
+        let cfg_path = self.store.paths.config_file();
+        crate::store::write_atomic(&cfg_path, &serde_json::to_vec_pretty(&built.config)?)?;
+        Ok(built)
+    }
+
+    /// Waits for the Clash API to answer; `exited` reports a core that died meanwhile.
+    async fn wait_ready(&self, mut exited: impl FnMut() -> Option<String>) -> Result<()> {
+        let api = self.api();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = exited() {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                bail!("sing-box exited ({status}) {}", self.last_core_error());
+            }
+            if api.version().await.is_ok() {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                bail!("sing-box did not become ready in time. {}", self.last_core_error());
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+
+    /// Records a newly running core in `slot`: its generation and stop channel.
+    fn next_run(&self, slot: &mut Option<Running>) -> (u64, oneshot::Receiver<oneshot::Sender<()>>) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let (kill_tx, kill_rx) = oneshot::channel();
+        *slot = Some(Running { kill: kill_tx, generation });
+        self.active.store(generation, Ordering::SeqCst);
+        (generation, kill_rx)
     }
 
     fn rules_dir(&self) -> PathBuf {
@@ -901,37 +1018,8 @@ impl Engine {
             status = child.wait() => {
                 // Release a pending stop request before taking the lock.
                 drop(kill_rx);
-                let mut slot = self.proc.lock().await;
-                if slot.as_ref().map(|r| r.generation) == Some(generation) {
-                    *slot = None;
-                    self.active.store(0, Ordering::SeqCst);
-                    if self.with(|s| s.sysproxy_applied) {
-                        self.clear_sysproxy();
-                    }
-                    let code = status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    let msg = format!("sing-box exited unexpectedly ({code}). {}", self.last_core_error());
-                    self.log_app(LogLevel::Error, &msg);
-                    self.set_status(CoreStatus::Failed(msg.clone()));
-                    self.notice(NoticeKind::Error, Msg::new("notice.core_exited").arg(msg));
-                    // Bring it back, but at most 3 times in 10 minutes.
-                    let recent = self.with(|s| {
-                        s.crashes.retain(|t| t.elapsed() < Duration::from_secs(600));
-                        s.crashes.push(Instant::now());
-                        s.crashes.len()
-                    });
-                    if recent <= 3 {
-                        let this = self.clone();
-                        self.rt.spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(3)).await;
-                            if matches!(this.status(), CoreStatus::Failed(_)) {
-                                this.log_app(LogLevel::Info, "restarting the core after it exited");
-                                // Not awaited here: the start future spawns this watcher.
-                                this.start();
-                            }
-                        });
-                    }
-                }
+                let code = status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
+                self.exited_unexpectedly(generation, code).await;
             }
             req = &mut kill_rx => {
                 let _ = child.kill().await;
@@ -940,6 +1028,68 @@ impl Engine {
                     let _ = done.send(());
                 }
             }
+        }
+    }
+
+    async fn watch_hosted(
+        self: Arc<Self>,
+        host: Arc<dyn CoreHost>,
+        mut exit_rx: oneshot::Receiver<String>,
+        mut kill_rx: oneshot::Receiver<oneshot::Sender<()>>,
+        generation: u64,
+    ) {
+        tokio::select! {
+            reason = &mut exit_rx => {
+                drop(kill_rx);
+                let reason = reason.unwrap_or_else(|_| "stopped".into());
+                self.exited_unexpectedly(generation, reason).await;
+            }
+            req = &mut kill_rx => {
+                // Our own stop: the host's exit report is expected, not a crash.
+                self.host_exit.lock().unwrap().take();
+                host.stop().await;
+                if let Ok(done) = req {
+                    let _ = done.send(());
+                }
+            }
+        }
+    }
+
+    async fn exited_unexpectedly(self: &Arc<Self>, generation: u64, code: String) {
+        let mut slot = self.proc.lock().await;
+        if slot.as_ref().map(|r| r.generation) != Some(generation) {
+            return;
+        }
+        *slot = None;
+        self.active.store(0, Ordering::SeqCst);
+        if self.with(|s| s.sysproxy_applied) {
+            self.clear_sysproxy();
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let msg = format!("sing-box exited unexpectedly ({code}). {}", self.last_core_error());
+        self.log_app(LogLevel::Error, &msg);
+        self.set_status(CoreStatus::Failed(msg.clone()));
+        self.notice(NoticeKind::Error, Msg::new("notice.core_exited").arg(msg));
+        // Bring it back, but at most 3 times in 10 minutes. A revoked VPN is the
+        // user's (or another VPN app's) decision, so an embedded core stays down.
+        if self.host.is_some() {
+            return;
+        }
+        let recent = self.with(|s| {
+            s.crashes.retain(|t| t.elapsed() < Duration::from_secs(600));
+            s.crashes.push(Instant::now());
+            s.crashes.len()
+        });
+        if recent <= 3 {
+            let this = self.clone();
+            self.rt.spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if matches!(this.status(), CoreStatus::Failed(_)) {
+                    this.log_app(LogLevel::Info, "restarting the core after it exited");
+                    // Not awaited here: the start future spawns this watcher.
+                    this.start();
+                }
+            });
         }
     }
 
@@ -981,6 +1131,14 @@ impl Engine {
     }
 
     fn render_config(&self, settings: &Settings, version: CoreVersion) -> BuiltConfig {
+        // An embedded core always runs as the platform's VPN.
+        let mobile;
+        let settings = if self.host.is_some() {
+            mobile = Settings { tun_enabled: true, ..settings.clone() };
+            &mobile
+        } else {
+            settings
+        };
         let rules_dir = self.rules_dir();
         let built = self.with(|st| {
             let groups = st
@@ -1032,6 +1190,10 @@ impl Engine {
     // --------------------------------------------------------- system proxy
 
     fn apply_sysproxy(&self) {
+        // Mobile routes traffic through its VPN; there is no system proxy to set.
+        if self.host.is_some() {
+            return;
+        }
         let (enabled, port, bypass, running) = self.with(|s| {
             (
                 s.settings.system_proxy,
@@ -1071,6 +1233,9 @@ impl Engine {
     /// process, a highest-privilege scheduled task avoids a UAC prompt at login;
     /// otherwise the Run key is used (the app then asks for elevation itself).
     fn apply_launch_at_login(&self, enabled: bool) {
+        if self.host.is_some() {
+            return;
+        }
         let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
         let use_task = enabled && self.settings().run_as_admin && sys::is_elevated();
         let result = (|| -> Result<()> {
@@ -2465,7 +2630,9 @@ impl Engine {
 
     pub async fn refresh_core_version(&self) {
         let core = self.core_path();
-        let v = if core.is_file() {
+        let v = if let Some(host) = &self.host {
+            Some(host.version())
+        } else if core.is_file() {
             process::detect_version(&core).await.ok()
         } else {
             None

@@ -16,3 +16,6 @@ Thumbs.db
 
 # Packaged builds
 /dist/
+
+# Local working notes
+/principle.md

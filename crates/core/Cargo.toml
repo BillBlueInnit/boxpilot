@@ -26,12 +26,17 @@ maxminddb = "0.26"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# TLS: the OS stack on Windows (SChannel) and macOS (Security.framework);
+# TLS: the OS stack on Windows (SChannel) and Apple platforms (Security.framework);
 # rustls with the system certificate store on Linux, so no libssl is needed.
-[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+# Android (boxpilot-mobile) has no certificate store a native library can read,
+# so it uses rustls with the bundled Mozilla roots.
+[target.'cfg(any(windows, target_os = "macos", target_os = "ios"))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
 
-[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
+
+[target.'cfg(not(any(windows, target_os = "macos", target_os = "ios", target_os = "android")))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
 
 [target.'cfg(windows)'.dependencies]
