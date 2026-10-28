@@ -36,6 +36,27 @@ const MAX_LOGS: usize = 2000;
 /// Config changes arriving within this window share one core reload.
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(1200);
 const DELAY_TIMEOUT_MS: u32 = 5000;
+/// Exit checks are slow-ish; each node's answer is reused this long.
+const EXIT_REUSE: Duration = Duration::from_secs(6 * 3600);
+
+/// The node traffic leaves through: Proxy's choice, followed through any
+/// groups. `None` for direct, reject or an unresolved group.
+fn current_node(groups: &[ProxyGroup]) -> Option<String> {
+    let mut now = groups.iter().find(|g| g.name == crate::config::TAG_PROXY)?.now.clone();
+    for _ in 0..8 {
+        match groups.iter().find(|g| g.name == now) {
+            Some(g) if !g.now.is_empty() => now = g.now.clone(),
+            Some(_) => return None,
+            None => break,
+        }
+    }
+    // Still a group after that many hops: a loop.
+    if groups.iter().any(|g| g.name == now) {
+        return None;
+    }
+    let builtin = now.is_empty() || now == crate::config::TAG_DIRECT || now == "block" || now == "reject";
+    (!builtin).then_some(now)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreStatus {
@@ -162,6 +183,11 @@ pub trait CoreHost: Send + Sync + 'static {
     /// platform accepted it; readiness is then checked through the Clash API.
     fn start(&self, config: String) -> BoxFuture<'static, Result<()>>;
     fn stop(&self) -> BoxFuture<'static, ()>;
+    /// Whether the embedded core was built with this outbound type. Mobile builds
+    /// leave out the heaviest ones (naive brings a whole browser network stack).
+    fn supports(&self, _protocol: &str) -> bool {
+        true
+    }
 }
 
 /// What a reset clears. The downloaded sing-box core is always kept.
@@ -201,6 +227,8 @@ pub struct UpdateInfo {
 struct BuildMeta {
     groups: Vec<String>,
     types: HashMap<String, String>,
+    /// Nodes left out because the embedded core lacks their protocol.
+    unsupported: usize,
 }
 
 struct State {
@@ -234,6 +262,8 @@ struct State {
     speed_testing: HashSet<String>,
     /// Recent unexpected core exits, for the automatic restart's limit.
     crashes: Vec<Instant>,
+    /// The node traffic currently leaves through, once its exit was checked.
+    exit_watched: Option<String>,
 }
 
 pub struct Engine {
@@ -334,6 +364,7 @@ impl Engine {
                 real_testing: HashSet::new(),
                 speed_testing: HashSet::new(),
                 crashes: Vec::new(),
+                exit_watched: None,
             }),
             tx,
             proc: tokio::sync::Mutex::new(None),
@@ -425,6 +456,10 @@ impl Engine {
     /// A log line written by the embedded core.
     pub fn push_core_log(&self, raw: &str) {
         self.push_log(process::parse_log_line(raw));
+    }
+
+    fn push_core_line(&self, line: LogLine) {
+        self.push_log(line);
     }
 
     /// Whether TUN can be used: an elevated app on Windows; on macOS / Linux
@@ -845,6 +880,9 @@ impl Engine {
         );
         self.apply_sysproxy();
         self.spawn_traffic(generation);
+        if self.host.is_some() {
+            self.spawn_core_logs(generation);
+        }
         self.wake_auto.notify_one();
         self.spawn_rule_set_maintenance(generation, built.rule_sets, !built.missing_rule_sets.is_empty());
         let _ = self.refresh_proxies_async().await;
@@ -871,6 +909,10 @@ impl Engine {
         }
         for w in &built.warnings {
             self.log_app(LogLevel::Warn, format!("custom rules: {w}"));
+        }
+        let unsupported = self.with(|s| s.meta.unsupported);
+        if unsupported > 0 {
+            self.log_app(LogLevel::Warn, format!("left out {unsupported} node(s) whose protocol this core build does not include"));
         }
         let cfg_path = self.store.paths.config_file();
         crate::store::write_atomic(&cfg_path, &serde_json::to_vec_pretty(&built.config)?)?;
@@ -1130,6 +1172,52 @@ impl Engine {
         });
     }
 
+    /// The embedded core's log, read through the Clash API. With recording off only
+    /// errors are read, so a failure can still be explained.
+    fn spawn_core_logs(self: &Arc<Self>, generation: u64) {
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let api = this.api();
+            while this.active.load(Ordering::SeqCst) == generation {
+                let s = this.settings();
+                let level = if !s.record_logs {
+                    "error"
+                } else {
+                    match s.log_level.as_str() {
+                        "trace" | "debug" => "debug",
+                        "warn" | "warning" => "warning",
+                        "error" | "fatal" | "panic" => "error",
+                        _ => "info",
+                    }
+                };
+                let _ = api
+                    .stream_logs(level, |entry| {
+                        if this.active.load(Ordering::SeqCst) != generation {
+                            return false;
+                        }
+                        let level = match entry.level.as_str() {
+                            "debug" => LogLevel::Debug,
+                            "warning" => LogLevel::Warn,
+                            "error" => LogLevel::Error,
+                            _ => LogLevel::Info,
+                        };
+                        // Drop the "[connection-id duration]" prefix, as for the desktop's stdout.
+                        let mut msg = entry.payload.trim();
+                        if msg.starts_with('[') {
+                            if let Some(end) = msg.find(']') {
+                                msg = msg[end + 1..].trim_start();
+                            }
+                        }
+                        this.push_core_line(LogLine::app(level, msg));
+                        // A changed level or recording switch takes effect on the next stream.
+                        this.settings().record_logs == s.record_logs && this.settings().log_level == s.log_level
+                    })
+                    .await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    }
+
     fn render_config(&self, settings: &Settings, version: CoreVersion) -> BuiltConfig {
         // An embedded core always runs as the platform's VPN.
         let mobile;
@@ -1140,14 +1228,30 @@ impl Engine {
             settings
         };
         let rules_dir = self.rules_dir();
+        let mut skipped = 0usize;
         let built = self.with(|st| {
+            let supported: HashMap<&str, Vec<Node>> = match &self.host {
+                Some(host) => st
+                    .nodes
+                    .iter()
+                    .map(|(id, nodes)| {
+                        let kept: Vec<Node> = nodes.iter().filter(|n| host.supports(&n.protocol)).cloned().collect();
+                        skipped += nodes.len() - kept.len();
+                        (id.as_str(), kept)
+                    })
+                    .collect(),
+                None => HashMap::new(),
+            };
             let groups = st
                 .subs
                 .iter()
                 .filter(|s| s.enabled)
                 .map(|s| NodeGroup {
                     name: if s.name.is_empty() { "Subscription" } else { &s.name },
-                    nodes: st.nodes.get(&s.id).map(Vec::as_slice).unwrap_or(&[]),
+                    nodes: match &self.host {
+                        Some(_) => supported.get(s.id.as_str()).map(Vec::as_slice).unwrap_or(&[]),
+                        None => st.nodes.get(&s.id).map(Vec::as_slice).unwrap_or(&[]),
+                    },
                 })
                 .collect();
             let countries: HashMap<String, String> = st.countries.iter().map(|(t, c)| (t.clone(), c.code.clone())).collect();
@@ -1160,7 +1264,7 @@ impl Engine {
                 countries: Some(&countries),
             })
         });
-        let mut meta = BuildMeta::default();
+        let mut meta = BuildMeta { unsupported: skipped, ..BuildMeta::default() };
         for ob in built
             .config
             .get("outbounds")
@@ -2265,11 +2369,18 @@ impl Engine {
                 None => pending.push((tag, host)),
             }
         }
-        // Earlier GeoIP answers stay visible while new ones load.
+        // Earlier GeoIP answers stay visible while new ones load. A measured exit
+        // outranks both the name and the server's GeoIP: relays and transit nodes
+        // are entered in one country and leave from another.
         self.with(|s| {
             let old = std::mem::replace(&mut s.countries, named);
             for (tag, _) in &pending {
                 if let Some(c) = old.get(tag) {
+                    s.countries.insert(tag.clone(), c.clone());
+                }
+            }
+            for (tag, (c, at)) in &s.exit_checked {
+                if at.elapsed() < EXIT_REUSE {
                     s.countries.insert(tag.clone(), c.clone());
                 }
             }
@@ -2313,6 +2424,7 @@ impl Engine {
             for (tag, host) in &pending {
                 let ip = resolved.get(host);
                 match (ip, ip.and_then(|ip| codes.get(ip))) {
+                    _ if s.exit_checked.get(tag).is_some_and(|(_, at)| at.elapsed() < EXIT_REUSE) => {}
                     (Some(ip), Some(code)) if !geo::needs_exit_check(ip) => {
                         s.countries.insert(tag.clone(), geo::Country { code: code.clone(), origin: geo::Origin::Ip(*ip) });
                     }
@@ -2331,7 +2443,6 @@ impl Engine {
     /// Asks an IP service through each node (via the hidden probe selector)
     /// where its traffic leaves. Needs the core running; answers are reused for 6 h.
     async fn check_exits(self: &Arc<Self>, tags: Vec<String>) {
-        const REUSE: Duration = Duration::from_secs(6 * 3600);
         let port = self.with(|s| s.settings.probe_port);
         if tags.is_empty() || port == 0 || !self.status().is_running() {
             return;
@@ -2339,7 +2450,7 @@ impl Engine {
         let probe_url = format!("http://127.0.0.1:{port}");
         let api = self.api();
         for tag in tags {
-            let cached = self.with(|s| s.exit_checked.get(&tag).filter(|(_, at)| at.elapsed() < REUSE).map(|(c, _)| c.clone()));
+            let cached = self.with(|s| s.exit_checked.get(&tag).filter(|(_, at)| at.elapsed() < EXIT_REUSE).map(|(c, _)| c.clone()));
             let country = match cached {
                 Some(c) => Some(c),
                 None => {
@@ -2527,7 +2638,7 @@ impl Engine {
         });
     }
 
-    async fn refresh_proxies_async(&self) -> Result<()> {
+    async fn refresh_proxies_async(self: &Arc<Self>) -> Result<()> {
         if !self.status().is_running() {
             return Ok(());
         }
@@ -2571,7 +2682,25 @@ impl Engine {
             }
         });
         self.emit(Event::Proxies);
+        self.watch_current_exit();
         Ok(())
+    }
+
+    /// Checks where the node in use really leaves, once per node it switches to
+    /// (cached for hours), so the country shown for it is the measured one.
+    fn watch_current_exit(self: &Arc<Self>) {
+        let tag = self.with(|s| {
+            let leaf = current_node(&s.groups)?;
+            if s.exit_watched.as_deref() == Some(leaf.as_str()) {
+                return None;
+            }
+            s.exit_watched = Some(leaf.clone());
+            Some(leaf)
+        });
+        if let Some(tag) = tag {
+            let this = self.clone();
+            self.rt.spawn(async move { this.check_exits(vec![tag]).await });
+        }
     }
 
     pub fn select_proxy(self: &Arc<Self>, group: &str, name: &str) {
@@ -2759,4 +2888,29 @@ fn host_of(url: &str) -> String {
         .and_then(|r| r.split(['/', '?', ':']).next())
         .unwrap_or(url)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group(name: &str, now: &str) -> ProxyGroup {
+        ProxyGroup { name: name.into(), kind: "Selector".into(), now: now.into(), members: Vec::new() }
+    }
+
+    #[test]
+    fn current_node_follows_groups() {
+        let groups = [group("Proxy", "Auto"), group("Auto", "HK 01")];
+        assert_eq!(current_node(&groups).as_deref(), Some("HK 01"));
+        assert_eq!(current_node(&[group("Proxy", "JP 02")]).as_deref(), Some("JP 02"));
+    }
+
+    #[test]
+    fn current_node_skips_builtins_and_unresolved_groups() {
+        assert_eq!(current_node(&[group("Proxy", "direct")]), None);
+        assert_eq!(current_node(&[group("Proxy", "Auto"), group("Auto", "")]), None);
+        assert_eq!(current_node(&[]), None);
+        // A loop stops instead of spinning, and is not a node.
+        assert_eq!(current_node(&[group("Proxy", "A"), group("A", "Proxy")]), None);
+    }
 }

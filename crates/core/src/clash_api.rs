@@ -242,9 +242,28 @@ impl ClashApi {
 
     /// Streams `/traffic` (one sample per second) until the stream ends or `on_sample` returns false.
     pub async fn stream_traffic(&self, mut on_sample: impl FnMut(Traffic) -> bool) -> Result<()> {
+        self.stream_lines("/traffic", |line| match serde_json::from_slice::<Traffic>(line) {
+            Ok(t) => on_sample(t),
+            Err(_) => true,
+        })
+        .await
+    }
+
+    /// Streams `/logs` at `level` (`debug`, `info`, `warning` or `error`) until the
+    /// stream ends or `on_line` returns false. The embedded core has no stdout to read.
+    pub async fn stream_logs(&self, level: &str, mut on_line: impl FnMut(LogEntry) -> bool) -> Result<()> {
+        self.stream_lines(&format!("/logs?level={level}"), |line| match serde_json::from_slice::<LogEntry>(line) {
+            Ok(entry) => on_line(entry),
+            Err(_) => true,
+        })
+        .await
+    }
+
+    /// Reads a long-lived response line by line.
+    async fn stream_lines(&self, path: &str, mut on_line: impl FnMut(&[u8]) -> bool) -> Result<()> {
         let resp = self
             .http
-            .get(format!("{}/traffic", self.base))
+            .get(format!("{}{path}", self.base))
             .bearer_auth(&self.secret)
             .timeout(Duration::from_secs(60 * 60 * 24 * 365))
             .send()
@@ -256,15 +275,22 @@ impl ClashApi {
             buf.extend_from_slice(&chunk?);
             while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = buf.drain(..=pos).collect();
-                if let Ok(t) = serde_json::from_slice::<Traffic>(&line) {
-                    if !on_sample(t) {
-                        return Ok(());
-                    }
+                if !on_line(&line) {
+                    return Ok(());
                 }
             }
         }
         Ok(())
     }
+}
+
+/// One line of `/logs`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogEntry {
+    /// `debug`, `info`, `warning` or `error`.
+    #[serde(rename = "type")]
+    pub level: String,
+    pub payload: String,
 }
 
 fn enc(s: &str) -> String {
