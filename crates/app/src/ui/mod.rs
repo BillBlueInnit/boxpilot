@@ -5,6 +5,7 @@ pub mod assets;
 mod chrome;
 mod connections;
 mod dashboard;
+mod local_nodes;
 mod logs;
 mod proxies;
 mod rules;
@@ -674,10 +675,11 @@ impl Render for MainView {
         let glass = mica
             && (self.last_look.1 == Backdrop::Acrylic
                 || crate::platform::translucency() == crate::platform::Translucency::Blur);
-        // Floors keep text readable: KWin's blur has no tint of its own, and a
+        // Floors keep text readable: the macOS and KWin blurs have no tint of
+        // their own (white windows behind would wash out light text), and a
         // light pane over dark windows behind would otherwise turn grey.
-        let glass_alpha = if cfg!(target_os = "linux") {
-            layout::surface_alpha().max(0.6)
+        let glass_alpha = if cfg!(any(target_os = "linux", target_os = "macos")) {
+            layout::surface_alpha().max(0.78)
         } else if !t.is_dark() {
             layout::surface_alpha().max(0.5)
         } else {
@@ -726,9 +728,9 @@ impl Render for MainView {
                 .text_color(fg)
                 .when(!mica, |d| d.bg(sidebar_bg))
                 // Acrylic and the macOS/KDE blur are one even pane: Transparency
-                // sets a single tint over the whole window (KWin's blur has no
-                // tint of its own, so it keeps a floor for readable text).
-                .when(glass && cfg!(target_os = "linux"), |d| d.bg(bg.opacity(glass_alpha)))
+                // sets a single tint over the whole window (those blurs have no
+                // tint of their own, so it keeps a floor for readable text).
+                .when(glass && !cfg!(windows), |d| d.bg(bg.opacity(glass_alpha)))
                 .child(self.render_sidebar(page, mica, m, window, cx))
                 .child(
                     v_flex()

@@ -119,6 +119,8 @@ pub struct BuiltConfig {
     pub rule_sets: Vec<RuleSetSpec>,
     /// Rule-sets that were left out because their local file is missing.
     pub missing_rule_sets: Vec<RuleSetSpec>,
+    /// The node group of each rule-set that has one: (provider id, group tag).
+    pub provider_groups: Vec<(String, String)>,
 }
 
 pub fn rule_set_file(dir: &std::path::Path, tag: &str) -> std::path::PathBuf {
@@ -228,6 +230,8 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
         }));
     }
     head.extend(group_outbounds);
+    // Rule-set groups go in ahead of the nodes, after the subscription groups.
+    let outbounds_len = outbounds.len();
     head.extend(outbounds);
     head.push(json!({ "type": "direct", "tag": TAG_DIRECT }));
 
@@ -235,6 +239,7 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
     let mut warnings = Vec::new();
     let known = all_known_tags(&head, &endpoints);
     let mut custom = parse_custom_rules(&s.custom_rules, &mut rule_sets, &known, &mut warnings);
+    let mut provider_groups = Vec::new();
     if let Some(dir) = input.rule_set_dir {
         for p in input.providers.iter().filter(|p| p.enabled) {
             let Some(path) = provider_file(dir, p).filter(|f| f.is_file()) else { continue };
@@ -248,6 +253,29 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
             rule.insert("rule_set".into(), json!([tag]));
             if !apply_target(&mut rule, &p.target, &known) {
                 warnings.push(format!("rule-set {}: unknown target `{}`, using Proxy", p.name, p.target));
+            }
+            if p.own_group && p.can_own_group() && !all_tags.is_empty() {
+                // A selector of its own: it starts on the rule-set's target and
+                // can be switched by hand or picked for like Auto.
+                let gtag = tags.alloc(if p.name.trim().is_empty() { "Rule-set" } else { &p.name });
+                let start = rule.get("outbound").and_then(Value::as_str).unwrap_or(TAG_PROXY).to_string();
+                let mut members = vec![TAG_PROXY.to_string()];
+                members.extend(group_tags.iter().cloned());
+                members.extend(all_tags.iter().cloned());
+                members.push(TAG_DIRECT.into());
+                let start = if members.contains(&start) { start } else { TAG_PROXY.to_string() };
+                head.insert(
+                    head.len() - 1 - outbounds_len,
+                    json!({
+                        "type": "selector",
+                        "tag": gtag,
+                        "outbounds": members,
+                        "default": start,
+                        "interrupt_exist_connections": true,
+                    }),
+                );
+                rule.insert("outbound".into(), json!(gtag));
+                provider_groups.push((p.id.clone(), gtag));
             }
             custom.push(Value::Object(rule));
         }
@@ -315,6 +343,7 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
         warnings,
         rule_sets: wanted,
         missing_rule_sets: missing,
+        provider_groups,
     }
 }
 
@@ -338,16 +367,20 @@ fn build_inbounds(s: &Settings) -> Vec<Value> {
         if s.ipv6 {
             address.push("fdfe:dcba:9876::1/126");
         }
-        inbounds.push(json!({
+        let mut tun = json!({
             "type": "tun",
             "tag": "tun-in",
-            "interface_name": "BoxPilot",
             "address": address,
             "mtu": s.tun_mtu,
             "auto_route": true,
             "strict_route": s.tun_strict_route,
             "stack": s.tun_stack.as_str(),
-        }));
+        });
+        // Apple systems only take `utunN` names; sing-box picks a free one there.
+        if !cfg!(any(target_os = "macos", target_os = "ios")) {
+            tun["interface_name"] = json!("BoxPilot");
+        }
+        inbounds.push(tun);
     }
     inbounds
 }
@@ -694,6 +727,62 @@ mod tests {
         assert!(rs.contains(&"geoip-cn"));
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(c["route"]["rules"][5]["domain_suffix"][0], "example.com");
+    }
+
+    #[test]
+    fn rule_sets_with_their_own_group() {
+        let dir = std::env::temp_dir().join(format!("bp-own-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let nodes = parse_subscription("trojan://p@a.com:443#A
+vless://u@b.com:443#B").unwrap();
+        let provider = |id: &str, name: &str, target: &str, own: bool| {
+            let p = RuleProvider {
+                id: id.into(),
+                name: name.into(),
+                target: target.into(),
+                own_group: own,
+                stored: Some(RuleFormat::SingBoxSource),
+                ..Default::default()
+            };
+            std::fs::write(provider_file(&dir, &p).unwrap(), b"{}").unwrap();
+            p
+        };
+        let providers = [
+            provider("g", "Google", "proxy", true),
+            provider("d", "Domestic", "direct", true),
+            provider("r", "Ads", "reject", true),
+            provider("n", "Netflix", "proxy", false),
+        ];
+        let out = build_config(&BuildInput {
+            settings: &Settings::default(),
+            groups: vec![NodeGroup { name: "Sub", nodes: &nodes.nodes }],
+            version: CoreVersion { major: 1, minor: 14, patch: 4 },
+            rule_set_dir: Some(&dir),
+            providers: &providers,
+        });
+        assert_eq!(
+            out.provider_groups,
+            vec![("g".to_string(), "Google".to_string()), ("d".to_string(), "Domestic".to_string())]
+        );
+        let obs = out.config["outbounds"].as_array().unwrap();
+        let group = obs.iter().find(|o| o["tag"] == "Google").unwrap();
+        assert_eq!(group["type"], "selector");
+        assert_eq!(group["default"], "Proxy");
+        assert_eq!(group["outbounds"], json!(["Proxy", "A", "B", "direct"]));
+        // A direct rule-set's group starts on Direct.
+        assert_eq!(obs.iter().find(|o| o["tag"] == "Domestic").unwrap()["default"], "direct");
+        // Groups sit ahead of the nodes.
+        let at = |tag: &str| obs.iter().position(|o| o["tag"] == tag).unwrap();
+        assert!(at("Google") < at("A"));
+        let rules = out.config["route"]["rules"].as_array().unwrap();
+        let outbound = |rs: &str| rules.iter().find(|r| r["rule_set"][0] == rs).unwrap()["outbound"].clone();
+        assert_eq!(outbound("rp-g"), "Google");
+        assert_eq!(outbound("rp-d"), "Domestic");
+        let ads = rules.iter().find(|r| r["rule_set"][0] == "rp-r").unwrap();
+        assert_eq!(ads["action"], "reject");
+        assert!(ads.get("outbound").is_none());
+        assert_eq!(outbound("rp-n"), "Proxy");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -84,11 +84,15 @@ impl RulesPage {
         let engine = self.state.read(cx).engine.clone();
         let t = cx.theme();
         let updating = engine.is_updating(&p.id);
+        // With a node group of its own, the group decides where matches go.
+        let custom = p.own_group && p.can_own_group();
         let (target_fg, target_bg) = match p.target.to_ascii_lowercase().as_str() {
+            _ if custom => (t.primary, t.primary.opacity(0.12)),
             "direct" => (t.success, t.success.opacity(0.12)),
             "reject" | "block" => (t.danger, t.danger.opacity(0.12)),
             _ => (t.primary, t.primary.opacity(0.12)),
         };
+        let target_text = if custom { t!("rules.target_custom").to_string() } else { target_label(&p.target) };
         let mut meta = Vec::new();
         if p.rule_count > 0 {
             meta.push(t!("rules.count", p.rule_count));
@@ -112,6 +116,10 @@ impl RulesPage {
         }
         let (e1, e2, e3, e4, e5) = (engine.clone(), engine.clone(), engine.clone(), engine.clone(), engine.clone());
         let (id1, id2, id3, id4, id5) = (p.id.clone(), p.id.clone(), p.id.clone(), p.id.clone(), p.id.clone());
+        let (e_group, id_group) = (engine.clone(), p.id.clone());
+        let (e_file, id_file) = (engine.clone(), p.id.clone());
+        let text_file = engine.rule_provider_text_file(&p.id);
+        let can_group = p.can_own_group();
         let edit = p.clone();
         let name = p.name.clone();
         v_flex()
@@ -177,14 +185,36 @@ impl RulesPage {
                                     .items_center()
                                     .min_w_0()
                                     .child(div().min_w_0().font_weight(FontWeight::MEDIUM).truncate().child(p.name.clone()))
-                                    .child(pill(target_label(&p.target), target_fg, target_bg))
+                                    .child(pill(target_text, target_fg, target_bg))
                                     .when(updating, |d| d.child(pill(t!("subs.updating"), t.info, t.info.opacity(0.12))))
                                     .when(p.last_error.is_some() && !updating, |d| {
                                         d.child(pill(t!("subs.update_failed"), t.danger, t.danger.opacity(0.12)))
                                     }),
                             )
                             .child(div().text_xs().text_color(t.muted_foreground).truncate().child(p.source.clone()))
-                            .child(div().text_xs().text_color(t.muted_foreground).truncate().child(meta.join("  ·  "))),
+                            .child(div().text_xs().text_color(t.muted_foreground).truncate().child(meta.join("  ·  ")))
+                            .when(can_group && !selecting, |d| {
+                                // Matches get a node group of their own on the Proxies page.
+                                d.child(
+                                    h_flex()
+                                        .pt_1()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            Toggle::new(("rp-grp", idx))
+                                                .checked(p.own_group)
+                                                .on_change(move |v, _, _| e_group.set_rule_provider_group(&id_group, *v)),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .text_xs()
+                                                .text_color(if p.own_group { t.foreground } else { t.muted_foreground })
+                                                .truncate()
+                                                .child(if p.own_group { t!("rules.own_group_on") } else { t!("rules.own_group") }),
+                                        ),
+                                )
+                            }),
                     )
                     .when(!selecting, |d| d.child(
                         h_flex()
@@ -205,6 +235,20 @@ impl RulesPage {
                                     .tooltip(t!("tip.update_now"))
                                     .loading(updating)
                                     .on_click(move |_, _, _| e4.update_rule_provider(&id4)),
+                            )
+                            .child(
+                                Button::new(("rp-file", idx))
+                                    .ghost()
+                                    .small()
+                                    .icon(extra_icon(Lucide::FilePen))
+                                    .tooltip(if text_file.is_some() { t!("tip.edit_file") } else { t!("tip.edit_file_binary") })
+                                    .disabled(text_file.is_none())
+                                    .on_click(move |_, window, cx| {
+                                        let Some((path, local)) = e_file.rule_provider_text_file(&id_file) else { return };
+                                        crate::platform::open_in_text_editor(&path);
+                                        e_file.watch_rule_provider_edits(&id_file, path, local);
+                                        window.push_notification(if local { t!("rules.edit_local") } else { t!("rules.edit_cached") }, cx);
+                                    }),
                             )
                             .child(
                                 Button::new(("rp-edit", idx))
@@ -363,9 +407,42 @@ impl Render for RulesPage {
             ]
         };
 
+        let ids = Rc::new(order.clone());
+        let (e_on, e_off, ids_on, ids_off) = (engine.clone(), engine.clone(), ids.clone(), ids);
+        let all_on = providers.iter().all(|p| p.enabled);
+        let all_off = providers.iter().all(|p| !p.enabled);
         let list = card(cx)
             .gap_0()
-            .child(section_title(t!("rules.sets"), cx))
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(section_title(t!("rules.sets"), cx))
+                    .when(!providers.is_empty() && !self.sel.active, |d| {
+                        d.child(
+                            h_flex()
+                                .gap_1()
+                                .flex_none()
+                                .child(
+                                    Button::new("rules-enable-all")
+                                        .ghost()
+                                        .small()
+                                        .label(t!("btn.enable_all"))
+                                        .disabled(all_on)
+                                        .on_click(move |_, _, _| e_on.set_rule_providers_enabled(&ids_on, true)),
+                                )
+                                .child(
+                                    Button::new("rules-disable-all")
+                                        .ghost()
+                                        .small()
+                                        .label(t!("btn.disable_all"))
+                                        .disabled(all_off)
+                                        .on_click(move |_, _, _| e_off.set_rule_providers_enabled(&ids_off, false)),
+                                ),
+                        )
+                    }),
+            )
             .when(providers.is_empty(), |d| {
                 d.child(empty_state(extra_icon(Lucide::ListFilter), t!("rules.empty_title"), t!("rules.empty_hint"), None, cx))
             })

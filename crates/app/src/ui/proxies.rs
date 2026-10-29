@@ -136,6 +136,7 @@ impl ProxiesPage {
         let (primary, border, bg) = (t.primary, hairline(cx), surface(cx));
         div()
             .id(SharedString::from(format!("node-{}-{idx}", group.name)))
+            .group("node-card")
             .w_full()
             // Cards in a row share its height whatever they show.
             .h_full()
@@ -167,6 +168,28 @@ impl ProxiesPage {
                                     .truncate()
                                     .child(outbound_label(&member.name)),
                             )
+                            .when(measurable, |d| {
+                                // Shown while the card is hovered.
+                                let (e_share, n_share) = (engine.clone(), member.name.clone());
+                                d.child(
+                                    div()
+                                        .id(id("share"))
+                                        .flex_none()
+                                        .p_0p5()
+                                        .rounded(dp(4.))
+                                        .text_color(t.muted_foreground)
+                                        .opacity(0.)
+                                        .group_hover("node-card", |s| s.opacity(1.))
+                                        .hover(|d| d.bg(t.muted).text_color(t.foreground))
+                                        .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(t!("tip.share")).build(window, cx))
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            let link = e_share.share_link_for(&n_share).map_err(|e| format!("{e:#}"));
+                                            super::local_nodes::copy_link(link, window, cx);
+                                        })
+                                        .child(extra_icon(Lucide::Share2).xsmall()),
+                                )
+                            })
                             .when(selected, |d| {
                                 d.child(div().flex_none().text_color(t.primary).child(IconName::Check))
                             }),
@@ -186,23 +209,39 @@ impl ProxiesPage {
     }
 }
 
-/// The Auto group's line: how it picks, which region, and what it uses now.
-fn auto_line(engine: &std::sync::Arc<boxpilot_core::Engine>, group: &ProxyGroup, cx: &App) -> impl IntoElement {
+/// Sets how a group picks (`None` = by hand) and its region.
+type SetPick = std::rc::Rc<dyn Fn(Option<AutoStrategy>, String)>;
+
+/// A picked group's line: how it picks, which region, and what it uses now.
+/// Auto always picks; a rule-set group can also be left to the user.
+fn pick_line(
+    id: &str,
+    engine: &std::sync::Arc<boxpilot_core::Engine>,
+    group: &ProxyGroup,
+    pick: Option<AutoStrategy>,
+    manual: bool,
+    region: &str,
+    set: SetPick,
+    cx: &App,
+) -> impl IntoElement {
     let t = cx.theme();
-    let s = engine.settings();
-    let (e_mode, e_region) = (engine.clone(), engine.clone());
-    let strategies: Vec<(SharedString, AutoStrategy)> =
-        AutoStrategy::ALL.iter().map(|a| (SharedString::from(auto_label(*a)), *a)).collect();
+    let mut strategies: Vec<(SharedString, Option<AutoStrategy>)> = Vec::new();
+    if manual {
+        strategies.push((t!("auto.manual").into(), None));
+    }
+    strategies.extend(AutoStrategy::ALL.iter().map(|a| (SharedString::from(auto_label(*a)), Some(*a))));
     // (label, code); the dropdown carries the index, since codes are strings.
     let mut regions: Vec<(SharedString, String)> = vec![(t!("auto.region_any").into(), String::new())];
     regions.extend(engine.country_counts().into_iter().map(|(code, n)| (SharedString::from(format!("{code} · {n}")), code)));
-    if !s.auto_region.is_empty() && !regions.iter().any(|(_, c)| *c == s.auto_region) {
-        regions.push((SharedString::from(s.auto_region.clone()), s.auto_region.clone()));
+    if !region.is_empty() && !regions.iter().any(|(_, c)| c == region) {
+        regions.push((SharedString::from(region.to_string()), region.to_string()));
     }
-    let current_region = regions.iter().position(|(_, c)| *c == s.auto_region).unwrap_or(0);
+    let current_region = regions.iter().position(|(_, c)| c == region).unwrap_or(0);
     let region_codes: Vec<String> = regions.iter().map(|(_, c)| c.clone()).collect();
     let region_options: Vec<(SharedString, usize)> = regions.into_iter().enumerate().map(|(i, (label, _))| (label, i)).collect();
-    let hint = auto_hint(s.auto_strategy);
+    let hint = pick.map_or(t!("auto.manual_hint"), auto_hint);
+    let (set_mode, set_region) = (set.clone(), set);
+    let region_now = region.to_string();
     h_flex()
         .gap_2()
         .flex_wrap()
@@ -210,14 +249,15 @@ fn auto_line(engine: &std::sync::Arc<boxpilot_core::Engine>, group: &ProxyGroup,
         .min_w_0()
         .text_sm()
         .text_color(t.muted_foreground)
-        .child(choice("auto-strategy", s.auto_strategy, strategies, move |v, _, _| e_mode.update_settings(|s| s.auto_strategy = v)))
-        .child(choice("auto-region", current_region, region_options, move |i, _, _| {
-            let code = region_codes.get(i).cloned().unwrap_or_default();
-            e_region.update_settings(move |s| s.auto_region = code)
-        }))
+        .child(choice(SharedString::from(format!("{id}-strategy")), pick, strategies, move |v, _, _| set_mode(v, region_now.clone())))
+        .when(pick.is_some(), |d| {
+            d.child(choice(SharedString::from(format!("{id}-region")), current_region, region_options, move |i, _, _| {
+                set_region(pick, region_codes.get(i).cloned().unwrap_or_default())
+            }))
+        })
         .child(
             div()
-                .id("auto-hint")
+                .id(SharedString::from(format!("{id}-hint")))
                 .flex_none()
                 .child(IconName::Info)
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint).build(window, cx)),
@@ -257,6 +297,7 @@ impl PhaseExt for f32 {
 
 impl Render for ProxiesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        sync_placeholder(&self.search, t!("proxies.filter"), window, cx);
         // Cards share each row evenly at any window width.
         let cols = super::layout::grid_columns(super::layout::metrics(window).content, 236.0, 12.0);
         let engine = self.state.read(cx).engine.clone();
@@ -367,7 +408,20 @@ impl Render for ProxiesPage {
         )
         .child(tabs)
         .child(if group.name == boxpilot_core::config::TAG_AUTO {
-            auto_line(&engine, &group, cx).into_any_element()
+            let s = engine.settings();
+            let e = engine.clone();
+            let set: SetPick = std::rc::Rc::new(move |pick, region| {
+                e.update_settings(move |s| {
+                    s.auto_strategy = pick.unwrap_or_default();
+                    s.auto_region = region;
+                })
+            });
+            pick_line("auto", &engine, &group, Some(s.auto_strategy), false, &s.auto_region, set, cx).into_any_element()
+        } else if let Some(rule_set) = engine.rule_group(&group.name) {
+            let e = engine.clone();
+            let id = rule_set.id.clone();
+            let set: SetPick = std::rc::Rc::new(move |pick, region| e.set_rule_group_pick(&id, pick, &region));
+            pick_line("rule-group", &engine, &group, rule_set.pick, true, &rule_set.region, set, cx).into_any_element()
         } else {
             h_flex()
                 .gap_2()

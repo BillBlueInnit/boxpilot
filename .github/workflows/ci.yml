@@ -58,6 +58,21 @@ jobs:
       - name: Build release
         run: cargo build --release --locked -p boxpilot -p boxpilot-core --examples --bins
 
+      - name: macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/BoxPilot.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/boxpilot "$app/Contents/MacOS/"
+          sed "s/@VERSION@/0.0.0/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          ./target/release/examples/icns "$app/Contents/Resources/BoxPilot.icns"
+          sips -g pixelWidth -g pixelHeight "$app/Contents/Resources/BoxPilot.icns"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+
       - name: Download the sing-box core
         shell: bash
         env:

@@ -448,9 +448,18 @@ impl Default for Subscription {
     }
 }
 
+/// The subscription that holds the nodes added one by one ("Local nodes").
+pub const LOCAL_NODES_ID: &str = "local-nodes";
+/// Its group name in the config; the UI shows it translated.
+pub const LOCAL_NODES_NAME: &str = "Local nodes";
+
 impl Subscription {
     pub fn is_remote(&self) -> bool {
         !self.url.trim().is_empty()
+    }
+
+    pub fn is_local_nodes(&self) -> bool {
+        self.id == LOCAL_NODES_ID
     }
 
     /// When the scheduler should next refresh this subscription, in unix seconds.

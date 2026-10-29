@@ -165,11 +165,16 @@ impl SettingsPage {
     /// Reflects settings changed elsewhere in inputs that are not being edited.
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.state.read(cx).engine.settings();
-        for (_, field) in &self.fields {
+        for (f, field) in &self.fields {
             let focused = field.input.read(cx).focus_handle(cx).is_focused(window);
             let want = (field.get)(&settings);
             if !focused && field.input.read(cx).value() != want.as_str() {
                 field.input.update(cx, |i, cx| i.set_value(want, window, cx));
+            }
+            // The hint follows the language too.
+            let hint = spec(*f).2;
+            if field.input.read(cx).presentation().placeholder().as_ref() != hint {
+                field.input.update(cx, |i, cx| i.set_placeholder(hint, window, cx));
             }
         }
     }

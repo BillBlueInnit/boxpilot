@@ -171,6 +171,12 @@ pub fn install(binary: &[u8]) -> Result<PathBuf> {
     }
     #[cfg(not(windows))]
     std::fs::rename(&new, &exe).with_context(|| format!("replace {}", exe.display()))?;
+    // Inside BoxPilot.app the bundle's ad-hoc signature covers the binary;
+    // sign it again so macOS keeps opening the app.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")) {
+        let _ = std::process::Command::new("codesign").args(["--force", "--deep", "--sign", "-"]).arg(bundle).output();
+    }
     Ok(exe)
 }
 

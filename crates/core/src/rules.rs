@@ -66,6 +66,12 @@ pub struct RuleProvider {
     pub rule_count: usize,
     /// Format of the stored file after conversion.
     pub stored: Option<RuleFormat>,
+    /// Matches go through a node group of their own, shown on the Proxies page.
+    pub own_group: bool,
+    /// How that group picks its node; `None` leaves it to the user.
+    pub pick: Option<crate::model::AutoStrategy>,
+    /// Country code the group's picks stay in; empty for any.
+    pub region: String,
 }
 
 impl Default for RuleProvider {
@@ -83,6 +89,9 @@ impl Default for RuleProvider {
             last_error: None,
             rule_count: 0,
             stored: None,
+            own_group: false,
+            pick: None,
+            region: String::new(),
         }
     }
 }
@@ -95,6 +104,11 @@ impl RuleProvider {
 
     pub fn tag(&self) -> String {
         format!("rp-{}", self.id)
+    }
+
+    /// Whether matches can go through a group of their own; rejected ones go nowhere.
+    pub fn can_own_group(&self) -> bool {
+        !matches!(self.target.to_ascii_lowercase().as_str(), "reject" | "block")
     }
 
     pub fn next_due(&self) -> Option<i64> {

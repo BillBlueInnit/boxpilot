@@ -30,6 +30,9 @@ gpui_kit::assets::icon_assets!(
         Timer,
         FolderOpen,
         ListChecks,
+        Share2,
+        ServerPlus,
+        FilePen,
     ]
 );
 

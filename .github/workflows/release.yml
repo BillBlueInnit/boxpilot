@@ -1,7 +1,8 @@
 # Publishes a GitHub Release when a version tag is pushed:
 #   git tag v0.2.0 && git push origin v0.2.0
 # The tag must match the workspace version in Cargo.toml. Asset names are what
-# the in-app updater looks for: BoxPilot-<version>-<platform>.<zip|tar.gz>.
+# the in-app updater looks for: BoxPilot-<version>-<platform>.<zip|tar.gz>;
+# macOS also gets a .dmg with BoxPilot.app to drag into Applications.
 name: Release
 
 on:
@@ -67,22 +68,37 @@ jobs:
         run: |
           set -euo pipefail
           name="BoxPilot-${VERSION}-${{ matrix.platform }}"
-          mkdir pkg
+          mkdir pkg out
           cp LICENSE README.md pkg/
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp target/release/boxpilot.exe pkg/
-            pwsh -NoProfile -Command "Compress-Archive -Path pkg/* -DestinationPath '$name.zip'"
+            pwsh -NoProfile -Command "Compress-Archive -Path pkg/* -DestinationPath 'out/$name.zip'"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            # A real app bundle: Dock icon, Launchpad, drag-to-Applications install.
+            app=pkg/BoxPilot.app
+            mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+            cp target/release/boxpilot "$app/Contents/MacOS/"
+            chmod +x "$app/Contents/MacOS/boxpilot"
+            sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+            cargo run --release --locked -p boxpilot --example icns -- "$app/Contents/Resources/BoxPilot.icns"
+            codesign --force --deep --sign - "$app"
+            # The updater reads this archive (it takes Contents/MacOS/boxpilot).
+            tar -czf "out/$name.tar.gz" -C pkg .
+            mkdir dmg
+            cp -R "$app" dmg/
+            ln -s /Applications dmg/Applications
+            hdiutil create -volname BoxPilot -srcfolder dmg -ov -format UDZO "out/$name.dmg"
           else
             cp target/release/boxpilot pkg/
             chmod +x pkg/boxpilot
-            tar -czf "$name.tar.gz" -C pkg .
+            tar -czf "out/$name.tar.gz" -C pkg .
           fi
-          echo "ASSET=$name.${{ matrix.ext }}" >> "$GITHUB_ENV"
+          ls -la out
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}
-          path: ${{ env.ASSET }}
+          path: out/*
           if-no-files-found: error
 
   publish:

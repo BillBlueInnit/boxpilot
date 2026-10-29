@@ -1,17 +1,29 @@
 # BoxPilot
 
+**English** · [简体中文](README.zh-CN.md) · [Русский](README.ru.md) · [How to use](docs/usage.md)
+
 A clean desktop proxy client for Windows, macOS and Linux, written in Rust with
 [GPUI](https://gpui.rs) (via gpui-kit). It drives the [sing-box](https://sing-box.sagernet.org) core
 and has a built-in subscription converter.
 
 ## Getting started
 
-Download the archive for your platform from
-[Releases](https://github.com/BillBlueInnit/boxpilot/releases), or build it yourself:
+Download BoxPilot for your platform from
+[Releases](https://github.com/BillBlueInnit/boxpilot/releases):
+
+- **Windows**: `BoxPilot-<version>-windows-x64.zip` — unzip and run `boxpilot.exe`.
+- **macOS**: `BoxPilot-<version>-macos-arm64.dmg` (Apple silicon) or `-macos-x64.dmg` (Intel) — open it
+  and drag BoxPilot into Applications. The app is not notarized: the first time, right-click it and
+  choose **Open** (or allow it under System Settings → Privacy & Security).
+- **Linux**: `BoxPilot-<version>-linux-x64.tar.gz` — unpack and run `boxpilot`.
+
+Or build it yourself:
 
 ```
 cargo run --release -p boxpilot
 ```
+
+Then:
 
 1. **Settings → sing-box core → Download latest.** The core is not bundled; BoxPilot fetches the
    official release for your platform from GitHub (through the proxy when one is running, or a
@@ -19,7 +31,8 @@ cargo run --release -p boxpilot
 2. **Subscriptions → Add**, paste your provider's URL (or **Paste** to import from the clipboard).
 3. **Dashboard → Connect.**
 
-Data lives in `%APPDATA%\BoxPilot`. Create a `data` folder next to `boxpilot.exe` for portable mode.
+The step-by-step guide is in [docs/usage.md](docs/usage.md). Data lives in the folder listed under
+[Platforms](#platforms); on Windows, a `data` folder next to `boxpilot.exe` makes it portable.
 
 ## Features
 
@@ -37,6 +50,9 @@ Data lives in `%APPDATA%\BoxPilot`. Create a `data` folder next to `boxpilot.exe
   "restart as administrator" flow, LAN sharing, UDP through the proxy (or direct) and an optional
   QUIC block. Config changes are batched into one core reload, Auto switching never cuts open
   connections, and a crashed core is restarted automatically.
+- **Local nodes and sharing**: add single nodes from share links (ss, vmess, vless, trojan, hysteria2,
+  tuic, anytls, socks5, http(s), wireguard, ssh — or Clash / sing-box node lists) into a **Local
+  nodes** group, and copy any node — from a subscription or local — back out as a share link.
 - **Auto group**: quickest response, stay steady (switches only on failure or a big gap), list
   order (failover down your list and back), or most bandwidth (periodic speed tests of the
   quickest nodes) — each optionally limited to one region.
@@ -46,14 +62,19 @@ Data lives in `%APPDATA%\BoxPilot`. Create a `data` folder next to `boxpilot.exe
   providers (`payload:` YAML, domain / ipcidr / classical) and ACL4SSR `.list` files, which are
   converted to sing-box rule-sets. Each set routes to Proxy, Direct, Reject or any group, in the
   order you arrange, and refreshes on its own interval. **Import ACL4SSR** reads a subconverter
-  `.ini` (e.g. ACL4SSR_Online_Full) and creates every `ruleset=` entry with the right action.
-  Built-in China bypass and ad blocking, plus custom rules (`TYPE,VALUE,TARGET`).
+  `.ini` (e.g. ACL4SSR_Online_Full) and creates every `ruleset=` entry with the right action,
+  switched off until you pick the ones you want (Enable all / Disable all). A rule-set can get a
+  **node group of its own** on the Proxies page — chosen by hand or picked automatically with the
+  same modes and region filter as Auto — and its file can be opened in your text editor; saves
+  apply by themselves. Built-in China bypass and ad blocking, plus custom rules (`TYPE,VALUE,TARGET`).
 - **DNS**: DoH/DoT/DoQ/UDP, FakeIP, IPv6. Rule-sets are cached by the app and handed to sing-box as
   local files, so a blocked GitHub or a dead node never stops the core from starting.
-- **App**: English, 简体中文, 繁體中文 and Русский (follows the Windows display language, switchable
+- **App**: English, 简体中文, 繁體中文 and Русский (follows the system language, switchable
   live); run as administrator (login start through a highest-privilege scheduled task, so no UAC
   prompt); tray icon with mode/system-proxy/TUN toggles, close to tray, single instance, launch at
-  login (optionally minimized), live traffic chart, connections view, log viewer, light/dark themes.
+  login (optionally minimized), live traffic chart, connections view, log viewer, light/dark themes,
+  a theme colour, and a translucent window (Mica, Mica Alt or Acrylic on Windows 11, the system blur
+  on macOS and KDE Plasma).
 - **Proxies page**: a country code on every node — from the node name (flag, place, code), else a
   GeoIP lookup of the server, else (anycast/CDN or private addresses) the exit IP checked through
   that node. Lightweight mode unloads the UI while the app sits in the tray.
@@ -70,6 +91,7 @@ one gets its native mechanism:
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
+| Install | zip | `.dmg` with BoxPilot.app (Dock, Launchpad) | tar.gz |
 | Window | borderless, native frame, snap layouts on Maximize, optional Mica | native traffic lights | client-side decorations (or the WM's own) |
 | Caption buttons | Segoe Fluent / MDL2 glyphs, WinUI colours | AppKit traffic lights | Adwaita (GNOME) or Breeze (KDE) style, `button-layout` order and side |
 | System proxy | WinINet (registry) | `networksetup`, every network service | GNOME `gsettings`, KDE `kioslaverc` |
@@ -90,12 +112,12 @@ check (`boxpilot --smoke-test`).
 match the workspace version in `Cargo.toml`:
 
 ```
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 It attaches `BoxPilot-<version>-<platform>.zip|tar.gz` for Windows x64, macOS arm64/x64 and
-Linux x64 — the names the in-app updater looks for.
+Linux x64 — the names the in-app updater looks for — plus a `.dmg` for each macOS build.
 
 ## Layout
 

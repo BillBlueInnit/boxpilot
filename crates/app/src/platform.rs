@@ -277,6 +277,44 @@ pub fn single_instance() -> Option<tokio::sync::mpsc::UnboundedReceiver<()>> {
     Some(rx)
 }
 
+/// Opens a file in the user's default text editor, whatever its extension.
+pub fn open_in_text_editor(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::{SEE_MASK_CLASSNAME, SHELLEXECUTEINFOW, ShellExecuteExW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        let (verb, file, class) = (wide("open"), wide(&path.to_string_lossy()), wide(".txt"));
+        // Opened as a .txt, so it goes to the editor the user picked for text.
+        let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_CLASSNAME;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpClass = class.as_ptr();
+        info.nShow = SW_SHOWNORMAL;
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            let _ = std::process::Command::new("notepad.exe").arg(path).spawn();
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg("-t").arg(path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // The desktop's text/plain handler; xdg-open would pick the JSON viewer.
+        let handler = std::process::Command::new("xdg-mime")
+            .args(["query", "default", "text/plain"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().trim_end_matches(".desktop").to_string())
+            .filter(|h| !h.is_empty());
+        let launched = handler.is_some_and(|h| std::process::Command::new("gtk-launch").arg(h).arg(path).spawn().is_ok());
+        if !launched {
+            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+        }
+    }
+}
+
 pub fn open_path(path: &std::path::Path) {
     #[cfg(windows)]
     let _ = std::process::Command::new("explorer").arg(path).spawn();

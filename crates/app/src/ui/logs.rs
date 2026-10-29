@@ -77,7 +77,8 @@ impl LogsPage {
 }
 
 impl Render for LogsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        sync_placeholder(&self.search, t!("logs.search"), window, cx);
         self.refresh(cx);
         let t = cx.theme();
         let level = self.level;

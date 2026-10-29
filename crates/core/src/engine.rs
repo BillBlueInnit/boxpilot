@@ -229,12 +229,21 @@ pub struct UpdateInfo {
     pub error: Option<String>,
 }
 
+/// A group BoxPilot picks the node for.
+struct Picker {
+    tag: String,
+    strategy: AutoStrategy,
+    region: String,
+}
+
 #[derive(Default, Clone)]
 struct BuildMeta {
     groups: Vec<String>,
     types: HashMap<String, String>,
     /// Nodes left out because the embedded core lacks their protocol.
     unsupported: usize,
+    /// Rule-set groups: group tag -> provider id.
+    rule_groups: HashMap<String, String>,
 }
 
 struct State {
@@ -270,6 +279,8 @@ struct State {
     crashes: Vec<Instant>,
     /// The node traffic currently leaves through, once its exit was checked.
     exit_watched: Option<String>,
+    /// Rule-sets open in a text editor, watched for saves.
+    editing: HashSet<String>,
 }
 
 pub struct Engine {
@@ -371,6 +382,7 @@ impl Engine {
                 speed_testing: HashSet::new(),
                 crashes: Vec::new(),
                 exit_watched: None,
+                editing: HashSet::new(),
             }),
             tx,
             proc: tokio::sync::Mutex::new(None),
@@ -414,8 +426,14 @@ impl Engine {
         self.with(|s| s.settings.clone())
     }
 
+    /// The subscriptions, without the Local nodes group.
     pub fn subscriptions(&self) -> Vec<Subscription> {
-        self.with(|s| s.subs.clone())
+        self.with(|s| s.subs.iter().filter(|x| !x.is_local_nodes()).cloned().collect())
+    }
+
+    /// The Local nodes group, once a node was added.
+    pub fn local_group(&self) -> Option<Subscription> {
+        self.subscription(LOCAL_NODES_ID)
     }
 
     pub fn subscription(&self, id: &str) -> Option<Subscription> {
@@ -589,7 +607,7 @@ impl Engine {
     }
 
     fn save_subs(&self) {
-        let subs = self.subscriptions();
+        let subs = self.with(|s| s.subs.clone());
         if let Err(e) = self.store.save_subscriptions(&subs) {
             self.notice(NoticeKind::Error, Msg::new("notice.save_failed").arg(format!("{e:#}")));
         }
@@ -1269,7 +1287,11 @@ impl Engine {
                 providers: &st.providers,
             })
         });
-        let mut meta = BuildMeta { unsupported: skipped, ..BuildMeta::default() };
+        let mut meta = BuildMeta {
+            unsupported: skipped,
+            rule_groups: built.provider_groups.iter().map(|(id, tag)| (tag.clone(), id.clone())).collect(),
+            ..BuildMeta::default()
+        };
         for ob in built
             .config
             .get("outbounds")
@@ -1446,7 +1468,11 @@ impl Engine {
         }
         let id = sub.id.clone();
         let remote = sub.is_remote();
-        self.with(|s| s.subs.push(sub));
+        // Local nodes stay the last group.
+        self.with(|s| {
+            let at = s.subs.iter().position(Subscription::is_local_nodes).unwrap_or(s.subs.len());
+            s.subs.insert(at, sub);
+        });
         self.save_subs();
         if remote {
             self.update_subscription(&id);
@@ -1456,6 +1482,79 @@ impl Engine {
         }
         self.wake_scheduler.notify_one();
         Ok(id)
+    }
+
+    /// Adds nodes from share links (or any subscription format) to the Local
+    /// nodes group. Returns how many were added and the entries skipped.
+    pub fn add_local_nodes(self: &Arc<Self>, text: &str) -> Result<(usize, Vec<String>)> {
+        let parsed = parse_subscription(text).map_err(|e| anyhow!(e))?;
+        if parsed.nodes.is_empty() {
+            bail!("{}", parsed.skipped.first().cloned().unwrap_or_else(|| "no supported nodes found".into()));
+        }
+        let added = parsed.nodes.len();
+        let nodes = self.with(|s| {
+            if !s.subs.iter().any(Subscription::is_local_nodes) {
+                s.subs.push(Subscription {
+                    id: LOCAL_NODES_ID.into(),
+                    name: LOCAL_NODES_NAME.into(),
+                    auto_update: false,
+                    update_on_start: false,
+                    ..Default::default()
+                });
+            }
+            let list = s.nodes.entry(LOCAL_NODES_ID.into()).or_default();
+            list.extend(parsed.nodes);
+            list.clone()
+        });
+        self.save_local_nodes(&nodes)?;
+        Ok((added, parsed.skipped))
+    }
+
+    /// Removes one node from the Local nodes group; the group goes with its last node.
+    pub fn remove_local_node(self: &Arc<Self>, index: usize) -> Result<()> {
+        let nodes = self.with(|s| {
+            let list = s.nodes.get_mut(LOCAL_NODES_ID)?;
+            (index < list.len()).then(|| {
+                list.remove(index);
+                list.clone()
+            })
+        });
+        match nodes {
+            Some(nodes) if nodes.is_empty() => {
+                self.remove_subscription(LOCAL_NODES_ID);
+                Ok(())
+            }
+            Some(nodes) => self.save_local_nodes(&nodes),
+            None => Ok(()),
+        }
+    }
+
+    fn save_local_nodes(self: &Arc<Self>, nodes: &[Node]) -> Result<()> {
+        self.store.save_nodes(LOCAL_NODES_ID, nodes)?;
+        self.with(|s| {
+            if let Some(sub) = s.subs.iter_mut().find(|x| x.is_local_nodes()) {
+                sub.node_count = nodes.len();
+                sub.last_update = Some(now_unix());
+            }
+        });
+        self.save_subs();
+        let this = self.clone();
+        self.rt.spawn(async move { this.after_nodes_changed().await });
+        Ok(())
+    }
+
+    /// The share link of the node behind an outbound tag of the running config.
+    pub fn share_link_for(&self, tag: &str) -> Result<String> {
+        let config = self.preview_config();
+        let ob = config
+            .get("outbounds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(config.get("endpoints").and_then(Value::as_array).into_iter().flatten())
+            .find(|o| o.get("tag").and_then(Value::as_str) == Some(tag))
+            .ok_or_else(|| anyhow!("node not found"))?;
+        crate::convert::outbound_share_link(tag, ob).map_err(|e| anyhow!(e))
     }
 
     /// Saves edits to an existing subscription.
@@ -1861,6 +1960,105 @@ impl Engine {
         id
     }
 
+    /// The rule-set behind a group tag on the Proxies page, if it is one.
+    pub fn rule_group(&self, tag: &str) -> Option<RuleProvider> {
+        self.with(|s| {
+            let id = s.meta.rule_groups.get(tag)?;
+            s.providers.iter().find(|p| p.id == *id).cloned()
+        })
+    }
+
+    /// The text file to edit for a rule-set: a local source as itself, a
+    /// downloaded one as the stored copy. `None` for binary (.srs) rule-sets
+    /// and ones not downloaded yet. The flag tells a local source.
+    pub fn rule_provider_text_file(&self, id: &str) -> Option<(PathBuf, bool)> {
+        let p = self.with(|s| s.providers.iter().find(|x| x.id == id).cloned())?;
+        if !p.is_remote() {
+            let path = PathBuf::from(p.source.trim());
+            let binary = p.format == rules::RuleFormat::SingBoxBinary
+                || path.extension().is_some_and(|e| e.eq_ignore_ascii_case("srs"));
+            return (!binary && path.is_file()).then_some((path, true));
+        }
+        if p.stored != Some(rules::RuleFormat::SingBoxSource) {
+            return None;
+        }
+        crate::config::provider_file(&self.rules_dir(), &p).filter(|f| f.is_file()).map(|f| (f, false))
+    }
+
+    /// Applies each save of a rule-set file open in an editor, for a couple of
+    /// hours. A local source is converted again; the core reloads a stored
+    /// copy by itself.
+    pub fn watch_rule_provider_edits(self: &Arc<Self>, id: &str, path: PathBuf, local_source: bool) {
+        if !self.with(|s| s.editing.insert(id.to_string())) {
+            return;
+        }
+        let (this, id) = (self.clone(), id.to_string());
+        self.rt.spawn(async move {
+            let modified = || std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            let mut last = modified();
+            let until = Instant::now() + Duration::from_secs(2 * 3600);
+            while Instant::now() < until && this.with(|s| s.providers.iter().any(|p| p.id == id)) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let now = modified();
+                if now == last {
+                    continue;
+                }
+                last = now;
+                if local_source {
+                    this.update_providers(vec![id.clone()], false).await;
+                } else {
+                    // A broken save shows on the rule-set's row.
+                    let checked = std::fs::read(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| rules::convert_rules("", rules::RuleFormat::SingBoxSource, &b));
+                    this.with(|s| {
+                        if let Some(p) = s.providers.iter_mut().find(|p| p.id == id) {
+                            match &checked {
+                                Ok(c) => {
+                                    p.rule_count = c.rule_count;
+                                    p.last_error = None;
+                                }
+                                Err(e) => p.last_error = Some(e.clone()),
+                            }
+                            p.last_update = Some(now_unix());
+                        }
+                    });
+                    this.save_providers();
+                }
+                this.log_app(LogLevel::Info, format!("rule-set file saved: {}", path.display()));
+            }
+            this.with(|s| s.editing.remove(&id));
+        });
+    }
+
+    /// Gives a rule-set's matches a node group of their own (a config change).
+    pub fn set_rule_provider_group(self: &Arc<Self>, id: &str, own: bool) {
+        if let Some(mut p) = self.with(|s| s.providers.iter().find(|x| x.id == id).cloned()) {
+            p.own_group = own;
+            self.save_rule_provider(p);
+        }
+    }
+
+    /// How a rule-set's group picks its node. Applied through the Clash API,
+    /// like Auto, so the core keeps running.
+    pub fn set_rule_group_pick(self: &Arc<Self>, id: &str, pick: Option<AutoStrategy>, region: &str) {
+        let changed = self.with(|s| {
+            let p = s.providers.iter_mut().find(|x| x.id == id)?;
+            let changed = p.pick != pick || p.region != region;
+            p.pick = pick;
+            p.region = region.to_string();
+            Some(changed)
+        });
+        if changed == Some(true) {
+            self.save_providers();
+            self.wake_auto.notify_one();
+            let this = self.clone();
+            self.rt.spawn(async move {
+                let _ = this.refresh_proxies_async().await;
+            });
+        }
+    }
+
     pub fn set_rule_provider_enabled(self: &Arc<Self>, id: &str, enabled: bool) {
         if let Some(mut p) = self.with(|s| s.providers.iter().find(|x| x.id == id).cloned()) {
             p.enabled = enabled;
@@ -1900,14 +2098,28 @@ impl Engine {
 
     /// Enables or disables several rule-sets with a single core reload.
     pub fn set_rule_providers_enabled(self: &Arc<Self>, ids: &[String], enabled: bool) {
-        self.with(|s| {
+        // Turning on a rule-set that was never downloaded fetches it first.
+        let missing: Vec<String> = self.with(|s| {
+            let mut missing = Vec::new();
             for p in s.providers.iter_mut().filter(|p| ids.contains(&p.id)) {
                 p.enabled = enabled;
+                if enabled && p.stored.is_none() {
+                    missing.push(p.id.clone());
+                }
             }
+            missing
         });
         self.save_providers();
         self.wake_scheduler.notify_one();
-        self.request_reload();
+        if missing.is_empty() {
+            self.request_reload();
+        } else {
+            let this = self.clone();
+            self.rt.spawn(async move {
+                this.update_providers(missing, true).await;
+                this.request_reload();
+            });
+        }
     }
 
     /// Refreshes the given rule-sets and reports one summary.
@@ -1975,12 +2187,14 @@ impl Engine {
                 if s.providers.iter().any(|p| p.source == r.source && p.target == r.target) {
                     continue;
                 }
+                // A template brings dozens of rule-sets; the user turns on the ones they want.
                 let p = RuleProvider {
                     id: new_id(),
                     name: r.name.clone(),
                     source: r.source.clone(),
                     format: r.format,
                     target: r.target.clone(),
+                    enabled: false,
                     ..Default::default()
                 };
                 ids.push(p.id.clone());
@@ -2144,29 +2358,53 @@ impl Engine {
         counts
     }
 
-    /// Keeps Auto on a good node. On the test interval it measures every
-    /// node (or only Auto's candidates when automatic tests are off); between
-    /// rounds it checks the node in use every two minutes; and it re-picks at
-    /// once when the mode or region changes or the core starts. Picks go
-    /// through the Clash API, so none of this restarts the core.
+    /// Keeps Auto, and every rule-set group set to pick, on a good node. On
+    /// the test interval it measures every node (or only the candidates when
+    /// automatic tests are off); between rounds it checks the nodes in use
+    /// every two minutes; and it re-picks at once when a mode or region
+    /// changes or the core starts. Picks go through the Clash API, so none of
+    /// this restarts the core.
     async fn auto_loop(self: Arc<Self>) {
         let mut last_test: Option<Instant> = None;
-        let mut last_bandwidth: Option<Instant> = None;
+        let mut last_bandwidth: HashMap<String, Instant> = HashMap::new();
         loop {
             let s = self.settings();
             let mut wait = Duration::from_secs(600);
             if self.status().is_running() {
                 let members = self.auto_members().await;
                 if !members.is_empty() {
+                    let pickers = self.pickers(&s);
+                    let candidates = || {
+                        let mut all: Vec<String> = Vec::new();
+                        for p in &pickers {
+                            for c in self.auto_candidates(&members, &p.region) {
+                                if !all.contains(&c) {
+                                    all.push(c);
+                                }
+                            }
+                        }
+                        all
+                    };
                     let every = Duration::from_secs(u64::from(s.urltest_interval_min.max(1)) * 60);
                     if last_test.is_none_or(|t| t.elapsed() >= every) {
-                        let names = if s.auto_test_nodes { members.clone() } else { self.auto_candidates(&members, &s) };
+                        let names = if s.auto_test_nodes { members.clone() } else { candidates() };
                         self.measure_delays(names).await;
                         last_test = Some(Instant::now());
-                    } else if !self.auto_current_alive().await {
-                        self.measure_delays(self.auto_candidates(&members, &s)).await;
+                    } else {
+                        let mut alive = true;
+                        for p in &pickers {
+                            alive &= self.auto_current_alive(&p.tag, &members).await;
+                        }
+                        if !alive {
+                            self.measure_delays(candidates()).await;
+                        }
                     }
-                    self.pick_auto(&s, &members, &mut last_bandwidth).await;
+                    for p in &pickers {
+                        let last = last_bandwidth.get(&p.tag).copied();
+                        if let Some(at) = self.pick_auto(p, &members, last).await {
+                            last_bandwidth.insert(p.tag.clone(), at);
+                        }
+                    }
                     let _ = self.refresh_proxies_async().await;
                     let left = every.saturating_sub(last_test.map_or(Duration::ZERO, |t| t.elapsed()));
                     wait = left.clamp(Duration::from_secs(5), Duration::from_secs(120));
@@ -2181,6 +2419,25 @@ impl Engine {
         }
     }
 
+    /// The groups BoxPilot picks for: Auto, then each rule-set group set to pick.
+    fn pickers(&self, s: &Settings) -> Vec<Picker> {
+        let mut out = vec![Picker {
+            tag: crate::config::TAG_AUTO.into(),
+            strategy: s.auto_strategy,
+            region: s.auto_region.clone(),
+        }];
+        self.with(|st| {
+            for (tag, id) in &st.meta.rule_groups {
+                if let Some(p) = st.providers.iter().find(|p| p.id == *id)
+                    && let Some(strategy) = p.pick
+                {
+                    out.push(Picker { tag: tag.clone(), strategy, region: p.region.clone() });
+                }
+            }
+        });
+        out
+    }
+
     /// Every node Auto can use (its selector holds them all).
     async fn auto_members(&self) -> Vec<String> {
         self.api()
@@ -2193,8 +2450,8 @@ impl Engine {
 
     /// The members in the chosen region, in list order; all of them when the
     /// region has none (yet).
-    fn auto_candidates(&self, members: &[String], s: &Settings) -> Vec<String> {
-        let region = s.auto_region.trim();
+    fn auto_candidates(&self, members: &[String], region: &str) -> Vec<String> {
+        let region = region.trim();
         if region.is_empty() {
             return members.to_vec();
         }
@@ -2208,34 +2465,41 @@ impl Engine {
         if picked.is_empty() { members.to_vec() } else { picked }
     }
 
-    async fn auto_current_alive(&self) -> bool {
+    /// Whether the group's node still answers. A group on something other
+    /// than a node (a rule-set group starting on Proxy) needs a pick.
+    async fn auto_current_alive(&self, tag: &str, members: &[String]) -> bool {
         let api = self.api();
-        let Some(now) = api.proxies().await.ok().and_then(|p| p.get(crate::config::TAG_AUTO).and_then(|g| g.now.clone())) else {
+        let Some(now) = api.proxies().await.ok().and_then(|p| p.get(tag).and_then(|g| g.now.clone())) else {
             return false;
         };
+        if !members.contains(&now) {
+            return false;
+        }
         let d = api.delay(&now, &self.settings().urltest_url, DELAY_TIMEOUT_MS).await.ok();
         self.with(|s| s.delays.insert(now, d));
         self.emit(Event::Delays);
         d.is_some()
     }
 
-    /// Chooses Auto's node from the latest measurements, per mode.
-    async fn pick_auto(self: &Arc<Self>, s: &Settings, members: &[String], last_bandwidth: &mut Option<Instant>) {
+    /// Chooses a group's node from the latest measurements, per mode.
+    /// Returns when it ran speed tests (the bandwidth mode's clock).
+    async fn pick_auto(self: &Arc<Self>, picker: &Picker, members: &[String], last_bandwidth: Option<Instant>) -> Option<Instant> {
         let api = self.api();
-        let candidates = self.auto_candidates(members, s);
-        let now = api.proxies().await.ok().and_then(|p| p.get(crate::config::TAG_AUTO).and_then(|g| g.now.clone()));
+        let candidates = self.auto_candidates(members, &picker.region);
+        let now = api.proxies().await.ok().and_then(|p| p.get(&picker.tag).and_then(|g| g.now.clone()));
         let delay = |name: &str| self.with(|st| st.delays.get(name).copied().flatten());
         // Reachable candidates, in list order.
         let alive: Vec<(String, u32)> = candidates.iter().filter_map(|m| delay(m).map(|d| (m.clone(), d))).collect();
         let Some(best) = alive.iter().min_by_key(|(_, d)| *d).cloned() else {
             // Nothing answered: leave the current node rather than guess.
-            return;
+            return None;
         };
+        let mut tested = None;
         let current = now.clone().filter(|n| candidates.contains(n)).and_then(|n| delay(&n).map(|d| (n, d)));
         // Moving costs nothing for open connections (they stay), but only a
         // clear gain is worth reshuffling new ones.
         let keep_within = |tolerance: u32| current.clone().filter(|(_, d)| *d <= best.1 + tolerance).map(|(n, _)| n);
-        let pick = match s.auto_strategy {
+        let pick = match picker.strategy {
             AutoStrategy::Quickest => keep_within(50).unwrap_or_else(|| best.0.clone()),
             AutoStrategy::Steady => keep_within(300).unwrap_or_else(|| best.0.clone()),
             AutoStrategy::Ordered => alive[0].0.clone(),
@@ -2260,15 +2524,16 @@ impl Engine {
                                 fastest = Some((m.clone(), bps));
                             }
                         }
-                        *last_bandwidth = Some(Instant::now());
+                        tested = Some(Instant::now());
                         fastest.map(|(m, _)| m).unwrap_or_else(|| best.0.clone())
                     }
                 }
             }
         };
-        if now.as_deref() != Some(pick.as_str()) && api.select(crate::config::TAG_AUTO, &pick).await.is_ok() {
-            self.log_app(LogLevel::Info, format!("Auto ({:?}) → {pick}", s.auto_strategy));
+        if now.as_deref() != Some(pick.as_str()) && api.select(&picker.tag, &pick).await.is_ok() {
+            self.log_app(LogLevel::Info, format!("{} ({:?}) → {pick}", picker.tag, picker.strategy));
         }
+        tested
     }
 
     // -------------------------------------------------------------- updates
@@ -2488,7 +2753,9 @@ impl Engine {
         self.emit(Event::Proxies);
         self.check_exits(unsure).await;
         // A region filter may now match different nodes.
-        if !self.settings().auto_region.is_empty() {
+        let regional = !self.settings().auto_region.is_empty()
+            || self.with(|s| s.providers.iter().any(|p| p.own_group && p.pick.is_some() && !p.region.is_empty()));
+        if regional {
             self.wake_auto.notify_one();
         }
     }
@@ -2704,8 +2971,11 @@ impl Engine {
                 .filter_map(|g| proxies.get(g))
                 .map(|p| ProxyGroup {
                     name: p.name.clone(),
-                    // Auto is a selector for sing-box, but BoxPilot picks for it.
-                    kind: if p.name == crate::config::TAG_AUTO {
+                    // Auto (and a rule-set group set to pick) is a selector for
+                    // sing-box, but BoxPilot picks for it.
+                    kind: if p.name == crate::config::TAG_AUTO
+                        || meta.rule_groups.get(&p.name).is_some_and(|id| s.providers.iter().any(|x| x.id == *id && x.pick.is_some()))
+                    {
                         "URLTest".to_string()
                     } else {
                         p.kind.clone()

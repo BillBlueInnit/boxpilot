@@ -2,12 +2,14 @@
 //! Clash / Clash.Meta YAML and sing-box JSON into sing-box outbounds.
 
 mod clash;
+mod share;
 mod uri;
 mod util;
 
 use serde_json::{Value, json};
 
 use crate::model::Node;
+pub use share::{outbound_share_link, share_link, share_links};
 pub use uri::parse_uri;
 pub use util::split_host_port;
 

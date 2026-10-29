@@ -6,6 +6,7 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -61,8 +62,8 @@ impl SubscriptionsPage {
             }
         }
 
-        let (e_toggle, e_update, e_delete) = (engine.clone(), engine.clone(), engine.clone());
-        let (id1, id2, id3) = (sub.id.clone(), sub.id.clone(), sub.id.clone());
+        let (e_toggle, e_update, e_delete, e_links) = (engine.clone(), engine.clone(), engine.clone(), engine.clone());
+        let (id1, id2, id3, id4) = (sub.id.clone(), sub.id.clone(), sub.id.clone(), sub.id.clone());
         let edit_sub = sub.clone();
         let url = sub.url.clone();
         let name_for_delete = sub.name.clone();
@@ -165,6 +166,18 @@ impl SubscriptionsPage {
                                         .on_click(move |_, _, _| e_update.update_subscription(&id2)),
                                 )
                             })
+                            .child(
+                                Button::new(SharedString::from(format!("links-{idx}")))
+                                    .ghost()
+                                    .small()
+                                    .icon(extra_icon(Lucide::Share2))
+                                    .tooltip(t!("tip.copy_links"))
+                                    .disabled(sub.node_count == 0)
+                                    .on_click(move |_, window, cx| {
+                                        let nodes = e_links.nodes(&id4);
+                                        super::local_nodes::copy_links(&nodes, window, cx);
+                                    }),
+                            )
                             .child(
                                 Button::new(SharedString::from(format!("edit-{idx}")))
                                     .ghost()
@@ -336,8 +349,13 @@ impl Render for SubscriptionsPage {
                 .on_click(|_, window, cx| {
                     let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
                     let text = text.trim().to_string();
-                    if text.starts_with("http://") || text.starts_with("https://") {
+                    let node_links = super::local_nodes::is_node_links(&text);
+                    let url = !text.contains('\n') && (text.starts_with("http://") || text.starts_with("https://"));
+                    // A lone http(s) link with a #name is an HTTP proxy, not a subscription.
+                    if url && !(node_links && text.contains('#')) {
                         open_editor(None, Some(Prefill::Url(text)), window, cx);
+                    } else if node_links {
+                        super::local_nodes::open_add_node(Some(text), window, cx);
                     } else if !text.is_empty() {
                         open_editor(None, Some(Prefill::Content(text)), window, cx);
                     } else {
@@ -358,23 +376,47 @@ impl Render for SubscriptionsPage {
                 .primary()
                 .icon(IconName::Plus)
                 .label(t!("btn.add"))
-                .on_click(|_, window, cx| open_editor(None, None, window, cx))
+                .dropdown_caret(true)
+                .dropdown_menu(|menu, _, _| {
+                    menu.item(
+                        PopupMenuItem::new(t!("btn.add_subscription"))
+                            .icon(extra_icon(Lucide::Rss))
+                            .on_click(|_, window, cx| open_editor(None, None, window, cx)),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("btn.add_node"))
+                            .icon(extra_icon(Lucide::ServerPlus))
+                            .on_click(|_, window, cx| super::local_nodes::open_add_node(None, window, cx)),
+                    )
+                })
                 .into_any_element(),
             ]
         };
         let subtitle = t!("subs.subtitle", subs.len(), engine.total_nodes());
+        let local = super::local_nodes::card_view(cx).map(|c| c.into_any_element());
+        let has_local = local.is_some();
         page(t!("nav.subscriptions"), Some(subtitle), actions, cx)
-            .when(subs.is_empty(), |d| {
+            .when(subs.is_empty() && !has_local, |d| {
                 d.child(card(cx).child(empty_state(
                     extra_icon(Lucide::Rss),
                     t!("subs.empty_title"),
                     t!("subs.empty_hint"),
                     Some(
-                        Button::new("empty-add")
-                            .primary()
-                            .icon(IconName::Plus)
-                            .label(t!("btn.add_subscription"))
-                            .on_click(|_, window, cx| open_editor(None, None, window, cx))
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("empty-add")
+                                    .primary()
+                                    .icon(IconName::Plus)
+                                    .label(t!("btn.add_subscription"))
+                                    .on_click(|_, window, cx| open_editor(None, None, window, cx)),
+                            )
+                            .child(
+                                Button::new("empty-add-node")
+                                    .icon(extra_icon(Lucide::ServerPlus))
+                                    .label(t!("btn.add_node"))
+                                    .on_click(|_, window, cx| super::local_nodes::open_add_node(None, window, cx)),
+                            )
                             .into_any_element(),
                     ),
                     cx,
@@ -383,6 +425,9 @@ impl Render for SubscriptionsPage {
             .child(v_flex().gap_3().children(subs.iter().enumerate().map(|(i, s)| {
                 anim::enter(div().child(self.sub_card(s, i, this.clone(), cx)), SharedString::from(format!("sub-{}", s.id)), anim::stagger(i))
             })))
+            .when_some(local, |d, local| {
+                d.child(anim::enter(div().child(local), "local-nodes", anim::stagger(subs.len())))
+            })
     }
 }
 

@@ -139,6 +139,7 @@ impl ConnectionsPage {
 
 impl Render for ConnectionsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        sync_placeholder(&self.search, t!("conn.filter"), window, cx);
         // Lower-priority columns give way first so the host stays readable.
         let content = super::layout::metrics(window).content;
         let (show_rule, show_process, show_net) = (content >= 1060.0, content >= 900.0, content >= 760.0);

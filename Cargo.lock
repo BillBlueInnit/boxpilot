@@ -712,11 +712,12 @@ dependencies = [
 
 [[package]]
 name = "boxpilot"
-version = "0.2.2"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "boxpilot-core",
  "chrono",
+ "flate2",
  "gpui-kit",
  "gtk",
  "libc",
@@ -732,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "boxpilot-core"
-version = "0.2.2"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

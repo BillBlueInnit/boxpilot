@@ -22,6 +22,18 @@ pub fn extra_icon(name: gpui_kit::assets::IconName) -> Icon {
     Icon::new(name)
 }
 
+/// Keeps a search box's hint in the current language.
+pub fn sync_placeholder(
+    input: &gpui_kit::Entity<gpui_kit::component::input::InputState>,
+    text: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if input.read(cx).presentation().placeholder().as_ref() != text {
+        input.update(cx, |s, cx| s.set_placeholder(text, window, cx));
+    }
+}
+
 pub fn card(cx: &App) -> Div {
     let t = cx.theme();
     v_flex()
@@ -380,6 +392,7 @@ pub fn outbound_label(tag: &str) -> String {
         "Proxy" => t!("group.proxy").to_string(),
         "Auto" => t!("group.auto").to_string(),
         "direct" => t!("group.direct").to_string(),
+        boxpilot_core::model::LOCAL_NODES_NAME => t!("local.title").to_string(),
         other => strip_flags(other),
     }
 }

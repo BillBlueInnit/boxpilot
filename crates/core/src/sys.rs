@@ -378,46 +378,96 @@ mod imp {
             .collect())
     }
 
+    /// `networksetup` reports most failures on stdout with a zero exit status.
+    #[cfg(target_os = "macos")]
+    fn networksetup(args: &[String]) -> Result<()> {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = run("networksetup", &args)?;
+        let lower = out.to_ascii_lowercase();
+        if lower.contains("** error") || lower.contains("requires admin") || lower.contains("privilege") {
+            bail!("networksetup {}: {}", args.first().copied().unwrap_or_default(), out.trim());
+        }
+        Ok(())
+    }
+
+    /// Runs `networksetup` commands. Ones refused for lack of rights run again
+    /// together with an administrator's approval (one prompt); other failures
+    /// (a service without proxy support) are left to the caller's check.
+    #[cfg(target_os = "macos")]
+    fn networksetup_all(commands: &[Vec<String>]) -> Result<()> {
+        let refused: Vec<&Vec<String>> = commands
+            .iter()
+            .filter(|c| {
+                networksetup(c).is_err_and(|e| {
+                    let m = format!("{e:#}").to_ascii_lowercase();
+                    m.contains("admin") || m.contains("privilege") || m.contains("authoriz")
+                })
+            })
+            .collect();
+        if refused.is_empty() {
+            return Ok(());
+        }
+        let quote = |a: &str| format!("'{}'", a.replace('\'', "'\\''"));
+        let script = refused
+            .iter()
+            .map(|c| format!("/usr/sbin/networksetup {}", c.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")))
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        let script = script.replace('\\', "\\\\").replace('"', "\\\"");
+        run("osascript", &["-e", &format!("do shell script \"{script}\" with administrator privileges")]).map(|_| ())
+    }
+
+    /// Every enabled service gets the proxy, so it follows Wi-Fi, Ethernet or a dock.
     #[cfg(target_os = "macos")]
     pub fn set_system_proxy(server: &str, bypass: &str) -> Result<()> {
         let (host, port) = split_host_port(server);
-        let hosts = bypass_hosts(bypass);
+        let mut hosts = bypass_hosts(bypass);
+        if hosts.is_empty() {
+            hosts.push("Empty".into());
+        }
+        let mut commands = Vec::new();
         for svc in network_services()? {
-            run("networksetup", &["-setwebproxy", &svc, host, port])?;
-            run("networksetup", &["-setsecurewebproxy", &svc, host, port])?;
-            run("networksetup", &["-setsocksfirewallproxy", &svc, host, port])?;
-            let mut args = vec!["-setproxybypassdomains".to_string(), svc.clone()];
-            args.extend(hosts.iter().cloned());
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            run("networksetup", &args)?;
+            for kind in ["-setwebproxy", "-setsecurewebproxy", "-setsocksfirewallproxy"] {
+                commands.push(vec![kind.to_string(), svc.clone(), host.to_string(), port.to_string()]);
+            }
+            for kind in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"] {
+                commands.push(vec![kind.to_string(), svc.clone(), "on".into()]);
+            }
+            let mut bypass = vec!["-setproxybypassdomains".to_string(), svc.clone()];
+            bypass.extend(hosts.iter().cloned());
+            commands.push(bypass);
+        }
+        networksetup_all(&commands)?;
+        let state = system_proxy_state();
+        if !state.enabled || state.server != format!("{host}:{port}") {
+            bail!("macOS did not take the proxy setting (now: {})", if state.enabled { state.server.as_str() } else { "off" });
         }
         Ok(())
     }
 
     #[cfg(target_os = "macos")]
     pub fn clear_system_proxy() -> Result<()> {
+        let mut commands = Vec::new();
         for svc in network_services()? {
-            run("networksetup", &["-setwebproxystate", &svc, "off"])?;
-            run("networksetup", &["-setsecurewebproxystate", &svc, "off"])?;
-            run("networksetup", &["-setsocksfirewallproxystate", &svc, "off"])?;
+            for kind in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"] {
+                commands.push(vec![kind.to_string(), svc.clone(), "off".into()]);
+            }
         }
-        Ok(())
+        networksetup_all(&commands)
     }
 
+    /// What the system uses right now (the primary service's settings).
     #[cfg(target_os = "macos")]
     pub fn system_proxy_state() -> SysProxyState {
-        let Some(svc) = network_services().ok().and_then(|s| s.into_iter().next()) else {
-            return SysProxyState::default();
-        };
-        let out = run("networksetup", &["-getwebproxy", &svc]).unwrap_or_default();
+        let out = run("scutil", &["--proxy"]).unwrap_or_default();
         let field = |k: &str| {
             out.lines()
-                .find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()))
+                .find_map(|l| l.trim().strip_prefix(k).and_then(|v| v.trim().strip_prefix(':')).map(|v| v.trim().to_string()))
                 .unwrap_or_default()
         };
         SysProxyState {
-            enabled: field("Enabled:") == "Yes",
-            server: format!("{}:{}", field("Server:"), field("Port:")),
+            enabled: field("HTTPEnable") == "1",
+            server: format!("{}:{}", field("HTTPProxy"), field("HTTPPort")),
         }
     }
 
