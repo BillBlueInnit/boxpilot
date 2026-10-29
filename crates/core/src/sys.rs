@@ -488,6 +488,54 @@ mod imp {
         servers
     }
 
+    /// The DNS servers set on each enabled network service; an empty list
+    /// means the ones DHCP hands out.
+    #[cfg(target_os = "macos")]
+    pub fn dns_settings() -> Result<Vec<(String, Vec<String>)>> {
+        let mut out = Vec::new();
+        for svc in network_services()? {
+            let text = run("networksetup", &["-getdnsservers", &svc]).unwrap_or_default();
+            let servers = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| l.parse::<std::net::IpAddr>().is_ok())
+                .map(String::from)
+                .collect();
+            out.push((svc, servers));
+        }
+        Ok(out)
+    }
+
+    /// Sets the DNS servers of each listed service (empty: back to DHCP's).
+    #[cfg(target_os = "macos")]
+    pub fn set_dns_settings(wanted: &[(String, Vec<String>)]) -> Result<()> {
+        let commands: Vec<Vec<String>> = wanted
+            .iter()
+            .map(|(svc, servers)| {
+                let mut c = vec!["-setdnsservers".to_string(), svc.clone()];
+                if servers.is_empty() {
+                    c.push("Empty".into());
+                } else {
+                    c.extend(servers.iter().cloned());
+                }
+                c
+            })
+            .collect();
+        let taken = || {
+            let now = dns_settings().unwrap_or_default();
+            wanted.iter().all(|w| now.iter().any(|n| n == w))
+        };
+        networksetup_all(&commands);
+        if !taken() {
+            networksetup_admin(&commands)?;
+        }
+        if !taken() {
+            bail!("macOS did not take the DNS setting");
+        }
+        let _ = run("dscacheutil", &["-flushcache"]);
+        Ok(())
+    }
+
     /// What the system uses right now (the primary service's settings).
     #[cfg(target_os = "macos")]
     pub fn system_proxy_state() -> SysProxyState {
@@ -569,9 +617,24 @@ mod imp {
         std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"))
     }
 
+    /// A system tool by absolute path. Users' PATHs (Debian's among them)
+    /// often leave out the sbin directories, and pkexec looks nothing up.
+    #[cfg(not(target_os = "macos"))]
+    fn system_tool(name: &str) -> Option<PathBuf> {
+        ["/usr/sbin", "/sbin", "/usr/bin", "/bin", "/usr/local/sbin", "/usr/local/bin"]
+            .iter()
+            .map(|d| Path::new(d).join(name))
+            .find(|p| p.is_file())
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn kwriteconfig(args: &[&str]) -> Result<()> {
         run("kwriteconfig6", args).or_else(|_| run("kwriteconfig5", args)).map(|_| ())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn kreadconfig(args: &[&str]) -> Option<String> {
+        run("kreadconfig6", args).or_else(|_| run("kreadconfig5", args)).ok().map(|s| s.trim().to_string())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -579,44 +642,78 @@ mod imp {
         run("gsettings", args).map(|_| ())
     }
 
+    /// KDE's proxy (KIO apps, and Chromium-based browsers on KDE).
     #[cfg(not(target_os = "macos"))]
-    pub fn set_system_proxy(server: &str, bypass: &str) -> Result<()> {
-        let (host, port) = split_host_port(server);
-        let hosts = bypass_hosts(bypass);
-        if is_kde() {
-            let k = |key: &str, value: &str| {
-                kwriteconfig(&["--file", "kioslaverc", "--group", "Proxy Settings", "--key", key, value])
-            };
-            k("ProxyType", "1")?;
-            k("httpProxy", &format!("http://{host} {port}"))?;
-            k("httpsProxy", &format!("http://{host} {port}"))?;
-            k("socksProxy", &format!("socks://{host} {port}"))?;
-            k("NoProxyFor", &hosts.join(","))?;
-            return Ok(());
-        }
+    fn set_kde_proxy(host: &str, port: &str, hosts: &[String]) -> Result<()> {
+        let k = |key: &str, value: &str| kwriteconfig(&["--file", "kioslaverc", "--group", "Proxy Settings", "--key", key, value]);
+        k("ProxyType", "1")?;
+        k("httpProxy", &format!("http://{host} {port}"))?;
+        k("httpsProxy", &format!("http://{host} {port}"))?;
+        k("socksProxy", &format!("socks://{host} {port}"))?;
+        k("NoProxyFor", &hosts.join(","))?;
+        reload_kio();
+        Ok(())
+    }
+
+    /// Tells running KDE apps to read the proxy again.
+    #[cfg(not(target_os = "macos"))]
+    fn reload_kio() {
+        let _ = run(
+            "dbus-send",
+            &["--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:"],
+        );
+    }
+
+    /// GNOME's proxy (GTK apps, and Firefox on every desktop).
+    #[cfg(not(target_os = "macos"))]
+    fn set_gnome_proxy(host: &str, port: &str, hosts: &[String]) -> Result<()> {
         for schema in ["http", "https", "socks"] {
             let schema = format!("org.gnome.system.proxy.{schema}");
             gsettings(&["set", &schema, "host", host])?;
             gsettings(&["set", &schema, "port", port])?;
         }
-        let ignore = format!(
-            "[{}]",
-            hosts.iter().map(|h| format!("'{h}'")).collect::<Vec<_>>().join(", ")
-        );
+        let ignore = format!("[{}]", hosts.iter().map(|h| format!("'{h}'")).collect::<Vec<_>>().join(", "));
         gsettings(&["set", "org.gnome.system.proxy", "ignore-hosts", &ignore])?;
         gsettings(&["set", "org.gnome.system.proxy", "mode", "manual"])
     }
 
+    /// Apps read the proxy from different places whatever the desktop, so
+    /// both KDE's and GNOME's settings are set where they exist.
     #[cfg(not(target_os = "macos"))]
-    pub fn clear_system_proxy() -> Result<()> {
-        if is_kde() {
-            return kwriteconfig(&["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0"]);
+    pub fn set_system_proxy(server: &str, bypass: &str) -> Result<()> {
+        let (host, port) = split_host_port(server);
+        let hosts = bypass_hosts(bypass);
+        let kde = set_kde_proxy(host, port, &hosts);
+        let gnome = set_gnome_proxy(host, port, &hosts);
+        match (kde, gnome) {
+            (Err(k), Err(g)) => bail!("no desktop proxy settings could be changed (KDE: {k:#}; GNOME: {g:#})"),
+            _ => Ok(()),
         }
-        gsettings(&["set", "org.gnome.system.proxy", "mode", "none"])
     }
 
     #[cfg(not(target_os = "macos"))]
+    pub fn clear_system_proxy() -> Result<()> {
+        let kde = kwriteconfig(&["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0"]);
+        if kde.is_ok() {
+            reload_kio();
+        }
+        let gnome = gsettings(&["set", "org.gnome.system.proxy", "mode", "none"]);
+        match (kde, gnome) {
+            (Err(k), Err(g)) => bail!("no desktop proxy settings could be changed (KDE: {k:#}; GNOME: {g:#})"),
+            _ => Ok(()),
+        }
+    }
+
+    /// The desktop's own setting: KDE's on Plasma, GNOME's elsewhere.
+    #[cfg(not(target_os = "macos"))]
     pub fn system_proxy_state() -> SysProxyState {
+        if is_kde() {
+            let get = |key: &str| kreadconfig(&["--file", "kioslaverc", "--group", "Proxy Settings", "--key", key]).unwrap_or_default();
+            // "http://127.0.0.1 7890"
+            let http = get("httpProxy");
+            let server = http.trim_start_matches("http://").replacen(' ', ":", 1);
+            return SysProxyState { enabled: get("ProxyType") == "1", server };
+        }
         let get = |schema: &str, key: &str| {
             run("gsettings", &["get", schema, key])
                 .map(|s| s.trim().trim_matches('\'').to_string())
@@ -662,18 +759,29 @@ mod imp {
         autostart_file(name).is_file()
     }
 
-    /// TUN on Linux needs CAP_NET_ADMIN, granted to the core binary.
+    /// TUN on Linux needs CAP_NET_ADMIN on the core binary, or a setuid-root core.
     #[cfg(not(target_os = "macos"))]
     pub fn core_tun_privileged(core: &Path) -> bool {
-        run("getcap", &[&core.to_string_lossy()]).is_ok_and(|o| o.contains("cap_net_admin"))
+        use std::os::unix::fs::MetadataExt;
+        let setuid_root = std::fs::metadata(core).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o4000 != 0);
+        setuid_root
+            || system_tool("getcap").is_some_and(|getcap| {
+                run(&getcap.to_string_lossy(), &[&core.to_string_lossy()]).is_ok_and(|o| o.contains("cap_net_admin"))
+            })
     }
 
+    /// Asks for the administrator password (polkit) once. File capabilities
+    /// where `setcap` is installed; otherwise the core becomes setuid root,
+    /// as on macOS, which needs nothing beyond coreutils.
     #[cfg(not(target_os = "macos"))]
     pub fn grant_tun_privilege(core: &Path) -> Result<()> {
-        run(
-            "pkexec",
-            &["setcap", "cap_net_admin,cap_net_raw,cap_net_bind_service+eip", &core.to_string_lossy()],
-        )
+        let pkexec = system_tool("pkexec").ok_or_else(|| anyhow::anyhow!("pkexec (polkit) is not installed"))?;
+        let pkexec = pkexec.to_string_lossy();
+        let core = core.to_string_lossy();
+        match system_tool("setcap") {
+            Some(setcap) => run(&pkexec, &[&setcap.to_string_lossy(), "cap_net_admin,cap_net_raw,cap_net_bind_service+eip", &core]),
+            None => run(&pkexec, &["/bin/sh", "-c", "chown root:root \"$1\" && chmod u+s \"$1\"", "sh", &core]),
+        }
         .map(|_| ())
     }
 

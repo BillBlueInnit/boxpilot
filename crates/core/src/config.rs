@@ -151,44 +151,20 @@ impl TagAllocator {
     }
 }
 
-/// Routes the system's DNS servers into TUN. A home router that hands itself
-/// out as DNS sits on the local subnet, whose route is more specific than
-/// TUN's default ones, so its queries would skip the core (and come back
-/// unfiltered or poisoned). A host route per server sends them through TUN,
-/// where the DNS hijack answers them. For desktop TUN on macOS; the mobile
-/// VPN brings its own DNS.
-pub fn route_dns_into_tun(config: &mut Value, servers: &[IpAddr]) {
-    let Some(tun) = config
-        .get_mut("inbounds")
-        .and_then(Value::as_array_mut)
-        .and_then(|a| a.iter_mut().find(|i| i["type"] == "tun"))
-    else {
+/// The TUN peer address. DNS sent there enters TUN and the DNS hijack
+/// answers it; macOS points its network services here while TUN runs.
+pub const TUN_DNS: &str = "172.19.0.2";
+
+/// Sends the core's system-resolver lookups (`local` DNS servers, used to
+/// find DoH hosts by name) to `upstream`. While the system's DNS points at
+/// TUN they would otherwise come back to the core itself.
+pub fn use_upstream_for_local_dns(config: &mut Value, upstream: IpAddr) {
+    let Some(servers) = config.pointer_mut("/dns/servers").and_then(Value::as_array_mut) else {
         return;
     };
-    let v6 = tun["address"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str().is_some_and(|s| s.contains(':'))));
-    // Custom routes replace the default ones, so those come first.
-    let mut routes: Vec<String> = vec!["0.0.0.0/1".into(), "128.0.0.0/1".into()];
-    if v6 {
-        routes.extend(["::/1".into(), "8000::/1".into()]);
-    }
-    let defaults = routes.len();
-    for ip in servers {
-        let route = match ip {
-            IpAddr::V4(a) if !(a.is_loopback() || a.is_unspecified() || a.is_link_local() || a.is_multicast()) => {
-                format!("{a}/32")
-            }
-            // Link-local servers are scoped to their interface and can't be moved.
-            IpAddr::V6(a) if v6 && !(a.is_loopback() || a.is_multicast() || (a.segments()[0] & 0xffc0) == 0xfe80) => {
-                format!("{a}/128")
-            }
-            _ => continue,
-        };
-        if !routes.contains(&route) {
-            routes.push(route);
-        }
-    }
-    if routes.len() > defaults {
-        tun["route_address"] = json!(routes);
+    for server in servers.iter_mut().filter(|s| s["type"] == "local") {
+        let tag = server["tag"].clone();
+        *server = json!({ "type": "udp", "tag": tag, "server": upstream.to_string() });
     }
 }
 
@@ -828,29 +804,24 @@ vless://u@b.com:443#B").unwrap();
     }
 
     #[test]
-    fn dns_servers_are_routed_into_tun() {
+    fn local_dns_goes_upstream_under_tun() {
         let mut settings = Settings::default();
-        settings.tun_enabled = true;
-        let input = |s| BuildInput {
-            settings: s,
+        settings.dns_direct = "local".into();
+        let mut c = build_config(&BuildInput {
+            settings: &settings,
             groups: vec![],
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: None,
             providers: &[],
-        };
-        let mut c = build_config(&input(&settings)).config;
-        let servers: Vec<IpAddr> = ["192.168.1.1", "127.0.0.1", "fe80::1", "8.8.8.8"].iter().map(|s| s.parse().unwrap()).collect();
-        route_dns_into_tun(&mut c, &servers);
-        let tun = c["inbounds"].as_array().unwrap().iter().find(|i| i["type"] == "tun").unwrap();
-        assert_eq!(tun["route_address"], json!(["0.0.0.0/1", "128.0.0.0/1", "192.168.1.1/32", "8.8.8.8/32"]));
-        // Nothing to add: TUN keeps its default routes.
-        let mut c = build_config(&input(&settings)).config;
-        route_dns_into_tun(&mut c, &["127.0.0.1".parse().unwrap()]);
-        assert!(c["inbounds"][1].get("route_address").is_none());
-        // Without TUN there is nothing to change.
-        let mut c = build_config(&input(&Settings::default())).config;
-        route_dns_into_tun(&mut c, &servers);
-        assert!(c["inbounds"].as_array().unwrap().iter().all(|i| i.get("route_address").is_none()));
+        })
+        .config;
+        use_upstream_for_local_dns(&mut c, "192.168.1.1".parse().unwrap());
+        let servers = c["dns"]["servers"].as_array().unwrap();
+        assert!(servers.iter().all(|s| s["type"] != "local"));
+        let direct = servers.iter().find(|s| s["tag"] == "dns-direct").unwrap();
+        assert_eq!(direct["server"], "192.168.1.1");
+        // Local rule-sets keep their type.
+        assert!(c["route"]["rule_set"].as_array().is_none_or(|r| r.iter().all(|x| x["type"] != "udp")));
     }
 
     #[test]

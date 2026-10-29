@@ -59,10 +59,20 @@ jobs:
           echo "SING_BOX=$bin" >> "$GITHUB_ENV"
 
       - name: System proxy
-        # Linux runners have no desktop session for gsettings / kioslaverc.
         if: runner.os != 'Linux'
         shell: bash
         run: ./target/release/examples/platform_live "$SING_BOX" "$RUNNER_TEMP/live-sysproxy" sysproxy
+
+      - name: System proxy (Linux, desktop settings read through GIO)
+        # A session bus with dconf stands in for the desktop session.
+        if: runner.os == 'Linux' && (success() || failure())
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-glib-2.0 glib-networking gsettings-desktop-schemas dconf-gsettings-backend dconf-service dbus
+          XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
+            ./target/release/examples/platform_live "$SING_BOX" "$RUNNER_TEMP/live-sysproxy" sysproxy
 
       - name: TUN
         if: success() || failure()
@@ -79,6 +89,18 @@ jobs:
           esac
           echo "TUN_CORE=$core" >> "$GITHUB_ENV"
           ./target/release/examples/platform_live "$core" "$RUNNER_TEMP/live-tun" tun
+
+      - name: TUN with a setuid core (Linux without setcap)
+        # BoxPilot's fallback when libcap's setcap is not installed.
+        if: runner.os == 'Linux' && (success() || failure())
+        shell: bash
+        run: |
+          set -euo pipefail
+          core="$RUNNER_TEMP/tun-suid/sing-box"
+          mkdir -p "$(dirname "$core")"
+          cp "$SING_BOX" "$core"
+          sudo chown root:root "$core" && sudo chmod u+s "$core"
+          ./target/release/examples/platform_live "$core" "$RUNNER_TEMP/live-tun-suid" tun
 
       - name: TUN with the DNS server on the LAN (macOS)
         # Home networks hand out the router as DNS. Its subnet route is more

@@ -55,6 +55,19 @@ fn client(mode: &str) -> Command {
             ),
         ]);
         c
+    } else if mode == "sysproxy" && cfg!(target_os = "linux") {
+        // GIO's proxy resolver reads the desktop settings, as GTK apps do.
+        let mut c = Command::new("python3");
+        c.args([
+            "-c",
+            &format!(
+                "import urllib.request as u; from gi.repository import Gio; \
+                 p = Gio.ProxyResolver.get_default().lookup('{URL}', None)[0]; print('proxies', p); \
+                 h = u.ProxyHandler({{}} if p == 'direct://' else {{'https': p, 'http': p}}); \
+                 print('status', u.build_opener(h).open('{URL}', timeout=20).status)"
+            ),
+        ]);
+        c
     } else if mode == "sysproxy" && cfg!(windows) {
         // Windows PowerShell's web client follows the WinINet proxy.
         let mut c = Command::new("powershell");
@@ -81,6 +94,9 @@ fn main() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
+    // TUN takes DNS over on macOS; it must all be put back afterwards.
+    #[cfg(target_os = "macos")]
+    let dns_before = sys::dns_settings().unwrap_or_default();
     let mut node = start_node(&core, &dir);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (engine, mut events) = Engine::with_paths(rt.handle().clone(), Paths::at(dir.join("data"))).unwrap();
@@ -152,7 +168,15 @@ fn main() {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let after = sys::system_proxy_state();
         println!("after stop: system proxy enabled={} server={}", after.enabled, after.server);
-        status && through_node > 0 && !(after.enabled && after.server == "127.0.0.1:17890")
+        #[cfg(target_os = "macos")]
+        let dns_restored = {
+            let now = sys::dns_settings().unwrap_or_default();
+            println!("DNS before {dns_before:?}, after stop {now:?}");
+            now == dns_before
+        };
+        #[cfg(not(target_os = "macos"))]
+        let dns_restored = true;
+        status && through_node > 0 && dns_restored && !(after.enabled && after.server == "127.0.0.1:17890")
     });
     let _ = node.kill();
     if ok {

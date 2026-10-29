@@ -688,6 +688,8 @@ impl Engine {
             }
             let _ = std::fs::remove_file(&marker);
         }
+        // Likewise the DNS settings TUN took over on macOS.
+        self.restore_dns();
     }
 
     /// Stops the core and restores the system proxy. Blocks; call on quit.
@@ -794,6 +796,7 @@ impl Engine {
                 if self.with(|s| s.sysproxy_applied) {
                     self.clear_sysproxy();
                 }
+                self.restore_dns();
                 self.set_status(CoreStatus::Failed(msg.clone()));
                 Err(anyhow!(msg))
             }
@@ -904,6 +907,7 @@ impl Engine {
             format!("sing-box {version} running with {} nodes", built.node_count),
         );
         self.apply_sysproxy();
+        self.sync_tun_dns();
         self.spawn_traffic(generation);
         if self.host.is_some() {
             self.spawn_core_logs(generation);
@@ -1132,6 +1136,7 @@ impl Engine {
         if self.with(|s| s.sysproxy_applied) {
             self.clear_sysproxy();
         }
+        self.restore_dns();
         tokio::time::sleep(Duration::from_millis(200)).await;
         let msg = format!("sing-box exited unexpectedly ({code}). {}", self.last_core_error());
         self.log_app(LogLevel::Error, &msg);
@@ -1166,6 +1171,7 @@ impl Engine {
             self.active.store(0, Ordering::SeqCst);
             if !keep_sysproxy {
                 self.clear_sysproxy();
+                self.restore_dns();
             }
             let (tx, rx) = oneshot::channel();
             if r.kill.send(tx).is_ok() {
@@ -1287,13 +1293,15 @@ impl Engine {
                 providers: &st.providers,
             })
         });
-        // macOS sends queries for a DNS server on the local network around
-        // TUN; route them in so the core answers them.
+        // With TUN, macOS asks the core for DNS (see `sync_tun_dns`); the
+        // core's own system-resolver lookups go to the network's DNS server.
         #[cfg(target_os = "macos")]
         let built = {
             let mut built = built;
             if self.host.is_none() && settings.tun_enabled {
-                crate::config::route_dns_into_tun(&mut built.config, &sys::system_dns_servers());
+                if let Some(upstream) = self.upstream_dns() {
+                    crate::config::use_upstream_for_local_dns(&mut built.config, upstream);
+                }
             }
             built
         };
@@ -1368,6 +1376,97 @@ impl Engine {
 
     fn sysproxy_marker(&self) -> PathBuf {
         self.store.paths.run_dir.join("sysproxy.applied")
+    }
+
+    /// Where the DNS settings TUN replaced are kept until they go back, so a
+    /// crash or power loss can still restore them at the next start.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn dns_marker(&self) -> PathBuf {
+        self.store.paths.run_dir.join("dns.saved")
+    }
+
+    /// macOS with TUN: point every network service's DNS at TUN, so queries
+    /// reach the core even when the DNS server is on the local network (a
+    /// home router), whose route is more specific than TUN's. Other systems
+    /// route those queries into TUN by themselves.
+    fn sync_tun_dns(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            let want = self.host.is_none() && self.with(|s| s.settings.tun_enabled && s.status.is_running());
+            let marker = self.dns_marker();
+            if !want {
+                self.restore_dns();
+                return;
+            }
+            if marker.is_file() {
+                return;
+            }
+            let previous = match sys::dns_settings() {
+                Ok(p) if !p.is_empty() => p,
+                Ok(_) => return,
+                Err(e) => {
+                    self.log_app(LogLevel::Warn, format!("TUN DNS: {e:#}"));
+                    return;
+                }
+            };
+            let upstream: Vec<String> = sys::system_dns_servers()
+                .into_iter()
+                .map(|ip| ip.to_string())
+                .filter(|ip| ip != crate::config::TUN_DNS)
+                .collect();
+            let saved = serde_json::json!({ "services": previous, "upstream": upstream });
+            // Saved before the change, so it can always be undone.
+            if let Err(e) = std::fs::write(&marker, saved.to_string()) {
+                self.log_app(LogLevel::Warn, format!("TUN DNS: {e:#}"));
+                return;
+            }
+            let tun: Vec<(String, Vec<String>)> =
+                previous.iter().map(|(svc, _)| (svc.clone(), vec![crate::config::TUN_DNS.to_string()])).collect();
+            match sys::set_dns_settings(&tun) {
+                Ok(()) => self.log_app(LogLevel::Info, "DNS goes through TUN"),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&marker);
+                    self.notice(NoticeKind::Error, Msg::new("notice.tun_dns_failed").arg(format!("{e:#}")));
+                }
+            }
+        }
+    }
+
+    /// Puts back the DNS settings TUN replaced, if it replaced any.
+    fn restore_dns(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            let marker = self.dns_marker();
+            let Some(saved) = std::fs::read(&marker).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+                return;
+            };
+            let previous: Vec<(String, Vec<String>)> =
+                serde_json::from_value(saved["services"].clone()).unwrap_or_default();
+            match sys::set_dns_settings(&previous) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&marker);
+                    self.log_app(LogLevel::Info, "DNS settings restored");
+                }
+                Err(e) => self.notice(NoticeKind::Error, Msg::new("notice.tun_dns_failed").arg(format!("{e:#}"))),
+            }
+        }
+    }
+
+    /// The network's own DNS server: the one saved when TUN took DNS over,
+    /// else what the system uses now.
+    #[cfg(target_os = "macos")]
+    fn upstream_dns(&self) -> Option<IpAddr> {
+        let saved = std::fs::read(self.dns_marker()).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        let from_saved = saved
+            .as_ref()
+            .and_then(|v| v["upstream"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str()?.parse::<IpAddr>().ok());
+        let tun_dns: IpAddr = crate::config::TUN_DNS.parse().unwrap();
+        let mut candidates: Vec<IpAddr> = from_saved.chain(sys::system_dns_servers()).filter(|ip| *ip != tun_dns).collect();
+        candidates.sort_by_key(|ip| !ip.is_ipv4());
+        candidates.into_iter().next()
     }
 
     /// Registers the login item. With "run as administrator" and an elevated

@@ -140,6 +140,11 @@ pub fn open_main_window(cx: &mut App, show: bool) {
         }),
         app_owns_titlebar_drag: false,
         window_background: backdrop(&settings),
+        // Linux: the window draws its own frame (shadow, resize edges, Breeze
+        // or Adwaita buttons), as on Windows and macOS. GPUI otherwise asks
+        // for the server's, and KWin would add its title bar above ours.
+        // Without a compositor (plain X11) GPUI falls back to the WM's frame.
+        window_decorations: cfg!(target_os = "linux").then_some(gpui_kit::WindowDecorations::Client),
         ..TitleBar::window_options()
     };
     // Like gpui_kit::open_window, but the root surface is transparent: the
@@ -728,7 +733,10 @@ impl Render for MainView {
         };
 
         let caption = chrome::caption_bar(window, cx);
-        window_border().child(
+        // KWin blurs the whole surface, the frame's transparent shadow margin
+        // included; while it blurs, the frame ends at the window's edge.
+        let frame = if mica && cfg!(target_os = "linux") { window_border().shadow_size(gpui_kit::px(0.)) } else { window_border() };
+        frame.child(
             h_flex()
                 .size_full()
                 .text_color(fg)

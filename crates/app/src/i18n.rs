@@ -622,6 +622,7 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("notice.save_failed", ["Saving failed: {0}", "保存失败：{0}", "儲存失敗：{0}", "Не удалось сохранить: {0}"]),
     ("notice.core_exited", ["{0}", "{0}", "{0}", "{0}"]),
     ("notice.sysproxy_failed", ["System proxy: {0}", "系统代理：{0}", "系統代理：{0}", "Системный прокси: {0}"]),
+    ("notice.tun_dns_failed", ["TUN DNS: {0}", "TUN DNS：{0}", "TUN DNS：{0}", "DNS для TUN: {0}"]),
     ("notice.login_failed", ["Launch at login: {0}", "开机启动：{0}", "開機啟動：{0}", "Автозапуск: {0}"]),
     ("notice.mode_failed", ["Switching mode failed: {0}", "切换模式失败：{0}", "切換模式失敗：{0}", "Не удалось сменить режим: {0}"]),
     ("notice.no_remote_subs", ["No remote subscriptions to update", "没有可更新的远程订阅", "沒有可更新的遠端訂閱", "Нет удалённых подписок для обновления"]),
