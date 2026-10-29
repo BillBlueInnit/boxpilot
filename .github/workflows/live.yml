@@ -77,8 +77,8 @@ jobs:
             macOS) sudo chown root:wheel "$core" && sudo chmod u+s "$core" ;;
             Linux) sudo setcap cap_net_admin,cap_net_bind_service+ep "$core" ;;
           esac
-          ./target/release/examples/platform_live "$core" "$RUNNER_TEMP/live-tun" tun
           echo "TUN_CORE=$core" >> "$GITHUB_ENV"
+          ./target/release/examples/platform_live "$core" "$RUNNER_TEMP/live-tun" tun
 
       - name: TUN with the DNS server on the LAN (macOS)
         # Home networks hand out the router as DNS. Its subnet route is more
@@ -99,6 +99,39 @@ jobs:
           ./target/release/examples/platform_live "$TUN_CORE" "$RUNNER_TEMP/live-tun-lan" tun || status=$?
           echo "DNS after the test:"; while read -r svc; do networksetup -getdnsservers "$svc"; done < services.txt
           while read -r svc; do sudo networksetup -setdnsservers "$svc" Empty; done < services.txt
+          exit $status
+
+      - name: TUN with the DNS server on the LAN (Linux)
+        if: runner.os == 'Linux' && (success() || failure())
+        shell: bash
+        run: |
+          set -euo pipefail
+          iface=$(ip route show default | awk '{print $5; exit}')
+          gw=$(ip route show default | awk '{print $3; exit}')
+          dns="${gw%.*}.250"
+          echo "gateway $gw on $iface, LAN DNS stand-in $dns"
+          ip route show | head -5
+          sudo resolvectl dns "$iface" "$dns"
+          sudo resolvectl domain "$iface" '~.'
+          sudo resolvectl flush-caches
+          resolvectl status "$iface" | grep -i 'dns server' || true
+          status=0
+          ./target/release/examples/platform_live "$TUN_CORE" "$RUNNER_TEMP/live-tun-lan" tun || status=$?
+          sudo resolvectl revert "$iface"
+          exit $status
+
+      - name: TUN with the DNS server on the LAN (Windows)
+        if: runner.os == 'Windows' && (success() || failure())
+        shell: pwsh
+        run: |
+          $r = Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric | Select-Object -First 1
+          $dns = $r.NextHop -replace '\.\d+$', '.250'
+          "gateway $($r.NextHop) on $($r.InterfaceAlias), LAN DNS stand-in $dns"
+          Set-DnsClientServerAddress -InterfaceIndex $r.ifIndex -ServerAddresses $dns
+          Clear-DnsClientCache
+          ./target/release/examples/platform_live.exe "$env:TUN_CORE" "$env:RUNNER_TEMP/live-tun-lan" tun
+          $status = $LASTEXITCODE
+          Set-DnsClientServerAddress -InterfaceIndex $r.ifIndex -ResetServerAddresses
           exit $status
 
       - uses: actions/upload-artifact@v7

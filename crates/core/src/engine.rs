@@ -1287,6 +1287,16 @@ impl Engine {
                 providers: &st.providers,
             })
         });
+        // macOS sends queries for a DNS server on the local network around
+        // TUN; route them in so the core answers them.
+        #[cfg(target_os = "macos")]
+        let built = {
+            let mut built = built;
+            if self.host.is_none() && settings.tun_enabled {
+                crate::config::route_dns_into_tun(&mut built.config, &sys::system_dns_servers());
+            }
+            built
+        };
         let mut meta = BuildMeta {
             unsupported: skipped,
             rule_groups: built.provider_groups.iter().map(|(id, tag)| (tag.clone(), id.clone())).collect(),

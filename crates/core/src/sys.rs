@@ -390,31 +390,31 @@ mod imp {
         Ok(())
     }
 
-    /// Runs `networksetup` commands. Ones refused for lack of rights run again
-    /// together with an administrator's approval (one prompt); other failures
-    /// (a service without proxy support) are left to the caller's check.
+    /// Runs `networksetup` commands as the user; failures (a service without
+    /// proxy support, a refusal) are left to the caller's check of the result.
     #[cfg(target_os = "macos")]
-    fn networksetup_all(commands: &[Vec<String>]) -> Result<()> {
-        let refused: Vec<&Vec<String>> = commands
-            .iter()
-            .filter(|c| {
-                networksetup(c).is_err_and(|e| {
-                    let m = format!("{e:#}").to_ascii_lowercase();
-                    m.contains("admin") || m.contains("privilege") || m.contains("authoriz")
-                })
-            })
-            .collect();
-        if refused.is_empty() {
-            return Ok(());
+    fn networksetup_all(commands: &[Vec<String>]) {
+        for c in commands {
+            if let Err(e) = networksetup(c) {
+                log::warn!("{e:#}");
+            }
         }
+    }
+
+    /// Runs `networksetup` commands as root after one administrator prompt.
+    /// Standard accounts and managed Macs need it to change network settings.
+    #[cfg(target_os = "macos")]
+    fn networksetup_admin(commands: &[Vec<String>]) -> Result<()> {
         let quote = |a: &str| format!("'{}'", a.replace('\'', "'\\''"));
-        let script = refused
+        let script = commands
             .iter()
             .map(|c| format!("/usr/sbin/networksetup {}", c.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")))
             .collect::<Vec<_>>()
             .join(" ; ");
         let script = script.replace('\\', "\\\\").replace('"', "\\\"");
-        run("osascript", &["-e", &format!("do shell script \"{script}\" with administrator privileges")]).map(|_| ())
+        run("osascript", &["-e", &format!("do shell script \"{script}\" with administrator privileges")])
+            .map(|_| ())
+            .context("the administrator prompt was cancelled")
     }
 
     /// Every enabled service gets the proxy, so it follows Wi-Fi, Ethernet or a dock.
@@ -437,9 +437,18 @@ mod imp {
             bypass.extend(hosts.iter().cloned());
             commands.push(bypass);
         }
-        networksetup_all(&commands)?;
-        let state = system_proxy_state();
-        if !state.enabled || state.server != format!("{host}:{port}") {
+        let wanted = format!("{host}:{port}");
+        let taken = || {
+            let state = system_proxy_state();
+            (state.enabled && state.server == wanted, state)
+        };
+        networksetup_all(&commands);
+        if !taken().0 {
+            // Refused quietly or loudly: one administrator prompt applies it all.
+            networksetup_admin(&commands)?;
+        }
+        let (ok, state) = taken();
+        if !ok {
             bail!("macOS did not take the proxy setting (now: {})", if state.enabled { state.server.as_str() } else { "off" });
         }
         Ok(())
@@ -453,7 +462,30 @@ mod imp {
                 commands.push(vec![kind.to_string(), svc.clone(), "off".into()]);
             }
         }
-        networksetup_all(&commands)
+        networksetup_all(&commands);
+        if system_proxy_state().enabled {
+            networksetup_admin(&commands)?;
+        }
+        Ok(())
+    }
+
+    /// The DNS servers macOS asks, from every resolver `scutil --dns` lists.
+    #[cfg(target_os = "macos")]
+    pub fn system_dns_servers() -> Vec<std::net::IpAddr> {
+        let out = run("scutil", &["--dns"]).unwrap_or_default();
+        let mut servers = Vec::new();
+        for line in out.lines() {
+            // "  nameserver[0] : 192.168.1.1" (IPv6 may carry "%en0").
+            let Some((_, ip)) = line.trim().strip_prefix("nameserver[").and_then(|r| r.split_once(" : ")) else {
+                continue;
+            };
+            if let Ok(ip) = ip.trim().split('%').next().unwrap_or_default().parse() {
+                if !servers.contains(&ip) {
+                    servers.push(ip);
+                }
+            }
+        }
+        servers
     }
 
     /// What the system uses right now (the primary service's settings).

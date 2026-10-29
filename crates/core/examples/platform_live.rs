@@ -24,8 +24,10 @@ fn start_node(core: &str, dir: &Path) -> Child {
         "inbounds": [{ "type": "socks", "listen": "127.0.0.1", "listen_port": NODE_PORT }],
         "outbounds": [{ "type": "direct" }],
         // A real node is a remote server: its own traffic must not come back
-        // through BoxPilot's TUN, so it leaves by the physical interface.
-        "route": { "auto_detect_interface": true },
+        // through BoxPilot's TUN, so it leaves by the physical interface, and
+        // it has a DNS server of its own rather than this machine's.
+        "dns": { "servers": [{ "type": "udp", "tag": "node-dns", "server": "8.8.8.8" }] },
+        "route": { "auto_detect_interface": true, "default_domain_resolver": "node-dns" },
     });
     let path = dir.join("node.json");
     std::fs::write(&path, config.to_string()).unwrap();

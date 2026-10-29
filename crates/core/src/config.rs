@@ -1,6 +1,7 @@
 //! Generates a complete sing-box configuration from settings and nodes.
 
 use std::collections::{BTreeMap, HashSet};
+use std::net::IpAddr;
 
 use serde_json::{Map, Value, json};
 
@@ -147,6 +148,47 @@ impl TagAllocator {
             .map(|i| format!("{base} ({i})"))
             .find(|t| self.used.insert(t.clone()))
             .unwrap()
+    }
+}
+
+/// Routes the system's DNS servers into TUN. A home router that hands itself
+/// out as DNS sits on the local subnet, whose route is more specific than
+/// TUN's default ones, so its queries would skip the core (and come back
+/// unfiltered or poisoned). A host route per server sends them through TUN,
+/// where the DNS hijack answers them. For desktop TUN on macOS; the mobile
+/// VPN brings its own DNS.
+pub fn route_dns_into_tun(config: &mut Value, servers: &[IpAddr]) {
+    let Some(tun) = config
+        .get_mut("inbounds")
+        .and_then(Value::as_array_mut)
+        .and_then(|a| a.iter_mut().find(|i| i["type"] == "tun"))
+    else {
+        return;
+    };
+    let v6 = tun["address"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str().is_some_and(|s| s.contains(':'))));
+    // Custom routes replace the default ones, so those come first.
+    let mut routes: Vec<String> = vec!["0.0.0.0/1".into(), "128.0.0.0/1".into()];
+    if v6 {
+        routes.extend(["::/1".into(), "8000::/1".into()]);
+    }
+    let defaults = routes.len();
+    for ip in servers {
+        let route = match ip {
+            IpAddr::V4(a) if !(a.is_loopback() || a.is_unspecified() || a.is_link_local() || a.is_multicast()) => {
+                format!("{a}/32")
+            }
+            // Link-local servers are scoped to their interface and can't be moved.
+            IpAddr::V6(a) if v6 && !(a.is_loopback() || a.is_multicast() || (a.segments()[0] & 0xffc0) == 0xfe80) => {
+                format!("{a}/128")
+            }
+            _ => continue,
+        };
+        if !routes.contains(&route) {
+            routes.push(route);
+        }
+    }
+    if routes.len() > defaults {
+        tun["route_address"] = json!(routes);
     }
 }
 
@@ -783,6 +825,32 @@ vless://u@b.com:443#B").unwrap();
         assert!(ads.get("outbound").is_none());
         assert_eq!(outbound("rp-n"), "Proxy");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dns_servers_are_routed_into_tun() {
+        let mut settings = Settings::default();
+        settings.tun_enabled = true;
+        let input = |s| BuildInput {
+            settings: s,
+            groups: vec![],
+            version: CoreVersion { major: 1, minor: 14, patch: 4 },
+            rule_set_dir: None,
+            providers: &[],
+        };
+        let mut c = build_config(&input(&settings)).config;
+        let servers: Vec<IpAddr> = ["192.168.1.1", "127.0.0.1", "fe80::1", "8.8.8.8"].iter().map(|s| s.parse().unwrap()).collect();
+        route_dns_into_tun(&mut c, &servers);
+        let tun = c["inbounds"].as_array().unwrap().iter().find(|i| i["type"] == "tun").unwrap();
+        assert_eq!(tun["route_address"], json!(["0.0.0.0/1", "128.0.0.0/1", "192.168.1.1/32", "8.8.8.8/32"]));
+        // Nothing to add: TUN keeps its default routes.
+        let mut c = build_config(&input(&settings)).config;
+        route_dns_into_tun(&mut c, &["127.0.0.1".parse().unwrap()]);
+        assert!(c["inbounds"][1].get("route_address").is_none());
+        // Without TUN there is nothing to change.
+        let mut c = build_config(&input(&Settings::default())).config;
+        route_dns_into_tun(&mut c, &servers);
+        assert!(c["inbounds"].as_array().unwrap().iter().all(|i| i.get("route_address").is_none()));
     }
 
     #[test]
