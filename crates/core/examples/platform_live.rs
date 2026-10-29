@@ -14,7 +14,8 @@ use boxpilot_core::store::Paths;
 use boxpilot_core::{Engine, sys};
 
 const NODE_PORT: u16 = 21080;
-const URL: &str = "https://www.gstatic.com/generate_204";
+const URL: &str = "https://www.google.com/generate_204";
+const HOST: &str = "www.google.com";
 
 fn start_node(core: &str, dir: &Path) -> Child {
     let log = dir.join("node.log");
@@ -22,6 +23,9 @@ fn start_node(core: &str, dir: &Path) -> Child {
         "log": { "level": "info", "output": log.to_string_lossy() },
         "inbounds": [{ "type": "socks", "listen": "127.0.0.1", "listen_port": NODE_PORT }],
         "outbounds": [{ "type": "direct" }],
+        // A real node is a remote server: its own traffic must not come back
+        // through BoxPilot's TUN, so it leaves by the physical interface.
+        "route": { "auto_detect_interface": true },
     });
     let path = dir.join("node.json");
     std::fs::write(&path, config.to_string()).unwrap();
@@ -90,11 +94,11 @@ fn main() {
         s.mixed_port = 17890;
         s.clash_api_port = 19090;
         s.auto_start_core = false;
-        s.bypass_cn = false;
+        // The defaults people run with: Rule mode and the China bypass.
         s.ruleset_via_proxy = false;
         s.ipv6 = false;
         s.log_level = "debug".into();
-        s.mode = ProxyMode::Global;
+        s.mode = ProxyMode::Rule;
         s.system_proxy = mode == "sysproxy";
         s.tun_enabled = mode == "tun";
     });
@@ -134,9 +138,14 @@ fn main() {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let through_node = node_connections(&dir) - before;
         println!("node saw {through_node} new connection(s)");
-        for l in engine.logs().iter().filter(|l| l.message.contains("gstatic") || l.message.contains("dns")).take(12) {
+        let logs = engine.logs();
+        let dns_seen = logs.iter().any(|l| l.message.contains("dns") && l.message.contains(HOST));
+        println!("DNS for {HOST} reached the core: {dns_seen}");
+        for l in logs.iter().filter(|l| l.message.contains(HOST)).take(12) {
             println!("  core: {}", l.message);
         }
+        let text: String = logs.iter().map(|l| format!("{}\n", l.message)).collect();
+        let _ = std::fs::write(dir.join("core.log"), text);
         engine.stop();
         tokio::time::sleep(Duration::from_secs(2)).await;
         let after = sys::system_proxy_state();
@@ -147,7 +156,11 @@ fn main() {
     if ok {
         println!("platform live test passed");
     } else {
-        println!("--- node log ---\n{}", std::fs::read_to_string(dir.join("node.log")).unwrap_or_default());
+        let node_log = std::fs::read_to_string(dir.join("node.log")).unwrap_or_default();
+        println!("--- node log (last lines) ---");
+        for l in node_log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev() {
+            println!("{l}");
+        }
         panic!("platform live test failed");
     }
 }
