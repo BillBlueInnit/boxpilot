@@ -357,21 +357,27 @@ fn restart_elevated(apply: fn(&mut Settings), cx: &mut App) {
     let before = engine.settings();
     engine.update_settings(apply);
     engine.shutdown_blocking();
-    match boxpilot_core::sys::relaunch_elevated("--restarted") {
-        Ok(()) => cx.quit(),
-        Err(e) => {
-            engine.update_settings(move |s| *s = before);
-            engine.start();
-            if let Some(handle) = AppState::global(cx).read(cx).window {
-                let _ = handle.update(cx, |_, window, cx| {
-                    window.push_notification(
-                        gpui_kit::component::notification::Notification::warning(format!("{e:#}")),
-                        cx,
-                    )
-                });
+    // The UAC prompt is waited for on a shell thread (see `shell_thread`).
+    let elevated = crate::platform::shell_thread(|| boxpilot_core::sys::relaunch_elevated("--restarted"));
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        let result = elevated.await.unwrap_or_else(|_| Err(anyhow::anyhow!("elevation was cancelled")));
+        cx.update(|cx| match result {
+            Ok(()) => cx.quit(),
+            Err(e) => {
+                engine.update_settings(move |s| *s = before);
+                engine.start();
+                if let Some(handle) = AppState::global(cx).read(cx).window {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        window.push_notification(
+                            gpui_kit::component::notification::Notification::warning(format!("{e:#}")),
+                            cx,
+                        )
+                    });
+                }
             }
-        }
-    }
+        });
+    })
+    .detach();
 }
 
 /// Footer button that closes the active dialog.

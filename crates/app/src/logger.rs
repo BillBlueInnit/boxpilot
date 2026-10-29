@@ -49,4 +49,12 @@ pub fn init(dir: &Path) {
     if log::set_logger(logger).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
+    // A panic inside a window callback aborts the process, so write it down first.
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        log::error!("panic on thread {}: {info}", thread.name().unwrap_or("?"));
+        log::logger().flush();
+        default(info);
+    }));
 }

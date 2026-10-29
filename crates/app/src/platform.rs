@@ -277,28 +277,64 @@ pub fn single_instance() -> Option<tokio::sync::mpsc::UnboundedReceiver<()>> {
     Some(rx)
 }
 
+/// Runs a shell call on a thread of its own and hands back its result.
+///
+/// The shell can pump window messages while it works (COM waits, a UAC
+/// prompt, the editor taking focus). On the UI thread that re-enters the
+/// window in the middle of an event and the app aborts; on its own thread
+/// nothing reaches the UI. Windows gets the single-threaded COM apartment
+/// the shell expects there.
+pub fn shell_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> tokio::sync::oneshot::Receiver<T> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let spawned = std::thread::Builder::new().name("shell".into()).spawn(move || {
+        #[cfg(windows)]
+        let com = {
+            use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
+            unsafe { CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32) >= 0 }
+        };
+        let _ = tx.send(f());
+        #[cfg(windows)]
+        if com {
+            unsafe { windows_sys::Win32::System::Com::CoUninitialize() };
+        }
+    });
+    if let Err(e) = spawned {
+        log::error!("shell thread: {e}");
+    }
+    rx
+}
+
 /// Opens a file in the user's default text editor, whatever its extension.
 pub fn open_in_text_editor(path: &std::path::Path) {
+    let path = path.to_path_buf();
+    drop(shell_thread(move || open_editor_blocking(&path)));
+}
+
+fn open_editor_blocking(path: &std::path::Path) {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::Shell::{SEE_MASK_CLASSNAME, SHELLEXECUTEINFOW, ShellExecuteExW};
+        use windows_sys::Win32::UI::Shell::{SEE_MASK_CLASSNAME, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
         use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
         let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
         let (verb, file, class) = (wide("open"), wide(&path.to_string_lossy()), wide(".txt"));
         // Opened as a .txt, so it goes to the editor the user picked for text.
         let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-        info.fMask = SEE_MASK_CLASSNAME;
+        // NOASYNC: this thread ends right after, so the shell must finish here.
+        info.fMask = SEE_MASK_CLASSNAME | SEE_MASK_NOASYNC;
         info.lpVerb = verb.as_ptr();
         info.lpFile = file.as_ptr();
         info.lpClass = class.as_ptr();
         info.nShow = SW_SHOWNORMAL;
         if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            log::warn!("no text editor for .txt; using Notepad");
             let _ = std::process::Command::new("notepad.exe").arg(path).spawn();
         }
     }
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg("-t").arg(path).spawn();
+    if let Err(e) = std::process::Command::new("open").arg("-t").arg(path).status() {
+        log::warn!("open -t: {e}");
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         // The desktop's text/plain handler; xdg-open would pick the JSON viewer.
@@ -308,7 +344,9 @@ pub fn open_in_text_editor(path: &std::path::Path) {
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().trim_end_matches(".desktop").to_string())
             .filter(|h| !h.is_empty());
-        let launched = handler.is_some_and(|h| std::process::Command::new("gtk-launch").arg(h).arg(path).spawn().is_ok());
+        let launched = handler.is_some_and(|h| {
+            std::process::Command::new("gtk-launch").arg(h).arg(path).status().is_ok_and(|s| s.success())
+        });
         if !launched {
             let _ = std::process::Command::new("xdg-open").arg(path).spawn();
         }
