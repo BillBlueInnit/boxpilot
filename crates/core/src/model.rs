@@ -180,10 +180,6 @@ pub enum AutoStrategy {
 impl AutoStrategy {
     pub const ALL: [AutoStrategy; 4] = [Self::Quickest, Self::Steady, Self::Ordered, Self::Bandwidth];
 
-    /// Driven by BoxPilot through a selector (sing-box has no such group).
-    pub fn managed(self) -> bool {
-        matches!(self, Self::Ordered | Self::Bandwidth)
-    }
 }
 
 /// What to do when a newer BoxPilot is published.
@@ -265,6 +261,9 @@ pub struct Settings {
     pub clash_api_secret: String,
     pub urltest_url: String,
     pub urltest_interval_min: u32,
+    /// Test every node's latency on that interval (Auto tests its own
+    /// candidates either way).
+    pub auto_test_nodes: bool,
     pub auto_strategy: AutoStrategy,
     /// Country code the Auto group is limited to; empty for every node.
     pub auto_region: String,
@@ -352,6 +351,7 @@ impl Default for Settings {
             clash_api_secret: String::new(),
             urltest_url: "https://www.gstatic.com/generate_204".into(),
             urltest_interval_min: 10,
+            auto_test_nodes: true,
             auto_strategy: AutoStrategy::Quickest,
             auto_region: String::new(),
             github_mirror: String::new(),

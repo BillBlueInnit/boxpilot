@@ -188,6 +188,12 @@ pub trait CoreHost: Send + Sync + 'static {
     fn supports(&self, _protocol: &str) -> bool {
         true
     }
+    /// Whether the core may start without the user asking, i.e. the platform's
+    /// VPN permission is already granted. Asking for it is the user's call, so
+    /// "connect on launch" never brings up a permission prompt.
+    fn can_autostart(&self) -> bool {
+        true
+    }
 }
 
 /// What a reset clears. The downloaded sing-box core is always kept.
@@ -616,7 +622,8 @@ impl Engine {
             this.refresh_core_version().await;
 
             let had_nodes = this.total_nodes() > 0;
-            if s.auto_start_core && had_nodes && this.core_installed() {
+            let autostart = s.auto_start_core && this.host.as_ref().is_none_or(|h| h.can_autostart());
+            if autostart && had_nodes && this.core_installed() {
                 let _ = this.start_async().await;
             }
             let ids: Vec<String> = this.with(|st| {
@@ -630,7 +637,7 @@ impl Engine {
                 this.log_app(LogLevel::Info, format!("updating {} subscription(s) on startup", ids.len()));
                 this.update_many(ids, true).await;
             }
-            if s.auto_start_core
+            if autostart
                 && !this.status().is_running()
                 && !had_nodes
                 && this.total_nodes() > 0
@@ -1254,14 +1261,12 @@ impl Engine {
                     },
                 })
                 .collect();
-            let countries: HashMap<String, String> = st.countries.iter().map(|(t, c)| (t.clone(), c.code.clone())).collect();
             build_config(&BuildInput {
                 settings,
                 groups,
                 version,
                 rule_set_dir: Some(&rules_dir),
                 providers: &st.providers,
-                countries: Some(&countries),
             })
         });
         let mut meta = BuildMeta { unsupported: skipped, ..BuildMeta::default() };
@@ -1378,6 +1383,14 @@ impl Engine {
             self.notice(NoticeKind::Error, Msg::new("notice.save_failed").arg(format!("{e:#}")));
         }
         self.emit(Event::Settings);
+        if old.auto_strategy != new.auto_strategy
+            || old.auto_region != new.auto_region
+            || old.auto_test_nodes != new.auto_test_nodes
+            || old.urltest_interval_min != new.urltest_interval_min
+        {
+            // Applied through the Clash API right away; the core keeps running.
+            self.wake_auto.notify_one();
+        }
         let this = self.clone();
         self.rt.spawn(async move {
             if old.launch_at_login != new.launch_at_login || old.run_as_admin != new.run_as_admin {
@@ -2131,33 +2144,68 @@ impl Engine {
         counts
     }
 
-    /// Drives the Auto group for the strategies sing-box has no group for:
-    /// a full pick every interval, and a health check of the chosen node
-    /// every two minutes in between.
+    /// Keeps Auto on a good node. On the test interval it measures every
+    /// node (or only Auto's candidates when automatic tests are off); between
+    /// rounds it checks the node in use every two minutes; and it re-picks at
+    /// once when the mode or region changes or the core starts. Picks go
+    /// through the Clash API, so none of this restarts the core.
     async fn auto_loop(self: Arc<Self>) {
-        let mut last_pick: Option<Instant> = None;
+        let mut last_test: Option<Instant> = None;
+        let mut last_bandwidth: Option<Instant> = None;
         loop {
             let s = self.settings();
-            let wait = if self.status().is_running() && s.auto_strategy.managed() {
-                let every = match s.auto_strategy {
-                    // Speed tests cost data: about 25 MB per round.
-                    AutoStrategy::Bandwidth => Duration::from_secs(6 * 3600),
-                    _ => Duration::from_secs(u64::from(s.urltest_interval_min.max(1)) * 60),
-                };
-                if last_pick.is_none_or(|t| t.elapsed() >= every) || !self.auto_current_alive().await {
-                    self.pick_auto(s.auto_strategy).await;
-                    last_pick = Some(Instant::now());
+            let mut wait = Duration::from_secs(600);
+            if self.status().is_running() {
+                let members = self.auto_members().await;
+                if !members.is_empty() {
+                    let every = Duration::from_secs(u64::from(s.urltest_interval_min.max(1)) * 60);
+                    if last_test.is_none_or(|t| t.elapsed() >= every) {
+                        let names = if s.auto_test_nodes { members.clone() } else { self.auto_candidates(&members, &s) };
+                        self.measure_delays(names).await;
+                        last_test = Some(Instant::now());
+                    } else if !self.auto_current_alive().await {
+                        self.measure_delays(self.auto_candidates(&members, &s)).await;
+                    }
+                    self.pick_auto(&s, &members, &mut last_bandwidth).await;
+                    let _ = self.refresh_proxies_async().await;
+                    let left = every.saturating_sub(last_test.map_or(Duration::ZERO, |t| t.elapsed()));
+                    wait = left.clamp(Duration::from_secs(5), Duration::from_secs(120));
                 }
-                Duration::from_secs(120)
             } else {
-                last_pick = None;
-                Duration::from_secs(600)
-            };
+                last_test = None;
+            }
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
-                _ = self.wake_auto.notified() => last_pick = None,
+                _ = self.wake_auto.notified() => {}
             }
         }
+    }
+
+    /// Every node Auto can use (its selector holds them all).
+    async fn auto_members(&self) -> Vec<String> {
+        self.api()
+            .proxies()
+            .await
+            .ok()
+            .and_then(|p| p.get(crate::config::TAG_AUTO).and_then(|g| g.all.clone()))
+            .unwrap_or_default()
+    }
+
+    /// The members in the chosen region, in list order; all of them when the
+    /// region has none (yet).
+    fn auto_candidates(&self, members: &[String], s: &Settings) -> Vec<String> {
+        let region = s.auto_region.trim();
+        if region.is_empty() {
+            return members.to_vec();
+        }
+        let picked: Vec<String> = self.with(|st| {
+            members
+                .iter()
+                .filter(|m| st.countries.get(*m).is_some_and(|c| c.code.eq_ignore_ascii_case(region)))
+                .cloned()
+                .collect()
+        });
+        if picked.is_empty() { members.to_vec() } else { picked }
     }
 
     async fn auto_current_alive(&self) -> bool {
@@ -2171,51 +2219,55 @@ impl Engine {
         d.is_some()
     }
 
-    async fn pick_auto(self: &Arc<Self>, strategy: AutoStrategy) {
+    /// Chooses Auto's node from the latest measurements, per mode.
+    async fn pick_auto(self: &Arc<Self>, s: &Settings, members: &[String], last_bandwidth: &mut Option<Instant>) {
         let api = self.api();
-        let Ok(proxies) = api.proxies().await else { return };
-        let Some(group) = proxies.get(crate::config::TAG_AUTO) else { return };
-        let members = group.all.clone().unwrap_or_default();
-        if members.is_empty() {
+        let candidates = self.auto_candidates(members, s);
+        let now = api.proxies().await.ok().and_then(|p| p.get(crate::config::TAG_AUTO).and_then(|g| g.now.clone()));
+        let delay = |name: &str| self.with(|st| st.delays.get(name).copied().flatten());
+        // Reachable candidates, in list order.
+        let alive: Vec<(String, u32)> = candidates.iter().filter_map(|m| delay(m).map(|d| (m.clone(), d))).collect();
+        let Some(best) = alive.iter().min_by_key(|(_, d)| *d).cloned() else {
+            // Nothing answered: leave the current node rather than guess.
             return;
-        }
-        let url = self.settings().urltest_url;
-        let delays: Vec<Option<u32>> = futures_util::stream::iter(members.clone())
-            .map(|m| {
-                let (api, url) = (api.clone(), url.clone());
-                async move { api.delay(&m, &url, DELAY_TIMEOUT_MS).await.ok() }
-            })
-            .buffered(16)
-            .collect()
-            .await;
-        self.with(|s| {
-            for (m, d) in members.iter().zip(&delays) {
-                s.delays.insert(m.clone(), *d);
-            }
-        });
-        self.emit(Event::Delays);
-        let mut alive: Vec<(&String, u32)> = members.iter().zip(&delays).filter_map(|(m, d)| d.map(|d| (m, d))).collect();
-        let pick = match strategy {
-            AutoStrategy::Ordered => alive.first().map(|(m, _)| (*m).clone()),
+        };
+        let current = now.clone().filter(|n| candidates.contains(n)).and_then(|n| delay(&n).map(|d| (n, d)));
+        // Moving costs nothing for open connections (they stay), but only a
+        // clear gain is worth reshuffling new ones.
+        let keep_within = |tolerance: u32| current.clone().filter(|(_, d)| *d <= best.1 + tolerance).map(|(n, _)| n);
+        let pick = match s.auto_strategy {
+            AutoStrategy::Quickest => keep_within(50).unwrap_or_else(|| best.0.clone()),
+            AutoStrategy::Steady => keep_within(300).unwrap_or_else(|| best.0.clone()),
+            AutoStrategy::Ordered => alive[0].0.clone(),
             AutoStrategy::Bandwidth => {
-                alive.sort_by_key(|(_, d)| *d);
-                let mut best: Option<(String, u64)> = None;
-                for (m, _) in alive.iter().take(3) {
-                    let r = self.speed_test_one(m, speed::AUTO_BYTES).await;
-                    self.with(|s| s.speeds.insert((*m).clone(), r));
-                    self.emit(Event::Proxies);
-                    if let Some(bps) = r.bytes_per_sec.filter(|b| best.as_ref().is_none_or(|(_, top)| b > top)) {
-                        best = Some(((*m).clone(), bps));
+                // Speed tests cost data (about 25 MB a round): every 6 hours,
+                // or when the node in use is gone or outside the region.
+                let stale = last_bandwidth.is_none_or(|t| t.elapsed() >= Duration::from_secs(6 * 3600));
+                match current.clone() {
+                    Some((n, _)) if !stale => n,
+                    _ => {
+                        let mut ranked = alive.clone();
+                        ranked.sort_by_key(|(_, d)| *d);
+                        let mut fastest: Option<(String, u64)> = None;
+                        for (m, _) in ranked.iter().take(3) {
+                            let r = self.speed_test_one(m, speed::AUTO_BYTES).await;
+                            self.with(|st| {
+                                st.speeds.insert(m.clone(), r);
+                                st.real_delays.insert(m.clone(), r.latency_ms);
+                            });
+                            self.emit(Event::Proxies);
+                            if let Some(bps) = r.bytes_per_sec.filter(|b| fastest.as_ref().is_none_or(|(_, top)| b > top)) {
+                                fastest = Some((m.clone(), bps));
+                            }
+                        }
+                        *last_bandwidth = Some(Instant::now());
+                        fastest.map(|(m, _)| m).unwrap_or_else(|| best.0.clone())
                     }
                 }
-                best.map(|(m, _)| m).or_else(|| alive.first().map(|(m, _)| (*m).clone()))
             }
-            AutoStrategy::Quickest | AutoStrategy::Steady => None,
         };
-        let Some(pick) = pick else { return };
-        if group.now.as_deref() != Some(pick.as_str()) && api.select(crate::config::TAG_AUTO, &pick).await.is_ok() {
-            self.log_app(LogLevel::Info, format!("Auto ({strategy:?}) → {pick}"));
-            let _ = self.refresh_proxies_async().await;
+        if now.as_deref() != Some(pick.as_str()) && api.select(crate::config::TAG_AUTO, &pick).await.is_ok() {
+            self.log_app(LogLevel::Info, format!("Auto ({:?}) → {pick}", s.auto_strategy));
         }
     }
 
@@ -2435,8 +2487,9 @@ impl Engine {
         });
         self.emit(Event::Proxies);
         self.check_exits(unsure).await;
+        // A region filter may now match different nodes.
         if !self.settings().auto_region.is_empty() {
-            self.request_reload();
+            self.wake_auto.notify_one();
         }
     }
 
@@ -2651,7 +2704,8 @@ impl Engine {
                 .filter_map(|g| proxies.get(g))
                 .map(|p| ProxyGroup {
                     name: p.name.clone(),
-                    kind: if p.name == crate::config::TAG_AUTO && s.settings.auto_strategy.managed() {
+                    // Auto is a selector for sing-box, but BoxPilot picks for it.
+                    kind: if p.name == crate::config::TAG_AUTO {
                         "URLTest".to_string()
                     } else {
                         p.kind.clone()
@@ -2727,32 +2781,36 @@ impl Engine {
             self.notice(NoticeKind::Warning, Msg::new("notice.start_core_first"));
             return;
         }
-        let names: Vec<String> = self.with(|s| {
-            names
-                .into_iter()
-                .filter(|n| s.testing.insert(n.clone()))
-                .collect()
-        });
-        self.emit(Event::Delays);
         let this = self.clone();
         self.rt.spawn(async move {
-            let api = this.api();
-            let url = this.settings().urltest_url;
-            futures_util::stream::iter(names)
-                .for_each_concurrent(32, |name| {
-                    let (api, url, this) = (api.clone(), url.clone(), this.clone());
-                    async move {
-                        let d = api.delay(&name, &url, DELAY_TIMEOUT_MS).await.ok();
-                        this.with(|s| {
-                            s.testing.remove(&name);
-                            s.delays.insert(name, d);
-                        });
-                        this.emit(Event::Delays);
-                    }
-                })
-                .await;
+            this.measure_delays(names).await;
             let _ = this.refresh_proxies_async().await;
         });
+    }
+
+    /// URL-test latency through the core, 32 at a time; the badges show
+    /// "testing" and fill in as results arrive.
+    async fn measure_delays(&self, names: Vec<String>) {
+        let names: Vec<String> = self.with(|s| names.into_iter().filter(|n| s.testing.insert(n.clone())).collect());
+        if names.is_empty() {
+            return;
+        }
+        self.emit(Event::Delays);
+        let api = self.api();
+        let url = self.settings().urltest_url;
+        futures_util::stream::iter(names)
+            .for_each_concurrent(32, |name| {
+                let (api, url) = (api.clone(), url.clone());
+                async move {
+                    let d = api.delay(&name, &url, DELAY_TIMEOUT_MS).await.ok();
+                    self.with(|s| {
+                        s.testing.remove(&name);
+                        s.delays.insert(name, d);
+                    });
+                    self.emit(Event::Delays);
+                }
+            })
+            .await;
     }
 
     // ----------------------------------------------------------------- core

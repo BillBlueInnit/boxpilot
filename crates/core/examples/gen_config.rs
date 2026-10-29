@@ -64,7 +64,6 @@ fn main() {
                 version,
                 rule_set_dir: None,
                 providers: &[],
-                countries: None,
             });
             assert!(built.warnings.is_empty(), "{:?}", built.warnings);
             let path = out.join(format!("{name}-{}.{}.json", version.major, version.minor));
@@ -72,7 +71,7 @@ fn main() {
             println!("{}", path.display());
         }
     }
-    let empty = build_config(&BuildInput { settings: &Settings::default(), groups: vec![], version: CoreVersion { major: 1, minor: 14, patch: 4 }, rule_set_dir: None, providers: &[], countries: None });
+    let empty = build_config(&BuildInput { settings: &Settings::default(), groups: vec![], version: CoreVersion { major: 1, minor: 14, patch: 4 }, rule_set_dir: None, providers: &[] });
     let path = out.join("empty-1.14.json");
     std::fs::write(&path, serde_json::to_string_pretty(&empty.config).unwrap()).unwrap();
     println!("{}", path.display());

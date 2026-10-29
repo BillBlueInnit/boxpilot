@@ -734,6 +734,7 @@ impl Render for SettingsPage {
                 ))
                 .child(setting_row(t!("set.api_port"), Some(t!("set.api_port_desc")), self.input(F::ApiPort), cx))
                 .child(setting_row(t!("set.test_url"), None, self.input(F::TestUrl), cx))
+                .child(switch_row("auto-test", t!("set.auto_test"), t!("set.auto_test_desc"), s.auto_test_nodes, e, |s, v| s.auto_test_nodes = v, cx))
                 .child(setting_row(t!("set.test_interval"), None, self.input(F::TestInterval), cx))
                 .child(setting_row(
                     t!("set.export"),

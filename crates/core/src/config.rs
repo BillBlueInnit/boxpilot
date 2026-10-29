@@ -1,10 +1,10 @@
 //! Generates a complete sing-box configuration from settings and nodes.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use serde_json::{Map, Value, json};
 
-use crate::model::{AutoStrategy, Node, Settings};
+use crate::model::{Node, Settings};
 use crate::rules::{RuleFormat, RuleProvider};
 
 pub const TAG_PROXY: &str = "Proxy";
@@ -70,8 +70,6 @@ pub struct BuildInput<'a> {
     pub rule_set_dir: Option<&'a std::path::Path>,
     /// Imported rule-sets, applied in order after the custom rules.
     pub providers: &'a [RuleProvider],
-    /// Country code per node tag, for the Auto group's region filter.
-    pub countries: Option<&'a HashMap<String, String>>,
 }
 
 /// Where a provider's converted rule-set is stored.
@@ -209,39 +207,16 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
         "interrupt_exist_connections": true,
     }));
     if !all_tags.is_empty() {
-        // Region filter; every node when none is known to be there (yet).
-        let region = s.auto_region.trim();
-        let mut auto: Vec<String> = all_tags
-            .iter()
-            .filter(|t| region.is_empty() || input.countries.and_then(|c| c.get(*t)).is_some_and(|c| c.eq_ignore_ascii_case(region)))
-            .cloned()
-            .collect();
-        if auto.is_empty() {
-            auto = all_tags.clone();
-        }
-        head.push(if s.auto_strategy.managed() {
-            // BoxPilot measures and picks the node through the Clash API.
-            json!({
-                "type": "selector",
-                "tag": TAG_AUTO,
-                "outbounds": auto,
-                "default": auto[0],
-                "interrupt_exist_connections": false,
-            })
-        } else {
-            json!({
-                "type": "urltest",
-                "tag": TAG_AUTO,
-                "outbounds": auto,
-                "url": s.urltest_url,
-                "interval": format!("{}m", s.urltest_interval_min.max(1)),
-                // Steady only moves for a big difference (or a failure).
-                "tolerance": if s.auto_strategy == AutoStrategy::Steady { 300 } else { 50 },
-                // Switching to a faster node must not cut open streams (chat
-                // responses, downloads); new connections use the new node.
-                "interrupt_exist_connections": false,
-            })
-        });
+        // BoxPilot picks Auto's node through the Clash API (the engine's auto
+        // loop), so changing how it picks or which region never touches the
+        // config, and never restarts the core.
+        head.push(json!({
+            "type": "selector",
+            "tag": TAG_AUTO,
+            "outbounds": all_tags,
+            "default": all_tags[0],
+            "interrupt_exist_connections": false,
+        }));
     }
     let probe = !all_tags.is_empty() && s.probe_port != 0;
     if probe {
@@ -702,7 +677,6 @@ mod tests {
             version: CoreVersion { major: 1, minor: 14, patch: 0 },
             rule_set_dir: None,
             providers: &[],
-            countries: None,
         });
         let c = &out.config;
         let tags: Vec<&str> = c["outbounds"].as_array().unwrap().iter().map(|o| o["tag"].as_str().unwrap()).collect();
@@ -731,7 +705,6 @@ mod tests {
             version: CoreVersion { major: 1, minor: 12, patch: 0 },
             rule_set_dir: None,
             providers: &[],
-            countries: None,
         });
         assert!(out.config.get("http_clients").is_none());
         assert_eq!(out.config["route"]["rule_set"][0]["download_detour"], "Proxy");
@@ -751,7 +724,6 @@ mod tests {
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: Some(&dir),
             providers: &[],
-            countries: None,
         });
         let sets = out.config["route"]["rule_set"].as_array().unwrap();
         assert_eq!(sets.len(), 1);
@@ -776,7 +748,6 @@ mod tests {
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: Some(&dir),
             providers: std::slice::from_ref(&provider),
-            countries: None,
         });
         let rules = out.config["route"]["rules"].as_array().unwrap();
         let r = rules.iter().find(|r| r["rule_set"][0] == "rp-abc").unwrap();
@@ -787,7 +758,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn auto_group(settings: &Settings, countries: Option<&HashMap<String, String>>) -> Value {
+    fn auto_group(settings: &Settings) -> Value {
         let a = parse_subscription("trojan://p@a.com:443#HK-1\ntrojan://p@b.com:443#JP-1\ntrojan://p@c.com:443#JP-2").unwrap();
         let out = build_config(&BuildInput {
             settings,
@@ -795,31 +766,22 @@ mod tests {
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: None,
             providers: &[],
-            countries,
         });
         out.config["outbounds"].as_array().unwrap().iter().find(|o| o["tag"] == TAG_AUTO).unwrap().clone()
     }
 
     #[test]
-    fn auto_strategies_and_region() {
+    fn auto_is_one_selector_whatever_the_mode() {
+        // Mode and region are applied through the Clash API, never the config,
+        // so switching them cannot restart the core.
         let mut s = Settings::default();
-        let auto = auto_group(&s, None);
-        assert_eq!((auto["type"].as_str(), auto["tolerance"].as_u64()), (Some("urltest"), Some(50)));
-        // Auto switching never cuts open streams.
-        assert_eq!(auto["interrupt_exist_connections"], false);
-        s.auto_strategy = AutoStrategy::Steady;
-        assert_eq!(auto_group(&s, None)["tolerance"], 300);
-        s.auto_strategy = AutoStrategy::Ordered;
-        let auto = auto_group(&s, None);
-        assert_eq!((auto["type"].as_str(), auto["default"].as_str()), (Some("selector"), Some("HK-1")));
-
-        let countries: HashMap<String, String> =
-            [("HK-1", "HK"), ("JP-1", "JP"), ("JP-2", "JP")].iter().map(|(t, c)| (t.to_string(), c.to_string())).collect();
-        s.auto_region = "jp".into();
-        assert_eq!(auto_group(&s, Some(&countries))["outbounds"], json!(["JP-1", "JP-2"]));
-        // A region with no nodes falls back to all of them instead of an empty group.
-        s.auto_region = "US".into();
-        assert_eq!(auto_group(&s, Some(&countries))["outbounds"].as_array().unwrap().len(), 3);
+        let base = auto_group(&s);
+        assert_eq!(base["type"], "selector");
+        assert_eq!(base["outbounds"], json!(["HK-1", "JP-1", "JP-2"]));
+        assert_eq!(base["interrupt_exist_connections"], false);
+        s.auto_strategy = crate::model::AutoStrategy::Ordered;
+        s.auto_region = "JP".into();
+        assert_eq!(auto_group(&s), base);
     }
 
     #[test]
@@ -832,7 +794,6 @@ mod tests {
                 version: CoreVersion { major: 1, minor: 14, patch: 4 },
                 rule_set_dir: None,
                 providers: &[],
-                countries: None,
             })
             .config["route"]["rules"]
                 .clone()
