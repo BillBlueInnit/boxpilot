@@ -94,8 +94,8 @@ one gets its native mechanism:
 | Install | zip | `.dmg` with BoxPilot.app (Dock, Launchpad) | tar.gz |
 | Window | borderless, native frame, snap layouts on Maximize, optional Mica | native traffic lights | client-side decorations (or the WM's own) |
 | Caption buttons | Segoe Fluent / MDL2 glyphs, WinUI colours | AppKit traffic lights | Adwaita (GNOME) or Breeze (KDE) style, `button-layout` order and side |
-| System proxy | WinINet (registry) | `networksetup`, every network service | GNOME `gsettings`, KDE `kioslaverc` |
-| TUN permission | run BoxPilot as administrator (login via scheduled task, no UAC prompt) | core made setuid root after one admin prompt | `CAP_NET_ADMIN` on the core via `pkexec setcap` |
+| System proxy | WinINet (registry) | `networksetup`, every network service | KDE `kioslaverc` and GNOME `gsettings` (both, for KDE, GTK and Firefox) |
+| TUN permission | run BoxPilot as administrator (login via scheduled task, no UAC prompt) | core made setuid root after one admin prompt; DNS points at TUN while it runs | `CAP_NET_ADMIN` on the core via `pkexec setcap`, or a setuid core where `setcap` isn't installed |
 | Launch at login | Run key / scheduled task | LaunchAgent | XDG autostart |
 | Close to tray | hides the window | hides the app (Dock icon brings it back) | closes the window (tray reopens it) |
 | Core cleanup if the app crashes | job object | stale-pid cleanup at next start | parent-death signal + stale-pid cleanup |

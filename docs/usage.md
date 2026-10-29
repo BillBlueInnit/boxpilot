@@ -79,7 +79,9 @@ How apps reach BoxPilot (**Dashboard → Quick settings**):
   it on every network service (Wi-Fi, Ethernet…); if macOS refuses, it asks once for your password.
 - **TUN mode** — captures all traffic, including apps that ignore the system proxy. Windows needs
   BoxPilot to run as administrator (it offers to restart that way); macOS asks once for your
-  password to allow the core; Linux asks through `pkexec`.
+  password to allow the core; Linux asks through `pkexec`. On macOS, while TUN is on, the
+  system's DNS points at it (so lookups are answered by BoxPilot, not by the router); your own
+  DNS settings come back when TUN stops.
 - Neither — apps can still use the local proxy at `127.0.0.1:7890` (HTTP and SOCKS5 on one port;
   change it under **Settings → Proxy**).
 
