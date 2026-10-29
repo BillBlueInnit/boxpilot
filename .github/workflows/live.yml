@@ -1,0 +1,98 @@
+# Checks the two ways traffic reaches BoxPilot on real machines — the system
+# proxy and TUN — with an ordinary client and a local node (see
+# crates/core/examples/platform_live.rs). Only the core is built, so a round
+# takes minutes. Runs for changes to the parts it covers and on demand.
+name: Live proxy test
+
+on:
+  push:
+    branches: [main, 'live/**']
+    paths:
+      - 'crates/core/**'
+      - '.github/workflows/live.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: live-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS arm64, os: macos-14, singbox: darwin-arm64, ext: tar.gz }
+          - { name: macOS x64, os: macos-15-intel, singbox: darwin-amd64, ext: tar.gz }
+          - { name: Windows x64, os: windows-latest, singbox: windows-amd64, ext: zip }
+          - { name: Linux x64, os: ubuntu-24.04, singbox: linux-amd64, ext: tar.gz }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the live test
+        run: cargo build --release --locked -p boxpilot-core --example platform_live
+
+      - name: Download the sing-box core
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/SagerNet/sing-box/releases/latest | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p')
+          name="sing-box-${tag}-${{ matrix.singbox }}"
+          curl -fsSL -o "core.${{ matrix.ext }}" \
+            "https://github.com/SagerNet/sing-box/releases/download/v${tag}/${name}.${{ matrix.ext }}"
+          mkdir core
+          if [ "${{ matrix.ext }}" = "zip" ]; then unzip -q core.zip -d core; else tar -xzf core.tar.gz -C core; fi
+          bin=$(find "$PWD/core" -type f \( -name sing-box -o -name sing-box.exe \) | head -n1)
+          chmod +x "$bin"
+          echo "SING_BOX=$bin" >> "$GITHUB_ENV"
+
+      - name: System proxy
+        # Linux runners have no desktop session for gsettings / kioslaverc.
+        if: runner.os != 'Linux'
+        shell: bash
+        run: ./target/release/examples/platform_live "$SING_BOX" "$RUNNER_TEMP/live-sysproxy" sysproxy
+
+      - name: TUN
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          core="$RUNNER_TEMP/tun-core/$(basename "$SING_BOX")"
+          mkdir -p "$(dirname "$core")"
+          cp "$SING_BOX" "$core"
+          # What BoxPilot's one-time TUN permission does on each system.
+          case "${{ runner.os }}" in
+            macOS) sudo chown root:wheel "$core" && sudo chmod u+s "$core" ;;
+            Linux) sudo setcap cap_net_admin,cap_net_bind_service+ep "$core" ;;
+          esac
+          ./target/release/examples/platform_live "$core" "$RUNNER_TEMP/live-tun" tun
+          echo "TUN_CORE=$core" >> "$GITHUB_ENV"
+
+      - name: TUN with the DNS server on the LAN (macOS)
+        # Home networks hand out the router as DNS. Its LAN route is more
+        # specific than TUN's, so queries must still be made to reach the core.
+        if: runner.os == 'macOS' && (success() || failure())
+        shell: bash
+        run: |
+          set -euo pipefail
+          networksetup -listallnetworkservices | tail -n +2 | grep -v '^\*' > services.txt
+          while read -r svc; do sudo networksetup -setdnsservers "$svc" 192.168.250.1; done < services.txt
+          sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true
+          scutil --dns | grep -m3 nameserver || true
+          status=0
+          ./target/release/examples/platform_live "$TUN_CORE" "$RUNNER_TEMP/live-tun-lan" tun || status=$?
+          echo "DNS after the test:"; while read -r svc; do networksetup -getdnsservers "$svc"; done < services.txt
+          while read -r svc; do sudo networksetup -setdnsservers "$svc" Empty; done < services.txt
+          exit $status
