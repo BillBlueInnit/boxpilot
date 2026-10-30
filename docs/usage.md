@@ -165,7 +165,7 @@ The **Rules** page decides where traffic goes in Rule mode.
 
 ## 8. Troubleshooting
 
-- **Nothing loads after connecting** — open **Logs**. Check that the node answers (**Test latency**
+- **Nothing loads after connecting** — open **Logs** (click a line to read it in full and copy it). Check that the node answers (**Test latency**
   on the Proxies page) and that System proxy or TUN is on.
 - **"System proxy: …" error on macOS** — approve the password prompt; if there was none,
   check that your account is an administrator.

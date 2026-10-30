@@ -722,6 +722,7 @@ dependencies = [
  "gtk",
  "libc",
  "log",
+ "objc2 0.6.5",
  "raw-window-handle",
  "serde",
  "serde_json",
@@ -731,6 +732,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "windows-sys 0.59.0",
+ "winreg 0.55.0",
  "winresource",
 ]
 

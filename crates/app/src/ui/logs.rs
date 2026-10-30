@@ -1,14 +1,16 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use boxpilot_core::process::{LogLevel, LogLine};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::component::Selectable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, FontWeight, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window, div, uniform_list,
+    ClipboardItem, Context, Entity, FontWeight, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window,
+    div, uniform_list,
 };
 
 use super::widgets::*;
@@ -24,7 +26,18 @@ pub struct LogsPage {
     lines: Rc<Vec<LogLine>>,
     built_for: (u64, String, LogLevel),
     scroll: UniformListScrollHandle,
+    /// The line shown in full under the list (rows are one line high).
+    selected: Option<LogLine>,
     _subs: Vec<Subscription>,
+}
+
+fn same_line(a: &LogLine, b: &LogLine) -> bool {
+    a.time == b.time && Arc::ptr_eq(&a.message, &b.message)
+}
+
+fn copy_line(l: &LogLine, window: &mut Window, cx: &mut gpui_kit::App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(format!("{} {} {}", l.clock(), l.level.label(), l.message)));
+    window.push_notification(t!("logs.copied"), cx);
 }
 
 impl LogsPage {
@@ -47,6 +60,7 @@ impl LogsPage {
             lines: Rc::new(vec![]),
             built_for: (u64::MAX, String::new(), LogLevel::Info),
             scroll: UniformListScrollHandle::new(),
+            selected: None,
             _subs,
         }
     }
@@ -149,13 +163,20 @@ impl Render for LogsPage {
         let (muted, fg, border) = (t.muted_foreground, t.foreground, t.border);
         let colors = [t.muted_foreground, t.muted_foreground, t.info, t.warning, t.danger];
         let mono = t.mono_font_family.clone();
+        let detail_mono = mono.clone();
         let base = self.scroll.0.borrow().base_handle.clone();
+        let selected = self.selected.clone();
+        let (hover_bg, picked_bg) = (t.muted, t.primary.opacity(0.1));
+        let this_pick = cx.entity().downgrade();
         let list = uniform_list("log-list", count, move |range, _, _| {
             range
                 .map(|i| {
                     let l = &lines[i];
                     let c = colors[l.level as usize];
+                    let picked = selected.as_ref().is_some_and(|s| same_line(s, l));
+                    let (this, line) = (this_pick.clone(), l.clone());
                     h_flex()
+                        .id(("log-line", i))
                         .w_full()
                         .h(dp(24.))
                         .px_3()
@@ -163,6 +184,18 @@ impl Render for LogsPage {
                         .items_center()
                         .text_xs()
                         .font_family(mono.clone())
+                        // Click shows the whole line below; again hides it.
+                        .cursor_pointer()
+                        .hover(move |d| d.bg(hover_bg))
+                        .when(picked, move |d| d.bg(picked_bg))
+                        .on_click(move |_, _, cx| {
+                            let line = line.clone();
+                            let _ = this.update(cx, |s, cx| {
+                                let again = s.selected.as_ref().is_some_and(|x| same_line(x, &line));
+                                s.selected = (!again).then_some(line);
+                                cx.notify();
+                            });
+                        })
                         .child(div().w(dp(60.)).flex_none().text_color(muted).child(l.clock()))
                         .child(
                             div()
@@ -186,6 +219,60 @@ impl Render for LogsPage {
         .track_scroll(&self.scroll)
         .flex_1()
         .min_h_0();
+
+        // The selected line in full, wrapped, with copy and close.
+        let detail = self.selected.clone().map(|l| {
+            let c = colors[l.level as usize];
+            let (copy, this_close) = (l.clone(), cx.entity().downgrade());
+            v_flex()
+                .flex_none()
+                .gap_1()
+                .px_3()
+                .py_2()
+                .border_t_1()
+                .border_color(border)
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .text_xs()
+                        .font_family(detail_mono.clone())
+                        .child(div().text_color(muted).child(l.clock()))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c).child(l.level.label()))
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("log-copy")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .label(t!("btn.copy"))
+                                .on_click(move |_, window, cx| copy_line(&copy, window, cx)),
+                        )
+                        .child(
+                            Button::new("log-close")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .tooltip(t!("btn.close"))
+                                .on_click(move |_, _, cx| {
+                                    let _ = this_close.update(cx, |s, cx| {
+                                        s.selected = None;
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("log-detail")
+                        .max_h(dp(160.))
+                        .overflow_y_scroll()
+                        .text_xs()
+                        .font_family(detail_mono.clone())
+                        .text_color(if l.level >= LogLevel::Warn { c } else { fg })
+                        .child(SharedString::from(l.message.to_string())),
+                )
+        });
 
         page(
             t!("nav.logs"),
@@ -221,7 +308,8 @@ impl Render for LogsPage {
                         .flex_1()
                         .min_h_0(),
                     )
-                }),
+                })
+                .when_some(detail, |d, detail| d.child(detail)),
         )
     }
 }

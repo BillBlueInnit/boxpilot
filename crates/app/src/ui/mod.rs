@@ -42,6 +42,10 @@ pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
     let pref = AppState::engine(cx).settings().theme;
     match window {
         Some(window) => {
+            if pref == ThemePref::System {
+                // The window must report the system's appearance again first.
+                crate::platform::set_frame_theme(window, cx.theme().is_dark(), true);
+            }
             match pref {
                 ThemePref::System => Theme::sync_system_appearance(Some(window), cx),
                 ThemePref::Light => Theme::change(ThemeMode::Light, Some(window), cx),
@@ -49,7 +53,7 @@ pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
             }
             // Keep the native frame and Mica tint in step with the app theme.
             let dark = cx.theme().is_dark();
-            crate::platform::set_dark_frame(window, dark);
+            crate::platform::set_frame_theme(window, dark, pref == ThemePref::System);
             apply_backdrop(&AppState::engine(cx).settings(), dark, window);
         }
         None => match pref {

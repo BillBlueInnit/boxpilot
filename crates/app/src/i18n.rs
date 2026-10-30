@@ -387,6 +387,9 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("logs.stopped", ["recording stopped", "已停止记录", "已停止記錄", "запись остановлена"]),
     ("logs.empty", ["No logs yet", "暂无日志", "尚無日誌", "Журнал пуст"]),
     ("logs.empty_hint", ["Core and app messages show up here.", "内核和应用的消息会显示在这里。", "核心及應用程式的訊息會顯示在這裡。", "Здесь появятся сообщения ядра и приложения."]),
+    ("logs.copied", ["Log line copied", "已复制日志行", "已複製日誌行", "Строка журнала скопирована"]),
+    ("btn.copy", ["Copy", "复制", "複製", "Копировать"]),
+    ("btn.close", ["Close", "关闭", "關閉", "Закрыть"]),
     // Settings
     ("settings.subtitle", ["Changes apply immediately; the core reloads when needed.", "更改立即生效，必要时自动重载内核。", "變更立即生效，必要時自動重新載入核心。", "Изменения применяются сразу; ядро перезапускается при необходимости."]),
     ("set.general", ["General", "常规", "一般", "Общие"]),

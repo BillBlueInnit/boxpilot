@@ -343,23 +343,74 @@ pub fn mica_supported() -> bool {
     translucency() != Translucency::None
 }
 
-/// Tells DWM whether the frame (and the Mica tint) should be dark, so the
-/// native backdrop follows the app theme rather than the system one.
-pub fn set_dark_frame(window: &Window, dark: bool) {
+/// Matches the native window frame to the app theme rather than the
+/// system's. `follow_system` hands it back to the system (theme "System").
+///
+/// * Windows: dark-mode frame and Mica tint, and the 1 px border. Windows
+///   colours that border after the system theme, so a light window on a
+///   dark system got a dark outline; it now takes Fluent's surface stroke,
+///   unless the user shows the accent colour on window borders.
+/// * macOS: the window's appearance, which drives its frame, traffic lights
+///   and vibrancy.
+/// * Linux draws its own frame from the theme.
+pub fn set_frame_theme(window: &Window, dark: bool, follow_system: bool) {
     #[cfg(windows)]
     if let Some(h) = hwnd(window) {
-        use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
-        let value: i32 = dark as i32;
-        unsafe {
-            DwmSetWindowAttribute(
-                h,
-                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-                &value as *const i32 as *const _,
-                std::mem::size_of::<i32>() as u32,
-            );
-        }
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+        let set = |attr: i32, value: u32| unsafe {
+            DwmSetWindowAttribute(h, attr as u32, &value as *const u32 as *const _, std::mem::size_of::<u32>() as u32);
+        };
+        set(DWMWA_USE_IMMERSIVE_DARK_MODE, dark as u32);
+        // COLORREF 0x00BBGGRR; 0xFFFFFFFF hands the colour back to Windows.
+        let border = if accent_on_borders() {
+            0xFFFF_FFFF
+        } else if dark {
+            0x0042_4242
+        } else {
+            0x00C1_C1C1
+        };
+        set(DWMWA_BORDER_COLOR, border);
     }
-    let _ = (window, dark);
+    #[cfg(target_os = "macos")]
+    set_ns_appearance(window, (!follow_system).then_some(dark));
+    let _ = (window, dark, follow_system);
+}
+
+/// "Show accent colour on title bars and window borders".
+#[cfg(windows)]
+fn accent_on_borders() -> bool {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Software\\Microsoft\\Windows\\DWM")
+        .and_then(|k| k.get_value::<u32, _>("ColorPrevalence"))
+        .is_ok_and(|v| v == 1)
+}
+
+/// Sets the NSWindow's appearance (`None`: follow the system).
+#[cfg(target_os = "macos")]
+fn set_ns_appearance(window: &Window, dark: Option<bool>) {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    let view = h.ns_view.as_ptr() as *mut AnyObject;
+    unsafe {
+        let ns_window: *mut AnyObject = msg_send![view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        let appearance: *mut AnyObject = match dark {
+            None => std::ptr::null_mut(),
+            Some(dark) => {
+                let name: &std::ffi::CStr = if dark { c"NSAppearanceNameDarkAqua" } else { c"NSAppearanceNameAqua" };
+                let name: *mut AnyObject = msg_send![class!(NSString), stringWithUTF8String: name.as_ptr()];
+                msg_send![class!(NSAppearance), appearanceNamed: name]
+            }
+        };
+        let _: () = msg_send![ns_window, setAppearance: appearance];
+    }
 }
 
 /// Lets the Mica backdrop show through the client area. DWM paints it in the
