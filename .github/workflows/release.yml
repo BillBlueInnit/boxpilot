@@ -3,8 +3,10 @@
 # The tag must match the workspace version in Cargo.toml. Asset names are what
 # the in-app updater looks for: BoxPilot-<version>-<platform>.<zip|tar.gz>;
 # macOS also gets a .dmg with BoxPilot.app to drag into Applications, and Linux
-# a .deb and an .rpm. With an AUR_SSH_PRIVATE_KEY secret, the AUR packages
-# (boxpilot-bin, boxpilot) are updated to the new release afterwards.
+# a .deb, an .rpm and an Arch package with a pacman database, so the latest
+# release serves as a pacman repository (see packaging/linux/arch-repo.sh).
+# With an AUR_SSH_PRIVATE_KEY secret, the AUR packages (boxpilot-bin,
+# boxpilot) are updated to the new release afterwards.
 name: Release
 
 on:
@@ -107,8 +109,41 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-  publish:
+  # The Arch package, made from the Linux archive, and the pacman database:
+  # the latest release is then a repository that `pacman -Syu` and yay follow.
+  arch:
     needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-x64
+          path: dist
+
+      - name: Arch package and pacman repository
+        run: |
+          set -euo pipefail
+          # makepkg refuses to run as root.
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE' && packaging/linux/arch-repo.sh dist/BoxPilot-*-linux-x64.tar.gz out"
+          ls -la out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arch-x64
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: [build, arch]
+    # A failed Arch job leaves its files out instead of holding the release.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8

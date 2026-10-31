@@ -19,7 +19,20 @@
 - **Linux**:
   - Debian / Ubuntu: `sudo apt install ./boxpilot_<версия>-1_amd64.deb`
   - Fedora / openSUSE: `sudo dnf install ./boxpilot-<версия>-1.x86_64.rpm` (или `zypper install`)
-  - Arch (AUR): `yay -S boxpilot-bin` (готовая сборка) или `yay -S boxpilot` (сборка из исходников)
+  - Arch: последний релиз — это репозиторий pacman. Добавьте его один раз и установите (подойдёт и
+    `yay -Syu boxpilot-bin`); обновления придут с `pacman -Syu`:
+
+    ```bash
+    printf '\n[boxpilot]\nSigLevel = Optional TrustAll\nServer = https://github.com/BillBlueInnit/boxpilot/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
+    sudo pacman -Syu boxpilot-bin
+    ```
+
+    Или один раз установите свежий пакет (без обновлений):
+
+    ```bash
+    curl -LO https://github.com/BillBlueInnit/boxpilot/releases/latest/download/boxpilot-bin-x86_64.pkg.tar.zst
+    sudo pacman -U ./boxpilot-bin-x86_64.pkg.tar.zst
+    ```
   - любой другой: `BoxPilot-<версия>-linux-x64.tar.gz` — распакуйте и запустите `boxpilot`.
 
   Пакетам нужна glibc 2.39+ (Ubuntu 24.04, Debian 13, Fedora 40 или новее). Установленный из пакета
@@ -104,7 +117,7 @@ Intel) и Linux (X11 и Wayland) — с одинаковыми возможно�
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| Установка | zip | `.dmg` с BoxPilot.app (Dock, Launchpad) | `.deb`, `.rpm`, AUR (`boxpilot-bin`, `boxpilot`) или tar.gz |
+| Установка | zip | `.dmg` с BoxPilot.app (Dock, Launchpad) | `.deb`, `.rpm`, пакет Arch из репозитория pacman в релизе или tar.gz |
 | Окно | без рамки, родная рамка, макеты прикрепления на кнопке «Развернуть», Mica по желанию | родные кнопки-«светофор» | клиентские декорации (или оконного менеджера); в тайлинговых композиторах (niri, sway, Hyprland, river, i3) рамку и тень рисует композитор |
 | Кнопки заголовка | значки Segoe Fluent / MDL2, цвета WinUI | «светофор» AppKit | стиль Adwaita (GNOME) или Breeze (KDE), порядок и сторона из `button-layout` |
 | Системный прокси | WinINet (реестр) | `networksetup` для каждой сетевой службы | KDE `kioslaverc` и GNOME `gsettings` (оба — для KDE, GTK и Firefox) |
@@ -119,8 +132,10 @@ Intel) и Linux (X11 и Wayland) — с одинаковыми возможно�
 задаёт, кто рисует рамку окна.
 
 Собрать пакеты для Linux самостоятельно: `cargo install cargo-deb cargo-generate-rpm`, затем
-`packaging/linux/build.sh` положит архив, `.deb`, `.rpm` (и на Arch — пакет `boxpilot-bin`) в `dist/`.
-`packaging/aur/publish.sh boxpilot-bin` отправляет релиз в AUR.
+`packaging/linux/build.sh` положит архив, `.deb`, `.rpm` (и на Arch — пакет `boxpilot-bin` с базой
+pacman) в `dist/`. Пакеты не подписаны: запись репозитория доверяет тому, что отдают релизы проекта на
+GitHub. Сценарии для AUR лежат в `packaging/aur` (`packaging/aur/publish.sh boxpilot-bin` отправляет
+релиз туда).
 
 `.github/workflows/ci.yml` собирает и тестирует проект на Windows, macOS (arm64 и x64) и Linux:
 модульные тесты, проверка каждого сгенерированного конфига через `sing-box check`, живой тест движка с

@@ -15,7 +15,7 @@
 | macOS，Intel | `BoxPilot-<版本>-macos-x64.dmg` | 同上。 |
 | Debian、Ubuntu、Mint（x64） | `boxpilot_<版本>-1_amd64.deb` | `sudo apt install ./boxpilot_<版本>-1_amd64.deb` |
 | Fedora、openSUSE（x64） | `boxpilot-<版本>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<版本>-1.x86_64.rpm`（openSUSE：`sudo zypper install …`） |
-| Arch、Manjaro、EndeavourOS | AUR | `yay -S boxpilot-bin`（预编译）或 `yay -S boxpilot`（从源码编译） |
+| Arch、Manjaro、EndeavourOS | BoxPilot 的 pacman 仓库中的 `boxpilot-bin` | 见下文 **Arch**。 |
 | 任意 Linux x64 | `BoxPilot-<版本>-linux-x64.tar.gz` | 解压后运行 `./boxpilot`。 |
 
 **macOS 首次打开。** BoxPilot 没有经过 Apple 公证，第一次打开时 macOS 会询问。在“应用程序”中右键点击
@@ -32,8 +32,24 @@ niri、sway、Hyprland 需要带托盘的状态栏，例如 Waybar）。压缩�
 其中的 `share/` 文件夹包含菜单项和图标，可复制到 `~/.local/share`。在平铺式合成器（niri、sway、Hyprland、
 river、i3）上，窗口边框和阴影由合成器绘制；设置 `BOXPILOT_DECORATIONS=client` 可恢复 BoxPilot 自己的边框。
 
+**Arch。** 最新的 GitHub 发布本身就是一个 pacman 仓库。添加一次后安装，之后像其他软件包一样随
+`sudo pacman -Syu`（或 `yay`）更新：
+
+```bash
+printf '\n[boxpilot]\nSigLevel = Optional TrustAll\nServer = https://github.com/BillBlueInnit/boxpilot/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu boxpilot-bin
+```
+
+这些包没有签名，因此该仓库条目信任 BoxPilot GitHub 发布页提供的文件。如果只想安装一次最新的包
+（不会自动更新）：
+
+```bash
+curl -LO https://github.com/BillBlueInnit/boxpilot/releases/latest/download/boxpilot-bin-x86_64.pkg.tar.zst
+sudo pacman -U ./boxpilot-bin-x86_64.pkg.tar.zst
+```
+
 BoxPilot 会自行更新：在**设置 → 更新**中选择新版本是自动安装、仅提醒还是从不通知。通过 .deb、.rpm 或
-AUR 安装时只会提醒，请照常使用 `apt`、`dnf` 或 `yay` 更新。
+Arch 包安装时只会提醒，请照常使用 `apt`、`dnf` 或 `pacman` 更新。
 
 ## 2. 获取 sing-box 内核
 

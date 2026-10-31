@@ -3,7 +3,8 @@
 #   BoxPilot-<version>-linux-<arch>.tar.gz   portable archive (what the in-app updater reads)
 #   boxpilot_<version>-1_<arch>.deb          Debian, Ubuntu, Mint…
 #   boxpilot-<version>-1.<arch>.rpm          Fedora, openSUSE, RHEL…
-#   boxpilot-bin-<version>-1-<arch>.pkg.tar.zst   Arch (only where makepkg exists)
+#   boxpilot-bin-<version>-1-<arch>.pkg.tar.zst   Arch, with boxpilot.db / boxpilot.files
+#                                            (only where makepkg exists)
 #
 #   packaging/linux/build.sh [tar] [deb] [rpm] [arch]    (default: all that can be built here)
 #
@@ -61,17 +62,10 @@ if wants rpm; then
     cargo generate-rpm -p crates/app --auto-req "$root/packaging/linux/rpm-requires.sh" --output dist/
 fi
 
-# Arch: the AUR's boxpilot-bin recipe, fed the archive built above.
+# Arch: the boxpilot-bin recipe fed the archive built above, and the pacman
+# database that lets a release serve as a repository (see arch-repo.sh).
 if wants arch; then
-    work=$(mktemp -d)
-    sed -e "s/^pkgver=.*/pkgver=$version/" \
-        -e "s|^source_x86_64=.*|source_x86_64=(\"BoxPilot-$version-linux-x64.tar.gz\")|" \
-        -e "s|^source_aarch64=.*|source_aarch64=(\"BoxPilot-$version-linux-arm64.tar.gz\")|" \
-        packaging/aur/boxpilot-bin/PKGBUILD >"$work/PKGBUILD"
-    cp "$tarball" "$work/"
-    (cd "$work" && makepkg --force --skipchecksums --nodeps --noconfirm >/dev/null)
-    cp "$work"/*.pkg.tar.zst dist/
-    rm -rf "$work"
+    packaging/linux/arch-repo.sh "$tarball" dist
 fi
 
 echo "==> dist/"

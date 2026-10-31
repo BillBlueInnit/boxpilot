@@ -18,7 +18,20 @@ Download BoxPilot for your platform from
 - **Linux**:
   - Debian / Ubuntu: `sudo apt install ./boxpilot_<version>-1_amd64.deb`
   - Fedora / openSUSE: `sudo dnf install ./boxpilot-<version>-1.x86_64.rpm` (or `zypper install`)
-  - Arch (AUR): `yay -S boxpilot-bin` (prebuilt) or `yay -S boxpilot` (from source)
+  - Arch: the latest release is a pacman repository. Add it once, then install (`yay -Syu boxpilot-bin`
+    works too) and get updates with `pacman -Syu`:
+
+    ```bash
+    printf '\n[boxpilot]\nSigLevel = Optional TrustAll\nServer = https://github.com/BillBlueInnit/boxpilot/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
+    sudo pacman -Syu boxpilot-bin
+    ```
+
+    Or install the newest package once, without updates:
+
+    ```bash
+    curl -LO https://github.com/BillBlueInnit/boxpilot/releases/latest/download/boxpilot-bin-x86_64.pkg.tar.zst
+    sudo pacman -U ./boxpilot-bin-x86_64.pkg.tar.zst
+    ```
   - anything else: `BoxPilot-<version>-linux-x64.tar.gz` — unpack and run `boxpilot`.
 
   The packages need glibc 2.39+ (Ubuntu 24.04, Debian 13, Fedora 40 or newer). Packaged installs
@@ -98,7 +111,7 @@ one gets its native mechanism:
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| Install | zip | `.dmg` with BoxPilot.app (Dock, Launchpad) | `.deb`, `.rpm`, AUR (`boxpilot-bin`, `boxpilot`) or tar.gz |
+| Install | zip | `.dmg` with BoxPilot.app (Dock, Launchpad) | `.deb`, `.rpm`, Arch package from the release's pacman repository, or tar.gz |
 | Window | borderless, native frame, snap layouts on Maximize, optional Mica | native traffic lights | client-side decorations (or the WM's own); tiling compositors (niri, sway, Hyprland, river, i3) draw the border and shadow |
 | Caption buttons | Segoe Fluent / MDL2 glyphs, WinUI colours | AppKit traffic lights | Adwaita (GNOME) or Breeze (KDE) style, `button-layout` order and side |
 | System proxy | WinINet (registry) | `networksetup`, every network service | KDE `kioslaverc` and GNOME `gsettings` (both, for KDE, GTK and Firefox) |
@@ -114,7 +127,9 @@ overrides the choice of window frame.
 
 To build the Linux packages yourself: `cargo install cargo-deb cargo-generate-rpm`, then
 `packaging/linux/build.sh` writes the archive, `.deb`, `.rpm` and (on Arch) the `boxpilot-bin`
-package to `dist/`. `packaging/aur/publish.sh boxpilot-bin` pushes a release to the AUR.
+package with its pacman database to `dist/`. The packages are not signed: the repository entry
+trusts what this project's GitHub releases serve. Recipes for the AUR are in `packaging/aur`
+(`packaging/aur/publish.sh boxpilot-bin` pushes a release there).
 
 `.github/workflows/ci.yml` builds and tests natively on Windows, macOS (arm64 and x64) and Linux:
 unit tests, every generated config through `sing-box check`, a live engine test against the real

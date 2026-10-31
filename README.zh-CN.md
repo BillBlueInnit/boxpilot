@@ -17,7 +17,20 @@
 - **Linux**：
   - Debian / Ubuntu：`sudo apt install ./boxpilot_<版本>-1_amd64.deb`
   - Fedora / openSUSE：`sudo dnf install ./boxpilot-<版本>-1.x86_64.rpm`（或 `zypper install`）
-  - Arch（AUR）：`yay -S boxpilot-bin`（预编译）或 `yay -S boxpilot`（从源码编译）
+  - Arch：最新发布本身就是一个 pacman 仓库。添加一次后即可安装（也可用 `yay -Syu boxpilot-bin`），
+    之后随 `pacman -Syu` 更新：
+
+    ```bash
+    printf '\n[boxpilot]\nSigLevel = Optional TrustAll\nServer = https://github.com/BillBlueInnit/boxpilot/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
+    sudo pacman -Syu boxpilot-bin
+    ```
+
+    或者只安装一次最新的包（不会自动更新）：
+
+    ```bash
+    curl -LO https://github.com/BillBlueInnit/boxpilot/releases/latest/download/boxpilot-bin-x86_64.pkg.tar.zst
+    sudo pacman -U ./boxpilot-bin-x86_64.pkg.tar.zst
+    ```
   - 其他发行版：`BoxPilot-<版本>-linux-x64.tar.gz`，解压后运行 `boxpilot`。
 
   安装包需要 glibc 2.39 及以上（Ubuntu 24.04、Debian 13、Fedora 40 或更新）。通过包管理器安装时由包管理器
@@ -85,7 +98,7 @@ Wayland），功能一致。各系统不同之处，分别采用其原生机制�
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| 安装 | zip | 含 BoxPilot.app 的 `.dmg`（程序坞、启动台） | tar.gz |
+| 安装 | zip | 含 BoxPilot.app 的 `.dmg`（程序坞、启动台） | `.deb`、`.rpm`、发布中 pacman 仓库的 Arch 包，或 tar.gz |
 | 窗口 | 无边框、原生边框、最大化按钮的贴靠布局、可选 Mica | 原生红绿灯按钮 | 客户端装饰（或窗口管理器自带）；平铺式合成器（niri、sway、Hyprland、river、i3）由合成器绘制边框和阴影 |
 | 标题栏按钮 | Segoe Fluent / MDL2 图标、WinUI 配色 | AppKit 红绿灯 | Adwaita（GNOME）或 Breeze（KDE）风格，遵循 `button-layout` 顺序与位置 |
 | 系统代理 | WinINet（注册表） | `networksetup`，覆盖每个网络服务 | 同时设置 KDE `kioslaverc` 和 GNOME `gsettings`（KDE、GTK 应用与 Firefox 都能读到） |
@@ -99,8 +112,9 @@ Linux 上的托盘图标需要支持 AppIndicator 的托盘（GNOME 需安装 Ap
 需要带托盘的状态栏，例如 Waybar）。可用 `BOXPILOT_DECORATIONS=client` 或 `server` 指定窗口边框方式。
 
 自行打包 Linux 版本：先 `cargo install cargo-deb cargo-generate-rpm`，再运行 `packaging/linux/build.sh`，
-会在 `dist/` 中生成压缩包、`.deb`、`.rpm`（在 Arch 上还有 `boxpilot-bin` 包）。
-`packaging/aur/publish.sh boxpilot-bin` 可把发布推送到 AUR。
+会在 `dist/` 中生成压缩包、`.deb`、`.rpm`（在 Arch 上还有 `boxpilot-bin` 包及其 pacman 数据库）。
+这些包没有签名：添加的仓库信任本项目 GitHub 发布页提供的文件。AUR 打包脚本位于 `packaging/aur`
+（`packaging/aur/publish.sh boxpilot-bin` 可把发布推送到 AUR）。
 
 `.github/workflows/ci.yml` 在 Windows、macOS（arm64 与 x64）和 Linux 上原生构建并测试：单元测试、
 所有生成的配置通过 `sing-box check`、针对真实内核的引擎实测（启动、分组、选择、延迟、模式切换、

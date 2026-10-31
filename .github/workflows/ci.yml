@@ -141,6 +141,14 @@ jobs:
           HOME="$RUNNER_TEMP/pkg-home" XDG_CONFIG_HOME="$RUNNER_TEMP/pkg-home/.config" \
             xvfb-run -a -s "-screen 0 1280x800x24" /usr/bin/boxpilot --smoke-test
 
+      - name: Upload the Linux archive (for the Arch job)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-dist
+          path: dist/BoxPilot-*-linux-x64.tar.gz
+          if-no-files-found: error
+
       - name: Upload build
         uses: actions/upload-artifact@v7
         with:
@@ -149,3 +157,34 @@ jobs:
             target/release/boxpilot
             target/release/boxpilot.exe
           if-no-files-found: ignore
+
+  # The Arch package made from the Linux archive, installed the way users do:
+  # through the release's pacman repository, then as a downloaded file.
+  arch:
+    name: Arch package
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-dist
+          path: dist
+
+      - name: Package, repository and install
+        run: |
+          set -euo pipefail
+          # makepkg refuses to run as root.
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE' && packaging/linux/arch-repo.sh dist/BoxPilot-*-linux-x64.tar.gz out"
+          printf '\n[boxpilot]\nSigLevel = Optional TrustAll\nServer = file://%s/out\n' "$GITHUB_WORKSPACE" >> /etc/pacman.conf
+          pacman -Syu --noconfirm boxpilot-bin
+          pacman -Qi boxpilot-bin | grep -E '^(Version|Depends On)'
+          # Every library the binary links comes with the dependencies.
+          if ldd /usr/bin/boxpilot | grep 'not found'; then exit 1; fi
+          pacman -Rns --noconfirm boxpilot-bin
+          pacman -U --noconfirm out/boxpilot-bin-x86_64.pkg.tar.zst
+          test -x /usr/bin/boxpilot

@@ -16,7 +16,7 @@
 | macOS, Intel | `BoxPilot-<версия>-macos-x64.dmg` | Так же. |
 | Debian, Ubuntu, Mint (x64) | `boxpilot_<версия>-1_amd64.deb` | `sudo apt install ./boxpilot_<версия>-1_amd64.deb` |
 | Fedora, openSUSE (x64) | `boxpilot-<версия>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<версия>-1.x86_64.rpm` (openSUSE: `sudo zypper install …`) |
-| Arch, Manjaro, EndeavourOS | AUR | `yay -S boxpilot-bin` (готовая сборка) или `yay -S boxpilot` (из исходников) |
+| Arch, Manjaro, EndeavourOS | `boxpilot-bin` из репозитория pacman BoxPilot | См. **Arch** ниже. |
 | Любой Linux x64 | `BoxPilot-<версия>-linux-x64.tar.gz` | Распакуйте и запустите `./boxpilot`. |
 
 **macOS, первый запуск.** BoxPilot не нотаризован Apple, поэтому при первом открытии macOS спросит
@@ -36,9 +36,25 @@ xattr -dr com.apple.quarantine /Applications/BoxPilot.app
 скопировать в `~/.local/share`. В тайлинговых композиторах (niri, sway, Hyprland, river, i3) рамку и тень
 окна рисует композитор; `BOXPILOT_DECORATIONS=client` возвращает рамку BoxPilot.
 
+**Arch.** Последний релиз на GitHub — это репозиторий pacman. Добавьте его один раз и установите;
+обновления приходят с `sudo pacman -Syu` (или `yay`), как у любого пакета:
+
+```bash
+printf '\n[boxpilot]\nSigLevel = Optional TrustAll\nServer = https://github.com/BillBlueInnit/boxpilot/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu boxpilot-bin
+```
+
+Пакеты не подписаны, поэтому эта запись доверяет тому, что отдают релизы BoxPilot на GitHub. Чтобы
+один раз установить свежий пакет (без обновлений):
+
+```bash
+curl -LO https://github.com/BillBlueInnit/boxpilot/releases/latest/download/boxpilot-bin-x86_64.pkg.tar.zst
+sudo pacman -U ./boxpilot-bin-x86_64.pkg.tar.zst
+```
+
 BoxPilot обновляется сам: в **Настройки → Обновления** выберите, устанавливать новые версии
-автоматически, только напоминать или не сообщать вовсе. Установленный из .deb, .rpm или AUR, он только
-напоминает — обновляйте его через `apt`, `dnf` или `yay`.
+автоматически, только напоминать или не сообщать вовсе. Установленный из .deb, .rpm или пакета Arch, он
+только напоминает — обновляйте его через `apt`, `dnf` или `pacman`.
 
 ## 2. Ядро sing-box
 

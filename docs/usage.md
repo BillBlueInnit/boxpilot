@@ -15,7 +15,7 @@ Get the file for your system from [Releases](https://github.com/BillBlueInnit/bo
 | macOS, Intel | `BoxPilot-<version>-macos-x64.dmg` | Same as above. |
 | Debian, Ubuntu, Mint (x64) | `boxpilot_<version>-1_amd64.deb` | `sudo apt install ./boxpilot_<version>-1_amd64.deb` |
 | Fedora, openSUSE (x64) | `boxpilot-<version>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<version>-1.x86_64.rpm` (openSUSE: `sudo zypper install …`) |
-| Arch, Manjaro, EndeavourOS | AUR | `yay -S boxpilot-bin` (prebuilt) or `yay -S boxpilot` (built from source) |
+| Arch, Manjaro, EndeavourOS | `boxpilot-bin` from BoxPilot's pacman repository | See **Arch** below. |
 | Any Linux x64 | `BoxPilot-<version>-linux-x64.tar.gz` | Unpack and run `./boxpilot`. |
 
 **macOS, first launch.** BoxPilot is not notarized by Apple, so macOS asks before opening it the
@@ -35,9 +35,25 @@ icons, which you can copy to `~/.local/share`. On tiling compositors (niri, sway
 i3) the compositor draws the window's border and shadow; set `BOXPILOT_DECORATIONS=client` to get
 BoxPilot's own frame back.
 
+**Arch.** The latest GitHub release is a pacman repository. Add it once, then install; updates come
+with `sudo pacman -Syu` (or `yay`) like any other package:
+
+```bash
+printf '\n[boxpilot]\nSigLevel = Optional TrustAll\nServer = https://github.com/BillBlueInnit/boxpilot/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu boxpilot-bin
+```
+
+The packages are not signed, so this entry trusts what BoxPilot's GitHub releases serve. To install
+the newest package once instead (no updates):
+
+```bash
+curl -LO https://github.com/BillBlueInnit/boxpilot/releases/latest/download/boxpilot-bin-x86_64.pkg.tar.zst
+sudo pacman -U ./boxpilot-bin-x86_64.pkg.tar.zst
+```
+
 BoxPilot updates itself: **Settings → Updates** chooses whether new versions install automatically,
-only show a reminder, or are never announced. Installed from a .deb, .rpm or the AUR, it only
-reminds you; update it with `apt`, `dnf` or `yay` as usual.
+only show a reminder, or are never announced. Installed from a .deb, .rpm or the Arch package, it
+only reminds you; update it with `apt`, `dnf` or `pacman` as usual.
 
 ## 2. Get the sing-box core
 
