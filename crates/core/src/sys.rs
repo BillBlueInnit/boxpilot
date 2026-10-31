@@ -627,12 +627,24 @@ mod imp {
 
     /// A system tool by absolute path. Users' PATHs (Debian's among them)
     /// often leave out the sbin directories, and pkexec looks nothing up.
+    /// NixOS has none of these: its setuid sudo and pkexec are wrappers in
+    /// /run/wrappers/bin (the plain binaries in the system profile can't
+    /// raise privileges), and setcap is in the system profile.
     #[cfg(not(target_os = "macos"))]
     fn system_tool(name: &str) -> Option<PathBuf> {
-        ["/usr/sbin", "/sbin", "/usr/bin", "/bin", "/usr/local/sbin", "/usr/local/bin"]
-            .iter()
-            .map(|d| Path::new(d).join(name))
-            .find(|p| p.is_file())
+        [
+            "/usr/sbin",
+            "/sbin",
+            "/usr/bin",
+            "/bin",
+            "/usr/local/sbin",
+            "/usr/local/bin",
+            "/run/wrappers/bin",
+            "/run/current-system/sw/bin",
+        ]
+        .iter()
+        .map(|d| Path::new(d).join(name))
+        .find(|p| p.is_file())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -815,7 +827,8 @@ mod imp {
 
     /// The command, run as root, that lets `core` create TUN interfaces: file
     /// capabilities where `setcap` is installed; otherwise the core becomes
-    /// setuid root, as on macOS, which needs nothing beyond coreutils.
+    /// setuid root, as on macOS, which needs nothing beyond coreutils (found
+    /// in the system profile on NixOS, which pkexec's PATH leaves out).
     #[cfg(not(target_os = "macos"))]
     fn grant_command(core: &Path) -> Vec<String> {
         let core = core.to_string_lossy().into_owned();
@@ -828,7 +841,7 @@ mod imp {
             None => vec![
                 "/bin/sh".into(),
                 "-c".into(),
-                "chown root:root \"$1\" && chmod u+s \"$1\"".into(),
+                "PATH=\"/run/current-system/sw/bin:$PATH\"; chown root:root \"$1\" && chmod u+s \"$1\"".into(),
                 "sh".into(),
                 core,
             ],
