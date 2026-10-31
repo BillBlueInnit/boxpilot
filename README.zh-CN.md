@@ -14,7 +14,14 @@
 - **macOS**：`BoxPilot-<版本>-macos-arm64.dmg`（Apple 芯片）或 `-macos-x64.dmg`（Intel），打开后把
   BoxPilot 拖进“应用程序”。应用未经公证：第一次打开时请右键点击它并选择**打开**（或在“系统设置 →
   隐私与安全性”中允许）。
-- **Linux**：`BoxPilot-<版本>-linux-x64.tar.gz`，解压后运行 `boxpilot`。
+- **Linux**：
+  - Debian / Ubuntu：`sudo apt install ./boxpilot_<版本>-1_amd64.deb`
+  - Fedora / openSUSE：`sudo dnf install ./boxpilot-<版本>-1.x86_64.rpm`（或 `zypper install`）
+  - Arch（AUR）：`yay -S boxpilot-bin`（预编译）或 `yay -S boxpilot`（从源码编译）
+  - 其他发行版：`BoxPilot-<版本>-linux-x64.tar.gz`，解压后运行 `boxpilot`。
+
+  安装包需要 glibc 2.39 及以上（Ubuntu 24.04、Debian 13、Fedora 40 或更新）。通过包管理器安装时由包管理器
+  负责更新，BoxPilot 只做提醒。
 
 也可以自行编译：
 
@@ -79,16 +86,21 @@ Wayland），功能一致。各系统不同之处，分别采用其原生机制�
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | 安装 | zip | 含 BoxPilot.app 的 `.dmg`（程序坞、启动台） | tar.gz |
-| 窗口 | 无边框、原生边框、最大化按钮的贴靠布局、可选 Mica | 原生红绿灯按钮 | 客户端装饰（或窗口管理器自带） |
+| 窗口 | 无边框、原生边框、最大化按钮的贴靠布局、可选 Mica | 原生红绿灯按钮 | 客户端装饰（或窗口管理器自带）；平铺式合成器（niri、sway、Hyprland、river、i3）由合成器绘制边框和阴影 |
 | 标题栏按钮 | Segoe Fluent / MDL2 图标、WinUI 配色 | AppKit 红绿灯 | Adwaita（GNOME）或 Breeze（KDE）风格，遵循 `button-layout` 顺序与位置 |
 | 系统代理 | WinINet（注册表） | `networksetup`，覆盖每个网络服务 | 同时设置 KDE `kioslaverc` 和 GNOME `gsettings`（KDE、GTK 应用与 Firefox 都能读到） |
-| TUN 权限 | 以管理员身份运行 BoxPilot（开机启动通过计划任务，不弹 UAC） | 一次管理员授权后内核设为 setuid root；运行期间 DNS 指向 TUN | 通过 `pkexec setcap` 为内核授予 `CAP_NET_ADMIN`，未安装 `setcap` 时改为 setuid 内核 |
+| TUN 权限 | 以管理员身份运行 BoxPilot（开机启动通过计划任务，不弹 UAC） | 一次管理员授权后内核设为 setuid root；运行期间 DNS 指向 TUN | 通过 `pkexec setcap` 为内核授予 `CAP_NET_ADMIN`（未安装 `setcap` 时改为 setuid 内核）；没有 polkit 认证代理时由 BoxPilot 询问密码并通过 `sudo` 执行 |
 | 开机启动 | Run 注册表项 / 计划任务 | LaunchAgent | XDG autostart |
 | 关闭到托盘 | 隐藏窗口 | 隐藏应用（点击程序坞图标恢复） | 关闭窗口（从托盘重新打开） |
 | 应用崩溃时清理内核 | 作业对象 | 下次启动时清理残留进程 | 父进程退出信号 + 清理残留进程 |
 | 数据文件夹 | `%APPDATA%\BoxPilot` | `~/Library/Application Support/BoxPilot` | `$XDG_CONFIG_HOME/BoxPilot` |
 
-Linux 上的托盘图标需要支持 AppIndicator 的托盘（GNOME 需安装 AppIndicator 扩展）。
+Linux 上的托盘图标需要支持 AppIndicator 的托盘（GNOME 需安装 AppIndicator 扩展；niri、sway、Hyprland
+需要带托盘的状态栏，例如 Waybar）。可用 `BOXPILOT_DECORATIONS=client` 或 `server` 指定窗口边框方式。
+
+自行打包 Linux 版本：先 `cargo install cargo-deb cargo-generate-rpm`，再运行 `packaging/linux/build.sh`，
+会在 `dist/` 中生成压缩包、`.deb`、`.rpm`（在 Arch 上还有 `boxpilot-bin` 包）。
+`packaging/aur/publish.sh boxpilot-bin` 可把发布推送到 AUR。
 
 `.github/workflows/ci.yml` 在 Windows、macOS（arm64 与 x64）和 Linux 上原生构建并测试：单元测试、
 所有生成的配置通过 `sing-box check`、针对真实内核的引擎实测（启动、分组、选择、延迟、模式切换、

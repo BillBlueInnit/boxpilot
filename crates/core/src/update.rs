@@ -49,6 +49,14 @@ pub fn platform_suffix() -> Option<&'static str> {
     })
 }
 
+/// Linux packages (deb, rpm, AUR) put the binary under `/usr`, which the
+/// package manager owns: those installs hear about updates but leave the
+/// install to `apt`, `dnf` or `yay`.
+pub fn package_managed() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::current_exe().is_ok_and(|p| (p.starts_with("/usr") && !p.starts_with("/usr/local")) || p.starts_with("/opt"))
+}
+
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let v = v.trim().trim_start_matches(['v', 'V']);
     // "1.2.3-beta" compares as 1.2.3.
@@ -68,7 +76,7 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 pub fn parse_release(body: &Value) -> Option<Release> {
     let tag = body.get("tag_name")?.as_str()?;
     let version = tag.trim_start_matches(['v', 'V']).to_string();
-    let suffix = platform_suffix();
+    let suffix = if package_managed() { None } else { platform_suffix() };
     let asset = body.get("assets").and_then(Value::as_array).and_then(|assets| {
         assets.iter().find_map(|a| {
             let name = a.get("name")?.as_str()?;

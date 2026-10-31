@@ -100,6 +100,38 @@ fn layout(side: Side) -> Vec<Control> {
     linux::button_layout(side)
 }
 
+/// Linux: whether the compositor frames windows itself. Tiling compositors
+/// (niri, sway, Hyprland, river, i3) draw their own borders, shadows and
+/// corners around every window, and only tell server-decorated ones that
+/// they are tiled; BoxPilot's frame there would add a second border and
+/// shadow inside a transparent margin they paint behind.
+/// `BOXPILOT_DECORATIONS=client` (BoxPilot's frame) or `server` overrides it.
+pub fn compositor_frames_windows() -> bool {
+    static FRAMES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        match std::env::var("BOXPILOT_DECORATIONS").as_deref() {
+            Ok("server") => return true,
+            Ok("client") => return false,
+            _ => {}
+        }
+        ["NIRI_SOCKET", "SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE", "I3SOCK"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some())
+            || std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| {
+                d.split(':')
+                    .any(|d| matches!(d.to_ascii_lowercase().as_str(), "niri" | "sway" | "hyprland" | "river" | "i3"))
+            })
+    });
+    cfg!(target_os = "linux") && *FRAMES
+}
+
+/// The decorations to ask for on Linux: the compositor's where it frames
+/// windows anyway (sway honours that; niri and Hyprland keep the window
+/// client-decorated, and the frame then drops its shadow margin).
+pub fn linux_decorations() -> Option<gpui_kit::WindowDecorations> {
+    use gpui_kit::WindowDecorations::{Client, Server};
+    cfg!(target_os = "linux").then(|| if compositor_frames_windows() { Server } else { Client })
+}
+
 /// Whether this window draws its own decorations (always on Windows and
 /// macOS with a hidden title bar; on Linux it depends on the compositor).
 fn client_decorated(window: &Window) -> bool {

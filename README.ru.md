@@ -16,7 +16,14 @@
   образ и перетащите BoxPilot в «Программы». Приложение не нотаризовано: при первом запуске щёлкните
   по нему правой кнопкой и выберите **Открыть** (или разрешите запуск в «Системные настройки →
   Конфиденциальность и безопасность»).
-- **Linux**: `BoxPilot-<версия>-linux-x64.tar.gz` — распакуйте и запустите `boxpilot`.
+- **Linux**:
+  - Debian / Ubuntu: `sudo apt install ./boxpilot_<версия>-1_amd64.deb`
+  - Fedora / openSUSE: `sudo dnf install ./boxpilot-<версия>-1.x86_64.rpm` (или `zypper install`)
+  - Arch (AUR): `yay -S boxpilot-bin` (готовая сборка) или `yay -S boxpilot` (сборка из исходников)
+  - любой другой: `BoxPilot-<версия>-linux-x64.tar.gz` — распакуйте и запустите `boxpilot`.
+
+  Пакетам нужна glibc 2.39+ (Ubuntu 24.04, Debian 13, Fedora 40 или новее). Установленный из пакета
+  BoxPilot обновляется пакетным менеджером, сам он только напоминает.
 
 Или соберите сами:
 
@@ -97,17 +104,23 @@ Intel) и Linux (X11 и Wayland) — с одинаковыми возможно�
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| Установка | zip | `.dmg` с BoxPilot.app (Dock, Launchpad) | tar.gz |
-| Окно | без рамки, родная рамка, макеты прикрепления на кнопке «Развернуть», Mica по желанию | родные кнопки-«светофор» | клиентские декорации (или оконного менеджера) |
+| Установка | zip | `.dmg` с BoxPilot.app (Dock, Launchpad) | `.deb`, `.rpm`, AUR (`boxpilot-bin`, `boxpilot`) или tar.gz |
+| Окно | без рамки, родная рамка, макеты прикрепления на кнопке «Развернуть», Mica по желанию | родные кнопки-«светофор» | клиентские декорации (или оконного менеджера); в тайлинговых композиторах (niri, sway, Hyprland, river, i3) рамку и тень рисует композитор |
 | Кнопки заголовка | значки Segoe Fluent / MDL2, цвета WinUI | «светофор» AppKit | стиль Adwaita (GNOME) или Breeze (KDE), порядок и сторона из `button-layout` |
 | Системный прокси | WinINet (реестр) | `networksetup` для каждой сетевой службы | KDE `kioslaverc` и GNOME `gsettings` (оба — для KDE, GTK и Firefox) |
-| Права для TUN | запуск BoxPilot от имени администратора (автозапуск через планировщик, без UAC) | ядро получает setuid root после одного запроса пароля; пока TUN работает, DNS указывает на него | `CAP_NET_ADMIN` для ядра через `pkexec setcap` или setuid-ядро, если `setcap` не установлен |
+| Права для TUN | запуск BoxPilot от имени администратора (автозапуск через планировщик, без UAC) | ядро получает setuid root после одного запроса пароля; пока TUN работает, DNS указывает на него | `CAP_NET_ADMIN` для ядра через `pkexec setcap` (или setuid-ядро, если `setcap` не установлен); без агента polkit BoxPilot сам спрашивает пароль и выполняет это через `sudo` |
 | Автозапуск | ключ Run / задача планировщика | LaunchAgent | XDG autostart |
 | Закрытие в трей | скрывает окно | скрывает приложение (значок в Dock возвращает его) | закрывает окно (трей открывает снова) |
 | Очистка ядра при сбое приложения | объект задания | очистка зависших процессов при следующем запуске | сигнал о смерти родителя + очистка зависших процессов |
 | Папка данных | `%APPDATA%\BoxPilot` | `~/Library/Application Support/BoxPilot` | `$XDG_CONFIG_HOME/BoxPilot` |
 
-Для значка в трее на Linux нужен трей с поддержкой AppIndicator (в GNOME — расширение AppIndicator).
+Для значка в трее на Linux нужен трей с поддержкой AppIndicator (в GNOME — расширение AppIndicator;
+в niri, sway, Hyprland — панель с треем, например Waybar). `BOXPILOT_DECORATIONS=client` или `server`
+задаёт, кто рисует рамку окна.
+
+Собрать пакеты для Linux самостоятельно: `cargo install cargo-deb cargo-generate-rpm`, затем
+`packaging/linux/build.sh` положит архив, `.deb`, `.rpm` (и на Arch — пакет `boxpilot-bin`) в `dist/`.
+`packaging/aur/publish.sh boxpilot-bin` отправляет релиз в AUR.
 
 `.github/workflows/ci.yml` собирает и тестирует проект на Windows, macOS (arm64 и x64) и Linux:
 модульные тесты, проверка каждого сгенерированного конфига через `sing-box check`, живой тест движка с

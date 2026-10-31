@@ -13,7 +13,10 @@ Get the file for your system from [Releases](https://github.com/BillBlueInnit/bo
 | Windows 10/11 | `BoxPilot-<version>-windows-x64.zip` | Unzip anywhere and run `boxpilot.exe`. |
 | macOS, Apple silicon | `BoxPilot-<version>-macos-arm64.dmg` | Open the .dmg, drag **BoxPilot** onto **Applications**. |
 | macOS, Intel | `BoxPilot-<version>-macos-x64.dmg` | Same as above. |
-| Linux x64 | `BoxPilot-<version>-linux-x64.tar.gz` | Unpack and run `./boxpilot`. |
+| Debian, Ubuntu, Mint (x64) | `boxpilot_<version>-1_amd64.deb` | `sudo apt install ./boxpilot_<version>-1_amd64.deb` |
+| Fedora, openSUSE (x64) | `boxpilot-<version>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<version>-1.x86_64.rpm` (openSUSE: `sudo zypper install …`) |
+| Arch, Manjaro, EndeavourOS | AUR | `yay -S boxpilot-bin` (prebuilt) or `yay -S boxpilot` (built from source) |
+| Any Linux x64 | `BoxPilot-<version>-linux-x64.tar.gz` | Unpack and run `./boxpilot`. |
 
 **macOS, first launch.** BoxPilot is not notarized by Apple, so macOS asks before opening it the
 first time. Right-click BoxPilot in Applications → **Open** → **Open**. On macOS 15 and later, open it
@@ -24,10 +27,17 @@ app "is damaged", run this once in Terminal and open it again:
 xattr -dr com.apple.quarantine /Applications/BoxPilot.app
 ```
 
-**Linux.** The tray icon needs an AppIndicator tray (on GNOME: the AppIndicator extension).
+**Linux.** The packages need a 64-bit glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 or
+later) and add BoxPilot to your app menu. The tray icon needs an AppIndicator tray (on GNOME: the
+AppIndicator extension; on niri, sway or Hyprland: a bar with a tray, such as Waybar). The
+archive needs `libayatana-appindicator3` for the tray; its `share/` folder holds the menu entry and
+icons, which you can copy to `~/.local/share`. On tiling compositors (niri, sway, Hyprland, river,
+i3) the compositor draws the window's border and shadow; set `BOXPILOT_DECORATIONS=client` to get
+BoxPilot's own frame back.
 
 BoxPilot updates itself: **Settings → Updates** chooses whether new versions install automatically,
-only show a reminder, or are never announced.
+only show a reminder, or are never announced. Installed from a .deb, .rpm or the AUR, it only
+reminds you; update it with `apt`, `dnf` or `yay` as usual.
 
 ## 2. Get the sing-box core
 
@@ -79,7 +89,9 @@ How apps reach BoxPilot (**Dashboard → Quick settings**):
   it on every network service (Wi-Fi, Ethernet…); if macOS refuses, it asks once for your password.
 - **TUN mode** — captures all traffic, including apps that ignore the system proxy. Windows needs
   BoxPilot to run as administrator (it offers to restart that way); macOS asks once for your
-  password to allow the core; Linux asks through `pkexec`. On macOS, while TUN is on, the
+  password to allow the core; Linux asks once through polkit (`pkexec`), and where no polkit
+agent is running (common on tiling window managers) BoxPilot asks for your password itself and
+passes it to `sudo` once. The grant is needed again after a core update. On macOS, while TUN is on, the
   system's DNS points at it (so lookups are answered by BoxPilot, not by the router); your own
   DNS settings come back when TUN stops.
 - Neither — apps can still use the local proxy at `127.0.0.1:7890` (HTTP and SOCKS5 on one port;

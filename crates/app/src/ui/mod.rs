@@ -12,6 +12,8 @@ mod rules;
 mod settings;
 pub mod smooth_scroll;
 mod subscriptions;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod sudo_prompt;
 pub mod widgets;
 
 use boxpilot_core::CoreStatus;
@@ -144,7 +146,8 @@ pub fn open_main_window(cx: &mut App, show: bool) {
         // or Adwaita buttons), as on Windows and macOS. GPUI otherwise asks
         // for the server's, and KWin would add its title bar above ours.
         // Without a compositor (plain X11) GPUI falls back to the WM's frame.
-        window_decorations: cfg!(target_os = "linux").then_some(gpui_kit::WindowDecorations::Client),
+        // Tiling compositors frame windows themselves (see `chrome::linux_decorations`).
+        window_decorations: chrome::linux_decorations(),
         ..TitleBar::window_options()
     };
     // Like gpui_kit::open_window, but the root surface is transparent: the
@@ -327,6 +330,7 @@ pub fn toggle_run_as_admin(enable: bool, cx: &mut App) {
 
 /// macOS / Linux: asks the system for an administrator password to let the
 /// core create TUN interfaces (setuid on macOS, capabilities on Linux).
+/// Linux without a polkit agent gets BoxPilot's own password dialog.
 fn grant_core_privilege(apply: Option<fn(&mut Settings)>, cx: &mut App) {
     let engine = AppState::engine(cx);
     let window = AppState::global(cx).read(cx).window;
@@ -337,11 +341,9 @@ fn grant_core_privilege(apply: Option<fn(&mut Settings)>, cx: &mut App) {
     cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
         let result = task.await.map_err(anyhow::Error::from).and_then(|r| r);
         cx.update(|cx| match result {
-            Ok(()) => {
-                if let Some(apply) = apply {
-                    engine.update_settings(apply);
-                }
-            }
+            Ok(()) => after_grant(apply, &engine),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            Err(e) if e.to_string() == boxpilot_core::sys::NEEDS_PASSWORD => sudo_prompt::open(apply, cx),
             Err(e) => {
                 if let Some(handle) = window {
                     let _ = handle.update(cx, |_, window, cx| {
@@ -355,6 +357,19 @@ fn grant_core_privilege(apply: Option<fn(&mut Settings)>, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// Applies the setting the grant was for. A core that stopped for want of
+/// the permission (TUN already on, the core since updated) starts again,
+/// since the setting itself may not change.
+fn after_grant(apply: Option<fn(&mut Settings)>, engine: &std::sync::Arc<boxpilot_core::Engine>) {
+    let blocked = matches!(engine.status(), CoreStatus::Failed(m) if m.contains(boxpilot_core::engine::TUN_NEEDS_ADMIN));
+    if let Some(apply) = apply {
+        engine.update_settings(apply);
+    }
+    if blocked {
+        engine.start();
+    }
 }
 
 fn restart_elevated(apply: fn(&mut Settings), cx: &mut App) {
@@ -734,8 +749,10 @@ impl Render for MainView {
 
         let caption = chrome::caption_bar(window, cx);
         // KWin blurs the whole surface, the frame's transparent shadow margin
-        // included; while it blurs, the frame ends at the window's edge.
-        let frame = if mica && cfg!(target_os = "linux") { window_border().shadow_size(gpui_kit::px(0.)) } else { window_border() };
+        // included; while it blurs, the frame ends at the window's edge. So
+        // it does where the compositor draws the shadow (tiling compositors).
+        let edge_to_edge = cfg!(target_os = "linux") && (mica || chrome::compositor_frames_windows());
+        let frame = if edge_to_edge { window_border().shadow_size(gpui_kit::px(0.)) } else { window_border() };
         frame.child(
             h_flex()
                 .size_full()

@@ -4,6 +4,74 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "A clean sing-box client with a built-in subscription converter"
+homepage = "https://github.com/BillBlueInnit/boxpilot"
+repository = "https://github.com/BillBlueInnit/boxpilot"
+authors = ["BillBlueInnit <billblueinnit@gmail.com>"]
+
+# Linux packages: `packaging/linux/build.sh` (or the release workflow) makes
+# the icons first, then runs `cargo deb` and `cargo generate-rpm` (with
+# `--auto-req packaging/linux/rpm-requires.sh`, see there).
+# The tray icon (appindicator) and Vulkan are loaded at run time, so they
+# are listed by hand next to what the linker records.
+[package.metadata.deb]
+name = "boxpilot"
+maintainer = "BillBlueInnit <billblueinnit@gmail.com>"
+copyright = "BillBlueInnit"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+BoxPilot drives the sing-box core: subscriptions (share links, Clash and \
+sing-box formats), Rule, Global and Direct modes, Auto node groups, speed \
+tests, rule-sets, the system proxy and TUN mode."""
+section = "net"
+priority = "optional"
+depends = "$auto, libvulkan1, libayatana-appindicator3-1 | libappindicator3-1"
+recommends = "mesa-vulkan-drivers, libcap2-bin, pkexec | policykit-1, sudo"
+assets = [
+    ["target/release/boxpilot", "usr/bin/", "755"],
+    ["../../packaging/linux/boxpilot.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/linux/io.github.billblueinnit.boxpilot.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../packaging/linux/icons/hicolor/16x16/apps/boxpilot.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
+    ["../../packaging/linux/icons/hicolor/24x24/apps/boxpilot.png", "usr/share/icons/hicolor/24x24/apps/", "644"],
+    ["../../packaging/linux/icons/hicolor/32x32/apps/boxpilot.png", "usr/share/icons/hicolor/32x32/apps/", "644"],
+    ["../../packaging/linux/icons/hicolor/48x48/apps/boxpilot.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
+    ["../../packaging/linux/icons/hicolor/64x64/apps/boxpilot.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["../../packaging/linux/icons/hicolor/128x128/apps/boxpilot.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["../../packaging/linux/icons/hicolor/256x256/apps/boxpilot.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["../../packaging/linux/icons/hicolor/512x512/apps/boxpilot.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["../../README.md", "usr/share/doc/boxpilot/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "boxpilot"
+summary = "A clean sing-box client with a built-in subscription converter"
+license = "MIT"
+url = "https://github.com/BillBlueInnit/boxpilot"
+assets = [
+    { source = "target/release/boxpilot", dest = "/usr/bin/boxpilot", mode = "755" },
+    { source = "../../packaging/linux/boxpilot.desktop", dest = "/usr/share/applications/boxpilot.desktop", mode = "644" },
+    { source = "../../packaging/linux/io.github.billblueinnit.boxpilot.metainfo.xml", dest = "/usr/share/metainfo/io.github.billblueinnit.boxpilot.metainfo.xml", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/16x16/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/16x16/apps/boxpilot.png", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/24x24/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/24x24/apps/boxpilot.png", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/32x32/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/32x32/apps/boxpilot.png", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/48x48/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/48x48/apps/boxpilot.png", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/64x64/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/64x64/apps/boxpilot.png", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/128x128/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/128x128/apps/boxpilot.png", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/256x256/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/256x256/apps/boxpilot.png", mode = "644" },
+    { source = "../../packaging/linux/icons/hicolor/512x512/apps/boxpilot.png", dest = "/usr/share/icons/hicolor/512x512/apps/boxpilot.png", mode = "644" },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/boxpilot/LICENSE", mode = "644", doc = true },
+    { source = "../../README.md", dest = "/usr/share/doc/boxpilot/README.md", mode = "644", doc = true },
+]
+
+# Fedora names first, openSUSE second.
+[package.metadata.generate-rpm.requires]
+"libvulkan.so.1()(64bit)" = "*"
+"(libayatana-appindicator-gtk3 or libayatana-appindicator3-1)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+"(mesa-vulkan-drivers or libvulkan_lvp)" = "*"
+libcap = "*"
+polkit = "*"
+sudo = "*"
 
 [dependencies]
 boxpilot-core = { path = "../core" }

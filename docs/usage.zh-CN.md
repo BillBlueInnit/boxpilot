@@ -13,7 +13,10 @@
 | Windows 10/11 | `BoxPilot-<版本>-windows-x64.zip` | 解压到任意位置，运行 `boxpilot.exe`。 |
 | macOS，Apple 芯片 | `BoxPilot-<版本>-macos-arm64.dmg` | 打开 .dmg，把 **BoxPilot** 拖到 **Applications（应用程序）**。 |
 | macOS，Intel | `BoxPilot-<版本>-macos-x64.dmg` | 同上。 |
-| Linux x64 | `BoxPilot-<版本>-linux-x64.tar.gz` | 解压后运行 `./boxpilot`。 |
+| Debian、Ubuntu、Mint（x64） | `boxpilot_<版本>-1_amd64.deb` | `sudo apt install ./boxpilot_<版本>-1_amd64.deb` |
+| Fedora、openSUSE（x64） | `boxpilot-<版本>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<版本>-1.x86_64.rpm`（openSUSE：`sudo zypper install …`） |
+| Arch、Manjaro、EndeavourOS | AUR | `yay -S boxpilot-bin`（预编译）或 `yay -S boxpilot`（从源码编译） |
+| 任意 Linux x64 | `BoxPilot-<版本>-linux-x64.tar.gz` | 解压后运行 `./boxpilot`。 |
 
 **macOS 首次打开。** BoxPilot 没有经过 Apple 公证，第一次打开时 macOS 会询问。在“应用程序”中右键点击
 BoxPilot → **打开** → **打开**。macOS 15 及更新版本：先打开一次，然后前往**系统设置 → 隐私与安全性**，
@@ -23,9 +26,14 @@ BoxPilot → **打开** → **打开**。macOS 15 及更新版本：先打开一
 xattr -dr com.apple.quarantine /Applications/BoxPilot.app
 ```
 
-**Linux。** 托盘图标需要支持 AppIndicator 的托盘（GNOME 需安装 AppIndicator 扩展）。
+**Linux。** 安装包需要 64 位 glibc 2.39 及以上（Ubuntu 24.04、Debian 13、Fedora 40 或更新），安装后
+BoxPilot 会出现在应用菜单中。托盘图标需要支持 AppIndicator 的托盘（GNOME 需安装 AppIndicator 扩展；
+niri、sway、Hyprland 需要带托盘的状态栏，例如 Waybar）。压缩包版本的托盘需要 `libayatana-appindicator3`；
+其中的 `share/` 文件夹包含菜单项和图标，可复制到 `~/.local/share`。在平铺式合成器（niri、sway、Hyprland、
+river、i3）上，窗口边框和阴影由合成器绘制；设置 `BOXPILOT_DECORATIONS=client` 可恢复 BoxPilot 自己的边框。
 
-BoxPilot 会自行更新：在**设置 → 更新**中选择新版本是自动安装、仅提醒还是从不通知。
+BoxPilot 会自行更新：在**设置 → 更新**中选择新版本是自动安装、仅提醒还是从不通知。通过 .deb、.rpm 或
+AUR 安装时只会提醒，请照常使用 `apt`、`dnf` 或 `yay` 更新。
 
 ## 2. 获取 sing-box 内核
 
@@ -71,7 +79,8 @@ GitHub 访问较慢，可先在同一栏设置 **GitHub 镜像**前缀。
 - **系统代理**——最简单的方式，浏览器和大多数应用都会遵循。在 macOS 上，BoxPilot 会为每个网络服务
   （Wi-Fi、以太网……）设置代理；如果 macOS 拒绝，会请求一次你的密码。
 - **TUN 模式**——接管全部流量，包括不遵循系统代理的应用。Windows 需要以管理员身份运行 BoxPilot
-  （它会提示以该方式重启）；macOS 首次会请求密码为内核授权；Linux 通过 `pkexec` 授权。在 macOS 上，
+  （它会提示以该方式重启）；macOS 首次会请求密码为内核授权；Linux 通过 polkit（`pkexec`）授权一次；如果没有运行 polkit 认证代理（平铺式窗口管理器上很常见），
+  BoxPilot 会自己询问密码并交给 `sudo` 使用一次。更新内核后需要重新授权。在 macOS 上，
   TUN 开启期间系统 DNS 会指向它（由 BoxPilot 而不是路由器解析域名），关闭 TUN 后恢复你原来的 DNS 设置。
 - 都不开启——应用仍可使用本地代理 `127.0.0.1:7890`（同一端口提供 HTTP 和 SOCKS5，可在
   **设置 → 代理**中修改）。

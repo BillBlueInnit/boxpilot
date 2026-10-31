@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=BoxPilot
+GenericName=Proxy Client
+GenericName[zh_CN]=代理客户端
+GenericName[zh_TW]=代理用戶端
+GenericName[ru]=Прокси-клиент
+Comment=A clean sing-box client with a built-in subscription converter
+Comment[zh_CN]=简洁的 sing-box 客户端，内置订阅转换
+Comment[zh_TW]=簡潔的 sing-box 用戶端，內建訂閱轉換
+Comment[ru]=Простой клиент sing-box со встроенным конвертером подписок
+Exec=boxpilot
+Icon=boxpilot
+Terminal=false
+Categories=Network;
+Keywords=proxy;vpn;sing-box;tun;clash;v2ray;subscription;
+StartupWMClass=BoxPilot
+SingleMainWindow=true

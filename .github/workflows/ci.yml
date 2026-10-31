@@ -124,6 +124,23 @@ jobs:
           echo '{"auto_start_core":false,"mixed_port":27890,"clash_api_port":29090,"update_mode":"off"}' > target/release/data/settings.json
           xvfb-run -a -s "-screen 0 1280x800x24" ./target/release/boxpilot --smoke-test
 
+      - name: Linux packages install and start
+        # The .deb's dependencies resolve and the installed app starts; the
+        # .rpm and archive are built the same way (see packaging/linux).
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-deb cargo-generate-rpm
+          sudo apt-get install -y --no-install-recommends desktop-file-utils
+          desktop-file-validate packaging/linux/boxpilot.desktop
+          packaging/linux/build.sh tar deb rpm
+          sudo apt-get install -y ./dist/boxpilot_*.deb
+          dpkg -s boxpilot | grep -E '^(Version|Depends):'
+          mkdir -p "$RUNNER_TEMP/pkg-home/.config/BoxPilot"
+          cp target/release/data/settings.json "$RUNNER_TEMP/pkg-home/.config/BoxPilot/"
+          HOME="$RUNNER_TEMP/pkg-home" XDG_CONFIG_HOME="$RUNNER_TEMP/pkg-home/.config" \
+            xvfb-run -a -s "-screen 0 1280x800x24" /usr/bin/boxpilot --smoke-test
+
       - name: Upload build
         uses: actions/upload-artifact@v7
         with:

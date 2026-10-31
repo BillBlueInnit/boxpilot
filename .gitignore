@@ -19,3 +19,6 @@ Thumbs.db
 
 # Local working notes
 /principle.md
+
+# Generated Linux icons (packaging/linux/build.sh)
+/packaging/linux/icons/

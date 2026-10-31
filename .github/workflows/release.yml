@@ -2,7 +2,9 @@
 #   git tag v0.2.0 && git push origin v0.2.0
 # The tag must match the workspace version in Cargo.toml. Asset names are what
 # the in-app updater looks for: BoxPilot-<version>-<platform>.<zip|tar.gz>;
-# macOS also gets a .dmg with BoxPilot.app to drag into Applications.
+# macOS also gets a .dmg with BoxPilot.app to drag into Applications, and Linux
+# a .deb and an .rpm. With an AUR_SSH_PRIVATE_KEY secret, the AUR packages
+# (boxpilot-bin, boxpilot) are updated to the new release afterwards.
 name: Release
 
 on:
@@ -63,6 +65,10 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p boxpilot
 
+      - name: Linux packaging tools
+        if: runner.os == 'Linux'
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+
       - name: Package
         shell: bash
         run: |
@@ -89,9 +95,9 @@ jobs:
             ln -s /Applications dmg/Applications
             hdiutil create -volname BoxPilot -srcfolder dmg -ov -format UDZO "out/$name.dmg"
           else
-            cp target/release/boxpilot pkg/
-            chmod +x pkg/boxpilot
-            tar -czf "out/$name.tar.gz" -C pkg .
+            # The archive (with the desktop entry and icons), .deb and .rpm.
+            packaging/linux/build.sh tar deb rpm
+            cp dist/* out/
           fi
           ls -la out
 
@@ -116,3 +122,42 @@ jobs:
           name: BoxPilot ${{ env.TAG }}
           generate_release_notes: true
           files: dist/*
+
+  # Pushes the AUR recipes in packaging/aur for this release, so
+  # `yay -S boxpilot-bin` (prebuilt) or `yay -S boxpilot` (from source) get it.
+  # Needs the AUR_SSH_PRIVATE_KEY secret: the private half of an SSH key whose
+  # public half is on your AUR account. Without it the job does nothing.
+  aur:
+    needs: publish
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [boxpilot-bin, boxpilot]
+    env:
+      AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Skip without an AUR key
+        if: env.AUR_KEY == ''
+        run: echo "No AUR_SSH_PRIVATE_KEY secret; the AUR is not updated."
+
+      - uses: actions/checkout@v7
+        if: env.AUR_KEY != ''
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Publish ${{ matrix.pkg }}
+        if: env.AUR_KEY != ''
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed git openssh
+          # makepkg refuses to run as root.
+          useradd -m builder
+          install -d -m 700 -o builder -g builder /home/builder/.ssh
+          printf '%s\n' "$AUR_KEY" > /home/builder/.ssh/aur
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org > /home/builder/.ssh/known_hosts
+          printf 'Host aur.archlinux.org\n  User aur\n  IdentityFile ~/.ssh/aur\n' > /home/builder/.ssh/config
+          chown -R builder:builder /home/builder/.ssh "$GITHUB_WORKSPACE"
+          chmod 600 /home/builder/.ssh/*
+          su builder -c "cd '$GITHUB_WORKSPACE' && packaging/aur/publish.sh ${{ matrix.pkg }} '$TAG'"

@@ -327,6 +327,8 @@ impl SettingsPage {
         } else if let Some(r) = &info.latest {
             if info.installing {
                 t!("upd.installing", r.version)
+            } else if boxpilot_core::update::package_managed() {
+                format!("{} {}", t!("upd.available", r.version), t!("upd.package_manager"))
             } else if r.asset.is_none() {
                 format!("{} {}", t!("upd.available", r.version), t!("upd.no_asset"))
             } else {

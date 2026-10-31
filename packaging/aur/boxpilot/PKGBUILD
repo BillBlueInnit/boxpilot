@@ -1,0 +1,66 @@
+# Maintainer: BillBlueInnit <billblueinnit at gmail dot com>
+# Built from the tagged source. packaging/aur/publish.sh fills in the
+# version and checksums when it pushes this to the AUR.
+pkgname=boxpilot
+pkgver=1.0.3
+pkgrel=1
+pkgdesc="A clean sing-box client with a built-in subscription converter"
+arch=('x86_64' 'aarch64')
+url="https://github.com/BillBlueInnit/boxpilot"
+license=('MIT')
+depends=(
+  'gcc-libs' 'glibc' 'gtk3' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland'
+  'fontconfig' 'freetype2' 'vulkan-icd-loader' 'libayatana-appindicator' 'hicolor-icon-theme'
+)
+makedepends=('cargo' 'clang' 'pkgconf')
+optdepends=(
+  'vulkan-driver: GPU rendering (Mesa provides one for most GPUs)'
+  'libcap: TUN permission through file capabilities (setcap)'
+  'polkit: the password prompt for the one-time TUN permission'
+  'sudo: TUN permission where no polkit agent is running'
+)
+conflicts=('boxpilot-bin')
+# makepkg's LTO flags would reach the C parts of the -sys crates; Cargo
+# already optimises (thin LTO) and strips the release binary.
+options=('!lto' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+# Panic messages carry source paths; keep the build directory out of them.
+_rustflags() {
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  _rustflags
+  cargo build --frozen --release -p boxpilot
+  cargo run --frozen --release -p boxpilot --example linux_icons -- packaging/linux/icons
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  _rustflags
+  cargo test --frozen --release -p boxpilot-core
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/boxpilot "$pkgdir/usr/bin/boxpilot"
+  install -Dm644 packaging/linux/boxpilot.desktop -t "$pkgdir/usr/share/applications/"
+  install -Dm644 packaging/linux/io.github.billblueinnit.boxpilot.metainfo.xml -t "$pkgdir/usr/share/metainfo/"
+  for icon in packaging/linux/icons/hicolor/*/apps/boxpilot.png; do
+    install -Dm644 "$icon" "$pkgdir/usr/share/icons/${icon#packaging/linux/icons/}"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

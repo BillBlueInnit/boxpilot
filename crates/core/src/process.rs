@@ -183,6 +183,22 @@ pub fn spawn_core(core: &Path, config: &Path, workdir: &Path) -> Result<Child> {
     cmd.spawn().with_context(|| format!("start {}", core.display()))
 }
 
+/// Stops the core. On Unix it gets SIGTERM first, so a TUN core can remove
+/// its routes and rules (and a privileged core, which the kernel no longer
+/// signals on the app's death, is still asked); SIGKILL follows after 3 s.
+pub async fn terminate(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        if tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await.is_ok() {
+            return;
+        }
+    }
+    let _ = child.kill().await;
+}
+
 /// Forwards each output line of the child to `sink`.
 pub fn pipe_lines<R>(reader: R, sink: impl Fn(LogLine) + Send + 'static)
 where

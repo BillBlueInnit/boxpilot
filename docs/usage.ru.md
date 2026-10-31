@@ -14,7 +14,10 @@
 | Windows 10/11 | `BoxPilot-<версия>-windows-x64.zip` | Распакуйте куда угодно и запустите `boxpilot.exe`. |
 | macOS, Apple silicon | `BoxPilot-<версия>-macos-arm64.dmg` | Откройте .dmg и перетащите **BoxPilot** в **Applications** («Программы»). |
 | macOS, Intel | `BoxPilot-<версия>-macos-x64.dmg` | Так же. |
-| Linux x64 | `BoxPilot-<версия>-linux-x64.tar.gz` | Распакуйте и запустите `./boxpilot`. |
+| Debian, Ubuntu, Mint (x64) | `boxpilot_<версия>-1_amd64.deb` | `sudo apt install ./boxpilot_<версия>-1_amd64.deb` |
+| Fedora, openSUSE (x64) | `boxpilot-<версия>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<версия>-1.x86_64.rpm` (openSUSE: `sudo zypper install …`) |
+| Arch, Manjaro, EndeavourOS | AUR | `yay -S boxpilot-bin` (готовая сборка) или `yay -S boxpilot` (из исходников) |
+| Любой Linux x64 | `BoxPilot-<версия>-linux-x64.tar.gz` | Распакуйте и запустите `./boxpilot`. |
 
 **macOS, первый запуск.** BoxPilot не нотаризован Apple, поэтому при первом открытии macOS спросит
 разрешения. Щёлкните BoxPilot в «Программах» правой кнопкой → **Открыть** → **Открыть**. В macOS 15 и
@@ -26,10 +29,16 @@
 xattr -dr com.apple.quarantine /Applications/BoxPilot.app
 ```
 
-**Linux.** Для значка в трее нужен трей с поддержкой AppIndicator (в GNOME — расширение AppIndicator).
+**Linux.** Пакетам нужна 64-битная glibc 2.39 или новее (Ubuntu 24.04, Debian 13, Fedora 40 и новее);
+они добавляют BoxPilot в меню приложений. Для значка в трее нужен трей с поддержкой AppIndicator
+(в GNOME — расширение AppIndicator; в niri, sway, Hyprland — панель с треем, например Waybar). Архиву
+для трея нужна `libayatana-appindicator3`; в его папке `share/` лежат пункт меню и значки — их можно
+скопировать в `~/.local/share`. В тайлинговых композиторах (niri, sway, Hyprland, river, i3) рамку и тень
+окна рисует композитор; `BOXPILOT_DECORATIONS=client` возвращает рамку BoxPilot.
 
 BoxPilot обновляется сам: в **Настройки → Обновления** выберите, устанавливать новые версии
-автоматически, только напоминать или не сообщать вовсе.
+автоматически, только напоминать или не сообщать вовсе. Установленный из .deb, .rpm или AUR, он только
+напоминает — обновляйте его через `apt`, `dnf` или `yay`.
 
 ## 2. Ядро sing-box
 
@@ -84,7 +93,9 @@ BoxPilot загрузит официальную сборку для вашей 
   раз запросит пароль.
 - **Режим TUN** — перехватывает весь трафик, включая приложения, которые не смотрят на системный прокси.
   В Windows BoxPilot должен работать от имени администратора (он предложит так перезапуститься); macOS
-  один раз запросит пароль для ядра; Linux спросит через `pkexec`. В macOS, пока TUN включён, системный
+  один раз запросит пароль для ядра; Linux один раз спросит через polkit (`pkexec`), а если агент polkit не запущен (частый случай
+  в тайлинговых оконных менеджерах), BoxPilot сам запросит пароль и один раз передаст его `sudo`.
+  После обновления ядра разрешение нужно дать снова. В macOS, пока TUN включён, системный
   DNS указывает на него (имена разрешает BoxPilot, а не роутер); ваши настройки DNS возвращаются, когда
   TUN выключается.
 - Ни то ни другое — приложения всё равно могут использовать локальный прокси `127.0.0.1:7890` (HTTP и

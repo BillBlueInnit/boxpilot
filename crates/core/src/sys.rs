@@ -8,6 +8,14 @@ pub struct SysProxyState {
     pub server: String,
 }
 
+/// Linux: polkit could not ask for the password (no authentication agent,
+/// as under many tiling window managers, or no polkit at all), so the app
+/// asks for it and runs the grant through `sudo`.
+pub const NEEDS_PASSWORD: &str = "the administrator password is needed";
+
+/// Linux: `sudo` turned the password down.
+pub const WRONG_PASSWORD: &str = "incorrect password";
+
 #[cfg(windows)]
 mod imp {
     use super::*;
@@ -764,25 +772,150 @@ mod imp {
     pub fn core_tun_privileged(core: &Path) -> bool {
         use std::os::unix::fs::MetadataExt;
         let setuid_root = std::fs::metadata(core).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o4000 != 0);
-        setuid_root
-            || system_tool("getcap").is_some_and(|getcap| {
-                run(&getcap.to_string_lossy(), &[&core.to_string_lossy()]).is_ok_and(|o| o.contains("cap_net_admin"))
-            })
+        (setuid_root || has_net_admin_cap(core)) && !nosuid_mount(core)
     }
 
-    /// Asks for the administrator password (polkit) once. File capabilities
-    /// where `setcap` is installed; otherwise the core becomes setuid root,
-    /// as on macOS, which needs nothing beyond coreutils.
+    /// Reads the file capabilities (`security.capability`) directly, so no
+    /// `getcap` is needed (and none runs on every UI refresh).
+    #[cfg(not(target_os = "macos"))]
+    fn has_net_admin_cap(core: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt as _;
+        let Ok(path) = std::ffi::CString::new(core.as_os_str().as_bytes()) else { return false };
+        let mut buf = [0u8; 32];
+        let n = unsafe {
+            libc::getxattr(path.as_ptr(), c"security.capability".as_ptr(), buf.as_mut_ptr().cast(), buf.len())
+        };
+        n > 0 && caps_allow_tun(&buf[..n as usize])
+    }
+
+    /// Whether a `vfs_cap_data` (revision 2, or 3 with a namespace root id)
+    /// lets the core create TUN interfaces: CAP_NET_ADMIN must be permitted
+    /// and raised on exec, since sing-box does not raise capabilities itself.
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) fn caps_allow_tun(xattr: &[u8]) -> bool {
+        const CAP_NET_ADMIN: u32 = 12;
+        const VFS_CAP_FLAGS_EFFECTIVE: u32 = 1;
+        if xattr.len() < 12 {
+            return false;
+        }
+        let word = |i: usize| u32::from_le_bytes(xattr[i * 4..i * 4 + 4].try_into().unwrap());
+        let (magic_etc, permitted) = (word(0), word(1));
+        magic_etc & VFS_CAP_FLAGS_EFFECTIVE != 0 && permitted & (1 << CAP_NET_ADMIN) != 0
+    }
+
+    /// The kernel ignores file capabilities and setuid on `nosuid` mounts
+    /// (systemd-homed home directories, some encrypted homes).
+    #[cfg(not(target_os = "macos"))]
+    fn nosuid_mount(core: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt as _;
+        let Ok(path) = std::ffi::CString::new(core.as_os_str().as_bytes()) else { return false };
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        unsafe { libc::statvfs(path.as_ptr(), &mut st) == 0 && st.f_flag & libc::ST_NOSUID != 0 }
+    }
+
+    /// The command, run as root, that lets `core` create TUN interfaces: file
+    /// capabilities where `setcap` is installed; otherwise the core becomes
+    /// setuid root, as on macOS, which needs nothing beyond coreutils.
+    #[cfg(not(target_os = "macos"))]
+    fn grant_command(core: &Path) -> Vec<String> {
+        let core = core.to_string_lossy().into_owned();
+        match system_tool("setcap") {
+            Some(setcap) => vec![
+                setcap.to_string_lossy().into_owned(),
+                "cap_net_admin,cap_net_raw,cap_net_bind_service+eip".into(),
+                core,
+            ],
+            None => vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "chown root:root \"$1\" && chmod u+s \"$1\"".into(),
+                "sh".into(),
+                core,
+            ],
+        }
+    }
+
+    /// The same grant as a line to paste into a terminal.
+    #[cfg(not(target_os = "macos"))]
+    pub fn grant_tun_privilege_hint(core: &Path) -> String {
+        let quote = |a: &str| {
+            if a.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+=,".contains(c)) {
+                a.to_string()
+            } else {
+                format!("'{}'", a.replace('\'', "'\\''"))
+            }
+        };
+        let cmd = grant_command(core);
+        format!("sudo {}", cmd.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
+    }
+
+    /// Asks for the administrator password through polkit. Without a polkit
+    /// agent to ask (tiling window managers often run none), passwordless
+    /// `sudo` is tried; failing that the error is [`NEEDS_PASSWORD`] and the
+    /// caller asks for the password itself (see [`grant_tun_privilege_sudo`]).
     #[cfg(not(target_os = "macos"))]
     pub fn grant_tun_privilege(core: &Path) -> Result<()> {
-        let pkexec = system_tool("pkexec").ok_or_else(|| anyhow::anyhow!("pkexec (polkit) is not installed"))?;
-        let pkexec = pkexec.to_string_lossy();
-        let core = core.to_string_lossy();
-        match system_tool("setcap") {
-            Some(setcap) => run(&pkexec, &[&setcap.to_string_lossy(), "cap_net_admin,cap_net_raw,cap_net_bind_service+eip", &core]),
-            None => run(&pkexec, &["/bin/sh", "-c", "chown root:root \"$1\" && chmod u+s \"$1\"", "sh", &core]),
+        if nosuid_mount(core) {
+            bail!("{} is on a filesystem mounted nosuid, where Linux ignores the TUN permission", core.display());
         }
-        .map(|_| ())
+        let cmd = grant_command(core);
+        if let Some(pkexec) = system_tool("pkexec") {
+            let out = Command::new(&pkexec).args(&cmd).output().context("run pkexec")?;
+            if out.status.success() {
+                return Ok(());
+            }
+            // 126: the dialog was dismissed. 127 covers both "no agent" and
+            // "not authorized"; sudo may still work, so it gets a turn.
+            if out.status.code() == Some(126) {
+                bail!("the administrator prompt was cancelled");
+            }
+            log::warn!("pkexec: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        let Some(sudo) = system_tool("sudo") else {
+            bail!("neither polkit (pkexec) nor sudo could ask for the administrator password");
+        };
+        let quiet = Command::new(sudo)
+            .arg("-n")
+            .arg("--")
+            .args(&cmd)
+            .stdin(std::process::Stdio::null())
+            .output();
+        if quiet.is_ok_and(|o| o.status.success()) {
+            return Ok(());
+        }
+        bail!(NEEDS_PASSWORD)
+    }
+
+    /// Runs the grant through `sudo` with the password the user typed.
+    #[cfg(not(target_os = "macos"))]
+    pub fn grant_tun_privilege_sudo(core: &Path, password: &str) -> Result<()> {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let sudo = system_tool("sudo").ok_or_else(|| anyhow::anyhow!("sudo is not installed"))?;
+        let mut child = Command::new(sudo)
+            // -S reads the password from stdin, -p '' drops the prompt.
+            .args(["-S", "-p", "", "--"])
+            .args(grant_command(core))
+            .env("LC_ALL", "C")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("run sudo")?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // Closed straight after, so a wrong password fails instead of waiting.
+            let _ = stdin.write_all(format!("{password}\n").as_bytes());
+        }
+        let out = child.wait_with_output().context("run sudo")?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("incorrect password") || err.contains("Sorry, try again") || err.contains("no password was provided") {
+            bail!(WRONG_PASSWORD);
+        }
+        let err: Vec<&str> = err.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        bail!("sudo: {}", err.join(" "))
     }
 
     // ------------------------------------------------------------ shared
@@ -932,3 +1065,38 @@ mod imp {
 }
 
 pub use imp::*;
+
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod tests {
+    use super::imp::{caps_allow_tun, grant_tun_privilege_hint};
+
+    /// `setcap cap_net_admin,cap_net_raw,cap_net_bind_service+eip`, as read
+    /// back with `getfattr -e hex` (revision 3: set in a user namespace).
+    const EIP_V3: &str = "0100000300340000003400000000000000000000e8030000";
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn reads_file_capabilities() {
+        assert!(caps_allow_tun(&hex(EIP_V3)));
+        // Revision 2, effective, CAP_NET_ADMIN permitted.
+        assert!(caps_allow_tun(&hex("0100000200100000000000000000000000000000")));
+        // Permitted but not raised on exec (`cap_net_admin+p`).
+        assert!(!caps_allow_tun(&hex("0000000200100000000000000000000000000000")));
+        // Raised, but only CAP_NET_RAW.
+        assert!(!caps_allow_tun(&hex("0100000200200000000000000000000000000000")));
+        assert!(!caps_allow_tun(&[]));
+        assert!(!caps_allow_tun(&hex("01000002")));
+    }
+
+    #[test]
+    fn terminal_hint_quotes_the_path() {
+        let hint = grant_tun_privilege_hint(std::path::Path::new("/home/a b/it's/sing-box"));
+        assert!(hint.starts_with("sudo "), "{hint}");
+        assert!(hint.ends_with(r"'/home/a b/it'\''s/sing-box'"), "{hint}");
+        let hint = grant_tun_privilege_hint(std::path::Path::new("/home/me/.config/BoxPilot/core/sing-box"));
+        assert!(hint.ends_with(" /home/me/.config/BoxPilot/core/sing-box"), "{hint}");
+    }
+}

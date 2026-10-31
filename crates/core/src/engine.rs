@@ -500,9 +500,38 @@ impl Engine {
         if !core.is_file() {
             bail!("{CORE_MISSING}");
         }
-        tokio::task::spawn_blocking(move || sys::grant_tun_privilege(&core)).await??;
-        self.log_app(LogLevel::Info, "granted TUN permission to the core");
-        Ok(())
+        let result = tokio::task::spawn_blocking(move || sys::grant_tun_privilege(&core)).await?;
+        self.granted(result)
+    }
+
+    /// Linux, after [`sys::NEEDS_PASSWORD`]: the same grant through `sudo`
+    /// with the password the user typed.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub async fn grant_tun_privilege_with_password(&self, password: String) -> Result<()> {
+        let core = self.core_path();
+        if !core.is_file() {
+            bail!("{CORE_MISSING}");
+        }
+        let result = tokio::task::spawn_blocking(move || sys::grant_tun_privilege_sudo(&core, &password)).await?;
+        self.granted(result)
+    }
+
+    /// Linux: the grant as a command to run in a terminal instead.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub fn tun_privilege_hint(&self) -> String {
+        sys::grant_tun_privilege_hint(&self.core_path())
+    }
+
+    fn granted(&self, result: Result<()>) -> Result<()> {
+        match &result {
+            Ok(()) => self.log_app(LogLevel::Info, "granted TUN permission to the core"),
+            // Not a failure yet: the app asks for the password next.
+            Err(e) if e.to_string() == sys::NEEDS_PASSWORD => {
+                self.log_app(LogLevel::Info, "no polkit agent answered; asking for the password for sudo")
+            }
+            Err(e) => self.log_app(LogLevel::Warn, format!("TUN permission: {e:#}")),
+        }
+        result
     }
 
     fn pid_file(&self) -> PathBuf {
@@ -889,7 +918,7 @@ impl Engine {
                     })
                     .await;
                 if let Err(e) = ready {
-                    let _ = child.kill().await;
+                    process::terminate(&mut child).await;
                     return Err(e);
                 }
                 let (generation, kill_rx) = self.next_run(slot);
@@ -1093,7 +1122,7 @@ impl Engine {
                 self.exited_unexpectedly(generation, code).await;
             }
             req = &mut kill_rx => {
-                let _ = child.kill().await;
+                process::terminate(&mut child).await;
                 let _ = std::fs::remove_file(self.pid_file());
                 if let Ok(done) = req {
                     let _ = done.send(());

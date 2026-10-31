@@ -1,0 +1,36 @@
+# Maintainer: BillBlueInnit <billblueinnit at gmail dot com>
+# The prebuilt release from GitHub. packaging/aur/publish.sh fills in the
+# version and checksums when it pushes this to the AUR.
+pkgname=boxpilot-bin
+_pkgname=boxpilot
+pkgver=1.0.3
+pkgrel=1
+pkgdesc="A clean sing-box client with a built-in subscription converter"
+arch=('x86_64')
+url="https://github.com/BillBlueInnit/boxpilot"
+license=('MIT')
+depends=(
+  'gcc-libs' 'glibc' 'gtk3' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland'
+  'fontconfig' 'freetype2' 'vulkan-icd-loader' 'libayatana-appindicator' 'hicolor-icon-theme'
+)
+optdepends=(
+  'vulkan-driver: GPU rendering (Mesa provides one for most GPUs)'
+  'libcap: TUN permission through file capabilities (setcap)'
+  'polkit: the password prompt for the one-time TUN permission'
+  'sudo: TUN permission where no polkit agent is running'
+)
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!strip' '!debug')
+source_x86_64=("$url/releases/download/v$pkgver/BoxPilot-$pkgver-linux-x64.tar.gz")
+sha256sums_x86_64=('SKIP')
+
+package() {
+  install -Dm755 boxpilot "$pkgdir/usr/bin/boxpilot"
+  install -Dm644 share/applications/boxpilot.desktop -t "$pkgdir/usr/share/applications/"
+  install -Dm644 share/metainfo/io.github.billblueinnit.boxpilot.metainfo.xml -t "$pkgdir/usr/share/metainfo/"
+  for icon in share/icons/hicolor/*/apps/boxpilot.png; do
+    install -Dm644 "$icon" "$pkgdir/usr/$icon"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.billblueinnit.boxpilot</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>BoxPilot</name>
+  <summary>A clean sing-box client with a built-in subscription converter</summary>
+  <description>
+    <p>
+      BoxPilot drives the sing-box core: subscriptions (share links, Clash and
+      sing-box formats), Rule, Global and Direct modes, Auto node groups,
+      speed tests, rule-sets, the system proxy and TUN mode.
+    </p>
+  </description>
+  <launchable type="desktop-id">boxpilot.desktop</launchable>
+  <url type="homepage">https://github.com/BillBlueInnit/boxpilot</url>
+  <url type="bugtracker">https://github.com/BillBlueInnit/boxpilot/issues</url>
+  <provides>
+    <binary>boxpilot</binary>
+  </provides>
+  <categories>
+    <category>Network</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>
