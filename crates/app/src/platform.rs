@@ -143,8 +143,9 @@ pub fn compositor_blur() -> Option<CompositorBlur> {
 }
 
 /// Where the compositor blurs through ext-background-effect-v1: blurs the
-/// background behind the whole window, or stops. GPUI commits it with the
-/// next frame.
+/// background behind the window inside its frame (not the frame's shadow
+/// margin), or stops. Called on every render; the compositor only hears
+/// about changes, which GPUI commits with the next frame.
 pub fn set_background_blur(window: &mut Window, on: bool) {
     #[cfg(target_os = "linux")]
     {
@@ -157,9 +158,24 @@ pub fn set_background_blur(window: &mut Window, on: bool) {
         let (Some(RawDisplayHandle::Wayland(display)), Some(RawWindowHandle::Wayland(surface))) = (display, surface) else {
             return;
         };
+        // The frame's shadow margin is the client inset on each edge that is not tiled.
+        let area = on.then(|| {
+            let inset = f32::from(window.client_inset().unwrap_or_default());
+            let tiling = match window.window_decorations() {
+                gpui_kit::Decorations::Client { tiling } => tiling,
+                gpui_kit::Decorations::Server => gpui_kit::Tiling { top: true, left: true, right: true, bottom: true },
+            };
+            let side = |tiled: bool| if tiled { 0.0 } else { inset };
+            let size = window.viewport_size();
+            let (left, top) = (side(tiling.left), side(tiling.top));
+            let width = f32::from(size.width) - left - side(tiling.right);
+            let height = f32::from(size.height) - top - side(tiling.bottom);
+            [left, top, width, height].map(|v| v.round() as i32)
+        });
         let id = Window::window_handle(window).window_id().as_u64();
-        match blur::set(display.display.as_ptr(), surface.surface.as_ptr(), id, on) {
-            Ok(()) => window.refresh(),
+        match blur::set(display.display.as_ptr(), surface.surface.as_ptr(), id, area) {
+            Ok(true) => window.refresh(),
+            Ok(false) => {}
             Err(e) => log::warn!("background blur: {e:#}"),
         }
     }
@@ -242,13 +258,15 @@ mod blur {
         Some((queue, globals, registry, manager))
     }
 
+    /// ext-background-effect where offered: its region keeps the blur
+    /// inside the frame, which GPUI's KWin blur (the whole surface) does not.
     pub fn detect() -> Option<CompositorBlur> {
         let conn = Connection::connect_to_env().ok()?;
         let (_, globals, _, _) = probe(&conn)?;
-        if globals.kde {
-            Some(CompositorBlur::Kde)
-        } else if globals.can_blur {
+        if globals.can_blur {
             Some(CompositorBlur::Effect)
+        } else if globals.kde {
+            Some(CompositorBlur::Kde)
         } else {
             None
         }
@@ -261,15 +279,22 @@ mod blur {
         queue: EventQueue<Globals>,
         compositor: WlCompositor,
         manager: ExtBackgroundEffectManagerV1,
-        windows: HashMap<u64, ExtBackgroundEffectSurfaceV1>,
+        /// Each window's effect and the blur area last sent for it.
+        windows: HashMap<u64, (ExtBackgroundEffectSurfaceV1, Option<[i32; 4]>)>,
     }
 
     thread_local! {
         static EFFECTS: RefCell<Option<Effects>> = const { RefCell::new(None) };
     }
 
-    /// `display` and `surface`: GPUI's wl_display and the window's wl_surface.
-    pub fn set(display: *mut std::ffi::c_void, surface: *mut std::ffi::c_void, window: u64, on: bool) -> anyhow::Result<()> {
+    /// `display` and `surface`: GPUI's wl_display and the window's wl_surface;
+    /// `area`: x, y, width, height to blur, or none. Whether anything was sent.
+    pub fn set(
+        display: *mut std::ffi::c_void,
+        surface: *mut std::ffi::c_void,
+        window: u64,
+        area: Option<[i32; 4]>,
+    ) -> anyhow::Result<bool> {
         EFFECTS.with_borrow_mut(|slot| {
             if slot.is_none() {
                 // SAFETY: GPUI's display outlives every window, and so this.
@@ -282,26 +307,34 @@ mod blur {
             }
             let fx = slot.as_mut().unwrap();
             let qh = fx.queue.handle();
-            let effect = match fx.windows.get(&window) {
-                Some(effect) => effect,
+            let (effect, sent) = match fx.windows.get_mut(&window) {
+                Some(entry) => entry,
                 None => {
+                    if area.is_none() {
+                        return Ok(false);
+                    }
                     // SAFETY: the window's surface, alive while it is.
                     let id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) }?;
                     let surface = WlSurface::from_id(&fx.conn, id)?;
-                    fx.windows.entry(window).or_insert(fx.manager.get_background_effect(&surface, &qh, ()))
+                    let effect = fx.manager.get_background_effect(&surface, &qh, ());
+                    fx.windows.entry(window).or_insert((effect, None))
                 }
             };
-            if on {
-                // Clipped to the surface by the compositor.
-                let region = fx.compositor.create_region(&qh, ());
-                region.add(0, 0, 1 << 16, 1 << 16);
-                effect.set_blur_region(Some(&region));
-                region.destroy();
-            } else {
-                effect.set_blur_region(None);
+            if *sent == area {
+                return Ok(false);
             }
+            match area {
+                Some([x, y, width, height]) => {
+                    let region = fx.compositor.create_region(&qh, ());
+                    region.add(x, y, width, height);
+                    effect.set_blur_region(Some(&region));
+                    region.destroy();
+                }
+                None => effect.set_blur_region(None),
+            }
+            *sent = area;
             fx.conn.flush()?;
-            Ok(())
+            Ok(true)
         })
     }
 }

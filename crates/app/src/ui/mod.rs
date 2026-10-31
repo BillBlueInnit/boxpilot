@@ -79,7 +79,13 @@ fn backdrop(settings: &Settings) -> WindowBackgroundAppearance {
     }
     // macOS vibrancy / KWin blur: one material, whatever was picked on Windows.
     if crate::platform::translucency() == crate::platform::Translucency::Blur {
-        return WindowBackgroundAppearance::Blurred;
+        // ext-background-effect is asked for by BoxPilot itself, inside the
+        // frame (see `set_background_blur`); GPUI would blur the shadow margin too.
+        return if crate::platform::compositor_blur() == Some(crate::platform::CompositorBlur::Effect) {
+            WindowBackgroundAppearance::Transparent
+        } else {
+            WindowBackgroundAppearance::Blurred
+        };
     }
     match settings.backdrop {
         Backdrop::Mica => WindowBackgroundAppearance::MicaBackdrop,
@@ -108,8 +114,6 @@ fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
     // Windows would swap the backdrop for a flat colour whenever the window
     // is not focused; keep it as it is.
     crate::platform::keep_backdrop_live(window, active);
-    // niri and others blur through a protocol GPUI does not speak.
-    crate::platform::set_background_blur(window, active);
     if active && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials {
         // Every material is a DWM system backdrop, tinted by Windows to match
         // light or dark mode (the dark-frame flag), so switching is clean.
@@ -784,13 +788,14 @@ impl Render for MainView {
                                 .child(body),
                         ),
                 );
-        // Tiling compositors draw the border, shadow and corners themselves.
-        if chrome::compositor_frames_windows() {
-            return chrome::bare_frame(content, window).into_any_element();
+        // Linux: gpui-kit's Root already frames the window (border, shadow
+        // margin, resize edges). A second frame here would fight it over the
+        // client inset, each frame, and the window would redraw without end.
+        // The blur behind the window stays inside Root's frame.
+        if cfg!(target_os = "linux") {
+            crate::platform::set_background_blur(window, mica);
+            return content.into_any_element();
         }
-        // KWin blurs the whole surface, the frame's transparent shadow margin
-        // included; while it blurs, the frame ends at the window's edge.
-        let frame = if mica && cfg!(target_os = "linux") { window_border().shadow_size(gpui_kit::px(0.)) } else { window_border() };
-        frame.child(content).into_any_element()
+        window_border().child(content).into_any_element()
     }
 }
