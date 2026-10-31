@@ -110,11 +110,199 @@ pub fn translucency() -> Translucency {
         if boxpilot_core::sys::windows_build() >= 22621 { Translucency::WindowsMaterials } else { Translucency::None }
     } else if cfg!(target_os = "macos") {
         Translucency::Blur
+    } else if compositor_blur().is_some() {
+        Translucency::Blur
     } else {
-        // GPUI blurs through org_kde_kwin_blur, which only KWin offers.
-        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-        let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"));
-        if wayland && kde { Translucency::Blur } else { Translucency::None }
+        Translucency::None
+    }
+}
+
+/// How a Wayland compositor blurs behind a translucent window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CompositorBlur {
+    /// org_kde_kwin_blur (KWin), which GPUI asks for itself.
+    Kde,
+    /// ext-background-effect-v1 (niri…), asked for by [`set_background_blur`].
+    Effect,
+}
+
+/// The compositor's blur, asked of it directly rather than guessed from the
+/// desktop's name; `None` off Wayland or where nothing blurs.
+pub fn compositor_blur() -> Option<CompositorBlur> {
+    #[cfg(target_os = "linux")]
+    {
+        static BLUR: std::sync::LazyLock<Option<CompositorBlur>> = std::sync::LazyLock::new(|| {
+            let blur = blur::detect();
+            log::info!("compositor blur: {blur:?}");
+            blur
+        });
+        *BLUR
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+/// Where the compositor blurs through ext-background-effect-v1: blurs the
+/// background behind the whole window, or stops. GPUI commits it with the
+/// next frame.
+pub fn set_background_blur(window: &mut Window, on: bool) {
+    #[cfg(target_os = "linux")]
+    {
+        use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+        if compositor_blur() != Some(CompositorBlur::Effect) {
+            return;
+        }
+        let display = HasDisplayHandle::display_handle(window).ok().map(|h| h.as_raw());
+        let surface = HasWindowHandle::window_handle(window).ok().map(|h| h.as_raw());
+        let (Some(RawDisplayHandle::Wayland(display)), Some(RawWindowHandle::Wayland(surface))) = (display, surface) else {
+            return;
+        };
+        let id = Window::window_handle(window).window_id().as_u64();
+        match blur::set(display.display.as_ptr(), surface.surface.as_ptr(), id, on) {
+            Ok(()) => window.refresh(),
+            Err(e) => log::warn!("background blur: {e:#}"),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, on);
+}
+
+#[cfg(target_os = "linux")]
+mod blur {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use anyhow::Context as _;
+    use wayland_client::backend::{Backend, ObjectId};
+    use wayland_client::protocol::wl_compositor::WlCompositor;
+    use wayland_client::protocol::wl_region::WlRegion;
+    use wayland_client::protocol::wl_registry::{self, WlRegistry};
+    use wayland_client::protocol::wl_surface::WlSurface;
+    use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+    use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
+        self as manager, ExtBackgroundEffectManagerV1,
+    };
+    use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
+
+    use super::CompositorBlur;
+
+    /// What the registry lists, and whether the effect manager can blur.
+    #[derive(Default)]
+    struct Globals {
+        kde: bool,
+        effect: Option<u32>,
+        compositor: Option<(u32, u32)>,
+        can_blur: bool,
+    }
+
+    impl Dispatch<WlRegistry, ()> for Globals {
+        fn event(g: &mut Self, _: &WlRegistry, event: wl_registry::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+            if let wl_registry::Event::Global { name, interface, version } = event {
+                match interface.as_str() {
+                    "org_kde_kwin_blur_manager" => g.kde = true,
+                    "ext_background_effect_manager_v1" => g.effect = Some(name),
+                    "wl_compositor" => g.compositor = Some((name, version)),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    impl Dispatch<ExtBackgroundEffectManagerV1, ()> for Globals {
+        fn event(
+            g: &mut Self,
+            _: &ExtBackgroundEffectManagerV1,
+            event: manager::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let manager::Event::Capabilities { flags: WEnum::Value(flags) } = event {
+                g.can_blur = flags.contains(manager::Capability::Blur);
+            }
+        }
+    }
+
+    delegate_noop!(Globals: ignore WlCompositor);
+    delegate_noop!(Globals: WlRegion);
+    delegate_noop!(Globals: ExtBackgroundEffectSurfaceV1);
+
+    /// Lists the globals and binds the effect manager, whose capabilities
+    /// arrive on the second roundtrip.
+    fn probe(conn: &Connection) -> Option<(EventQueue<Globals>, Globals, WlRegistry, Option<ExtBackgroundEffectManagerV1>)> {
+        let mut queue = conn.new_event_queue();
+        let qh = queue.handle();
+        let registry = conn.display().get_registry(&qh, ());
+        let mut globals = Globals::default();
+        queue.roundtrip(&mut globals).ok()?;
+        let manager = globals.effect.map(|name| registry.bind::<ExtBackgroundEffectManagerV1, _, _>(name, 1, &qh, ()));
+        if manager.is_some() {
+            queue.roundtrip(&mut globals).ok()?;
+        }
+        Some((queue, globals, registry, manager))
+    }
+
+    pub fn detect() -> Option<CompositorBlur> {
+        let conn = Connection::connect_to_env().ok()?;
+        let (_, globals, _, _) = probe(&conn)?;
+        if globals.kde {
+            Some(CompositorBlur::Kde)
+        } else if globals.can_blur {
+            Some(CompositorBlur::Effect)
+        } else {
+            None
+        }
+    }
+
+    /// The effect objects, made on GPUI's own connection (the surfaces live
+    /// there), one per window. Kept for the app's lifetime with their queue.
+    struct Effects {
+        conn: Connection,
+        queue: EventQueue<Globals>,
+        compositor: WlCompositor,
+        manager: ExtBackgroundEffectManagerV1,
+        windows: HashMap<u64, ExtBackgroundEffectSurfaceV1>,
+    }
+
+    thread_local! {
+        static EFFECTS: RefCell<Option<Effects>> = const { RefCell::new(None) };
+    }
+
+    /// `display` and `surface`: GPUI's wl_display and the window's wl_surface.
+    pub fn set(display: *mut std::ffi::c_void, surface: *mut std::ffi::c_void, window: u64, on: bool) -> anyhow::Result<()> {
+        EFFECTS.with_borrow_mut(|slot| {
+            if slot.is_none() {
+                // SAFETY: GPUI's display outlives every window, and so this.
+                let conn = Connection::from_backend(unsafe { Backend::from_foreign_display(display.cast()) });
+                let (queue, globals, registry, manager) = probe(&conn).context("wayland roundtrip failed")?;
+                let manager = manager.filter(|_| globals.can_blur).context("the compositor does not blur")?;
+                let (name, version) = globals.compositor.context("no wl_compositor")?;
+                let compositor = registry.bind::<WlCompositor, _, _>(name, version.min(4), &queue.handle(), ());
+                *slot = Some(Effects { conn, queue, compositor, manager, windows: HashMap::new() });
+            }
+            let fx = slot.as_mut().unwrap();
+            let qh = fx.queue.handle();
+            let effect = match fx.windows.get(&window) {
+                Some(effect) => effect,
+                None => {
+                    // SAFETY: the window's surface, alive while it is.
+                    let id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) }?;
+                    let surface = WlSurface::from_id(&fx.conn, id)?;
+                    fx.windows.entry(window).or_insert(fx.manager.get_background_effect(&surface, &qh, ()))
+                }
+            };
+            if on {
+                // Clipped to the surface by the compositor.
+                let region = fx.compositor.create_region(&qh, ());
+                region.add(0, 0, 1 << 16, 1 << 16);
+                effect.set_blur_region(Some(&region));
+                region.destroy();
+            } else {
+                effect.set_blur_region(None);
+            }
+            fx.conn.flush()?;
+            Ok(())
+        })
     }
 }
 
@@ -249,7 +437,9 @@ pub fn single_instance() -> Option<tokio::sync::mpsc::UnboundedReceiver<()>> {
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let path = dir.join(format!("boxpilot-{}.sock", unsafe { libc::getuid() }));
+        // BOXPILOT_INSTANCE gives a development copy its own lock.
+        let suffix = std::env::var("BOXPILOT_INSTANCE").map(|s| format!(".{s}")).unwrap_or_default();
+        let path = dir.join(format!("boxpilot-{}{suffix}.sock", unsafe { libc::getuid() }));
         // A live instance answers on the socket: ask it to show itself. After
         // a restart the previous instance may still be shutting down.
         let restarted = std::env::args().any(|a| a == "--restarted");

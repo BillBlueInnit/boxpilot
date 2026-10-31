@@ -441,6 +441,9 @@ impl SettingsPage {
             })
             .when(crate::gpu::choices().is_empty(), |d| d.child(setting_row(t!("set.gpu"), Some(t!("gpu.mac")), div(), cx)))
             .when_some(renderer, |d, r| d.child(div().text_xs().text_color(muted).pb_1().child(r)))
+            .when_some(crate::gpu::missing_display_driver(), |d, (maker, packages)| {
+                d.child(div().text_xs().text_color(cx.theme().warning).pb_1().child(t!("gpu.no_display_driver", maker, packages)))
+            })
             .when(needs_restart, |d| {
                 d.child(
                     h_flex().justify_end().child(

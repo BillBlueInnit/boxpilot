@@ -46,6 +46,9 @@ fn main() {
     };
     logger::init(&engine.paths().root);
     log::info!("BoxPilot {} starting", env!("CARGO_PKG_VERSION"));
+    if let Some((maker, packages)) = gpu::missing_display_driver() {
+        log::warn!("the {maker} GPU drives the display but has no Vulkan driver, so another GPU renders and every frame is copied across; install {packages}");
+    }
 
     let settings = engine.settings();
     // Windows only: elsewhere "administrator" means a privileged core binary.

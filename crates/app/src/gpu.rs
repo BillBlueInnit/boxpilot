@@ -90,24 +90,66 @@ fn lavapipe_icd() -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
-/// On hybrid systems the GPU driving the boot display (`boot_vga`) is the
-/// integrated one; any other GPU is treated as the discrete one.
+/// A graphics card: PCI vendor and device ids, and whether it drives the
+/// boot display (`boot_vga`).
 #[cfg(all(unix, not(target_os = "macos")))]
-fn pick_drm_device(integrated: bool) -> Option<u32> {
+struct Card {
+    vendor: u32,
+    device: u32,
+    boot: bool,
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn drm_cards() -> Vec<Card> {
     let read = |p: std::path::PathBuf| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
+    let hex = |s: String| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok();
     let mut cards = Vec::new();
-    for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
+    for entry in std::fs::read_dir("/sys/class/drm").into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.starts_with("card") || name.contains('-') {
             continue;
         }
         let dev = entry.path().join("device");
-        let Some(id) = read(dev.join("device")).and_then(|d| u32::from_str_radix(d.trim_start_matches("0x"), 16).ok())
-        else {
+        let (Some(vendor), Some(device)) = (read(dev.join("vendor")).and_then(hex), read(dev.join("device")).and_then(hex)) else {
             continue;
         };
-        let boot = read(dev.join("boot_vga")).as_deref() == Some("1");
-        cards.push((id, boot));
+        cards.push(Card { vendor, device, boot: read(dev.join("boot_vga")).as_deref() == Some("1") });
     }
-    cards.iter().find(|(_, boot)| *boot == integrated).map(|(id, _)| *id)
+    cards
+}
+
+/// On hybrid systems the GPU driving the boot display (`boot_vga`) is the
+/// integrated one; any other GPU is treated as the discrete one.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn pick_drm_device(integrated: bool) -> Option<u32> {
+    drm_cards().iter().find(|c| c.boot == integrated).map(|c| c.device)
+}
+
+/// Hybrid graphics on Linux: when the GPU driving the display has no Vulkan
+/// driver, GPUI renders on the other one and every frame is copied across,
+/// which makes scrolling stutter. Returns that GPU's maker and the packages
+/// with its Mesa driver.
+pub fn missing_display_driver() -> Option<(&'static str, &'static str)> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        static MISSING: std::sync::LazyLock<Option<(&'static str, &'static str)>> = std::sync::LazyLock::new(|| {
+            let cards = drm_cards();
+            let display = cards.iter().find(|c| c.boot).filter(|_| cards.len() > 1)?;
+            let (maker, icd, packages) = match display.vendor {
+                0x8086 => ("Intel", "intel", "vulkan-intel (Arch) or mesa-vulkan-drivers (Debian, Ubuntu, Fedora)"),
+                0x1002 => ("AMD", "radeon", "vulkan-radeon (Arch) or mesa-vulkan-drivers (Debian, Ubuntu, Fedora)"),
+                _ => return None,
+            };
+            let installed = ["/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d"]
+                .iter()
+                .filter_map(|dir| std::fs::read_dir(dir).ok())
+                .flatten()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(icd));
+            (!installed).then_some((maker, packages))
+        });
+        *MISSING
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    None
 }

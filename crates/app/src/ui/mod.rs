@@ -108,6 +108,8 @@ fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
     // Windows would swap the backdrop for a flat colour whenever the window
     // is not focused; keep it as it is.
     crate::platform::keep_backdrop_live(window, active);
+    // niri and others blur through a protocol GPUI does not speak.
+    crate::platform::set_background_blur(window, active);
     if active && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials {
         // Every material is a DWM system backdrop, tinted by Windows to match
         // light or dark mode (the dark-frame flag), so switching is clean.
@@ -748,12 +750,7 @@ impl Render for MainView {
         };
 
         let caption = chrome::caption_bar(window, cx);
-        // KWin blurs the whole surface, the frame's transparent shadow margin
-        // included; while it blurs, the frame ends at the window's edge. So
-        // it does where the compositor draws the shadow (tiling compositors).
-        let edge_to_edge = cfg!(target_os = "linux") && (mica || chrome::compositor_frames_windows());
-        let frame = if edge_to_edge { window_border().shadow_size(gpui_kit::px(0.)) } else { window_border() };
-        frame.child(
+        let content =
             h_flex()
                 .size_full()
                 .text_color(fg)
@@ -786,7 +783,14 @@ impl Render for MainView {
                                 })
                                 .child(body),
                         ),
-                ),
-        )
+                );
+        // Tiling compositors draw the border, shadow and corners themselves.
+        if chrome::compositor_frames_windows() {
+            return chrome::bare_frame(content, window).into_any_element();
+        }
+        // KWin blurs the whole surface, the frame's transparent shadow margin
+        // included; while it blurs, the frame ends at the window's edge.
+        let frame = if mica && cfg!(target_os = "linux") { window_border().shadow_size(gpui_kit::px(0.)) } else { window_border() };
+        frame.child(content).into_any_element()
     }
 }

@@ -424,10 +424,10 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("set.close_tray_desc", ["Keep running in the tray when the window is closed.", "关闭窗口后继续在托盘中运行。", "關閉視窗後繼續在系統匣中執行。", "Продолжать работу в трее после закрытия окна."]),
     ("set.mica", ["Translucent window", "半透明窗口", "半透明視窗", "Полупрозрачное окно"]),
     ("set.mica_desc", [
-        "Show the system backdrop behind the sidebar, pages and cards (Windows 11, macOS, KDE Plasma).",
-        "在侧边栏、页面和卡片后显示系统背景材质（Windows 11、macOS、KDE Plasma）。",
-        "在側邊欄、頁面和卡片後顯示系統背景材質（Windows 11、macOS、KDE Plasma）。",
-        "Системный фон за боковой панелью, страницами и карточками (Windows 11, macOS, KDE Plasma).",
+        "Show the system backdrop behind the sidebar, pages and cards (Windows 11, macOS, KDE Plasma, niri).",
+        "在侧边栏、页面和卡片后显示系统背景材质（Windows 11、macOS、KDE Plasma、niri）。",
+        "在側邊欄、頁面和卡片後顯示系統背景材質（Windows 11、macOS、KDE Plasma、niri）。",
+        "Системный фон за боковой панелью, страницами и карточками (Windows 11, macOS, KDE Plasma, niri).",
     ]),
     ("set.reset", ["Reset BoxPilot", "重置 BoxPilot", "重設 BoxPilot", "Сбросить BoxPilot"]),
     ("set.reset_desc", [
@@ -494,6 +494,7 @@ static TABLE: &[(&str, [&str; 4])] = &[
     ("set.scale_desc", ["Scales text and controls. System follows the OS text size.", "缩放文字与控件；“跟随系统”使用系统文字大小。", "縮放文字與控制項；「跟隨系統」使用系統文字大小。", "Масштаб текста и элементов; «Системный» — по размеру текста ОС."]),
     ("scale.system", ["System ({0}%)", "跟随系统（{0}%）", "跟隨系統（{0}%）", "Системный ({0}%)"]),
     ("set.graphics", ["Graphics", "图形", "圖形", "Графика"]),
+    ("gpu.no_display_driver", ["Your display runs on the {0} GPU, which has no Vulkan driver, so another GPU draws BoxPilot and every frame is copied across; scrolling can stutter. Install {1}.", "显示器由 {0} 显卡驱动，但它没有 Vulkan 驱动，因此由另一块显卡绘制 BoxPilot，每一帧都要跨显卡复制，滚动可能卡顿。请安装 {1}。", "顯示器由 {0} 顯示卡驅動，但它沒有 Vulkan 驅動程式，因此由另一張顯示卡繪製 BoxPilot，每一幀都要跨顯示卡複製，捲動可能卡頓。請安裝 {1}。", "Дисплей работает от GPU {0}, у которого нет драйвера Vulkan, поэтому BoxPilot рисует другой GPU и каждый кадр копируется между ними — прокрутка может подтормаживать. Установите {1}."]),
     ("set.gpu", ["Hardware acceleration", "硬件加速", "硬體加速", "Аппаратное ускорение"]),
     ("set.gpu_desc", ["Which graphics processor draws the interface. Applies after a restart.", "选择用于绘制界面的显卡，重启后生效。", "選擇用於繪製介面的顯示卡，重新啟動後生效。", "Какой графический процессор рисует интерфейс. Применяется после перезапуска."]),
     ("gpu.auto", ["Automatic", "自动", "自動", "Автоматически"]),

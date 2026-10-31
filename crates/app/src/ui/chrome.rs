@@ -126,10 +126,42 @@ pub fn compositor_frames_windows() -> bool {
 
 /// The decorations to ask for on Linux: the compositor's where it frames
 /// windows anyway (sway honours that; niri and Hyprland keep the window
-/// client-decorated, and the frame then drops its shadow margin).
+/// client-decorated, and BoxPilot then draws no frame of its own).
 pub fn linux_decorations() -> Option<gpui_kit::WindowDecorations> {
     use gpui_kit::WindowDecorations::{Client, Server};
     cfg!(target_os = "linux").then(|| if compositor_frames_windows() { Server } else { Client })
+}
+
+/// The window where the compositor frames it (`compositor_frames_windows`):
+/// the content edge to edge, with no border or shadow of BoxPilot's (a
+/// second, soft line inside the compositor's at fractional scales), only
+/// the resize edges a client-decorated window must offer itself.
+pub fn bare_frame(content: impl IntoElement, window: &mut Window) -> Stateful<Div> {
+    use gpui_kit::{CursorStyle, MouseButton, ResizeEdge};
+    const EDGE: f32 = 6.0;
+    window.set_client_inset(px(0.));
+    let resizable = window.is_resizable()
+        && matches!(window.window_decorations(), gpui_kit::Decorations::Client { tiling } if !tiling.is_tiled());
+    let zone = |edge: ResizeEdge, cursor: CursorStyle| {
+        div()
+            .absolute()
+            .cursor(cursor)
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                window.start_window_resize(edge);
+            })
+    };
+    let (band, corner) = (px(EDGE), px(EDGE * 2.));
+    div().id("bare-frame").relative().size_full().child(content).when(resizable, |d| {
+        d.child(zone(ResizeEdge::Top, CursorStyle::ResizeUpDown).top_0().left_0().right_0().h(band))
+            .child(zone(ResizeEdge::Bottom, CursorStyle::ResizeUpDown).bottom_0().left_0().right_0().h(band))
+            .child(zone(ResizeEdge::Left, CursorStyle::ResizeLeftRight).top_0().bottom_0().left_0().w(band))
+            .child(zone(ResizeEdge::Right, CursorStyle::ResizeLeftRight).top_0().bottom_0().right_0().w(band))
+            .child(zone(ResizeEdge::TopLeft, CursorStyle::ResizeUpLeftDownRight).top_0().left_0().size(corner))
+            .child(zone(ResizeEdge::TopRight, CursorStyle::ResizeUpRightDownLeft).top_0().right_0().size(corner))
+            .child(zone(ResizeEdge::BottomLeft, CursorStyle::ResizeUpRightDownLeft).bottom_0().left_0().size(corner))
+            .child(zone(ResizeEdge::BottomRight, CursorStyle::ResizeUpLeftDownRight).bottom_0().right_0().size(corner))
+    })
 }
 
 /// Whether this window draws its own decorations (always on Windows and

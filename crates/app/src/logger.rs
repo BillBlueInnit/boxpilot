@@ -12,6 +12,8 @@ struct FileLogger {
 impl log::Log for FileLogger {
     fn enabled(&self, meta: &log::Metadata) -> bool {
         meta.level() <= log::Level::Info && meta.target().starts_with("boxpilot")
+            // Which GPU the renderer picked, for reports of slow drawing.
+            || meta.level() <= log::Level::Info && meta.target().starts_with("gpui_pre_wgpu")
             || meta.level() <= log::Level::Warn
     }
 

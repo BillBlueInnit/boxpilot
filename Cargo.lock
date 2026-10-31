@@ -727,6 +727,9 @@ dependencies = [
  "serde_json",
  "tokio",
  "tray-icon",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "windows-sys 0.59.0",
  "winresource",
 ]
