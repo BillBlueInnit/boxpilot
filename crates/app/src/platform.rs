@@ -346,34 +346,61 @@ pub fn mica_supported() -> bool {
 /// Matches the native window frame to the app theme rather than the
 /// system's. `follow_system` hands it back to the system (theme "System").
 ///
-/// * Windows: dark-mode frame and Mica tint, and the 1 px border. Windows
-///   colours that border after the system theme, so a light window on a
-///   dark system got a dark outline; it now takes Fluent's surface stroke,
-///   unless the user shows the accent colour on window borders.
+/// * Windows: dark-mode frame and Mica tint (the border: `set_window_border`).
 /// * macOS: the window's appearance, which drives its frame, traffic lights
 ///   and vibrancy.
 /// * Linux draws its own frame from the theme.
 pub fn set_frame_theme(window: &Window, dark: bool, follow_system: bool) {
     #[cfg(windows)]
     if let Some(h) = hwnd(window) {
-        use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
-        let set = |attr: i32, value: u32| unsafe {
-            DwmSetWindowAttribute(h, attr as u32, &value as *const u32 as *const _, std::mem::size_of::<u32>() as u32);
-        };
-        set(DWMWA_USE_IMMERSIVE_DARK_MODE, dark as u32);
-        // COLORREF 0x00BBGGRR; 0xFFFFFFFF hands the colour back to Windows.
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+        let value = dark as u32;
+        unsafe {
+            DwmSetWindowAttribute(
+                h,
+                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+                &value as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    set_ns_appearance(window, (!follow_system).then_some(dark));
+    let _ = (window, dark, follow_system);
+}
+
+/// Colours the 1 px window border Windows draws. Left alone it follows the
+/// system theme, so a light window on a dark system got a dark outline; it
+/// takes Fluent's surface stroke instead. DWM only draws it in one solid
+/// colour, which can't match Acrylic (that shows whatever is behind the
+/// window, so the line stands out), so Acrylic has none: the material and the
+/// shadow make the edge. Accent-coloured borders, if the user wants those, win.
+pub fn set_window_border(window: &Window, dark: bool, acrylic: bool) {
+    #[cfg(windows)]
+    if let Some(h) = hwnd(window) {
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DwmSetWindowAttribute};
+        // COLORREF 0x00BBGGRR.
+        const DEFAULT: u32 = 0xFFFF_FFFF;
+        const NONE: u32 = 0xFFFF_FFFE;
         let border = if accent_on_borders() {
-            0xFFFF_FFFF
+            DEFAULT
+        } else if acrylic {
+            NONE
         } else if dark {
             0x0042_4242
         } else {
             0x00C1_C1C1
         };
-        set(DWMWA_BORDER_COLOR, border);
+        unsafe {
+            DwmSetWindowAttribute(
+                h,
+                DWMWA_BORDER_COLOR as u32,
+                &border as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
     }
-    #[cfg(target_os = "macos")]
-    set_ns_appearance(window, (!follow_system).then_some(dark));
-    let _ = (window, dark, follow_system);
+    let _ = (window, dark, acrylic);
 }
 
 /// "Show accent colour on title bars and window borders".

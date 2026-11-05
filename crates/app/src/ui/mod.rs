@@ -128,7 +128,10 @@ fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
         };
         crate::platform::set_system_backdrop(window, kind);
     }
-    let _ = dark;
+    let acrylic = active
+        && settings.backdrop == Backdrop::Acrylic
+        && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials;
+    crate::platform::set_window_border(window, dark, acrylic);
     layout::set_surface_alpha(active, settings.transparency);
 }
 
