@@ -415,6 +415,48 @@ pub struct IniRuleSet {
 
 /// Parses an ACL4SSR / subconverter `.ini` config. `geosite_url` / `geoip_url`
 /// templates turn `[]GEOSITE,x` / `[]GEOIP,x` into sing-box rule-sets.
+/// The domain a site is registered under (`www.bbc.co.uk` -> `bbc.co.uk`), the
+/// natural match for "this site and its subdomains". `None` for IP addresses
+/// and single-label names.
+pub fn base_domain(host: &str) -> Option<String> {
+    const SECOND_LEVEL: [&str; 8] = ["com", "net", "org", "gov", "edu", "ac", "co", "or"];
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|l| l.is_empty()) {
+        return None;
+    }
+    // Two-letter countries with a second level: example.com.cn, example.co.jp.
+    let n = labels.len();
+    let keep = if n >= 3 && labels[n - 1].len() == 2 && SECOND_LEVEL.contains(&labels[n - 2]) { 3 } else { 2 };
+    Some(labels[n - keep..].join("."))
+}
+
+/// Adds a `TYPE,VALUE,TARGET` line to custom rules. A line for the same type
+/// and value is replaced where it stands, so the new target takes effect;
+/// otherwise it goes last. Returns the text, or `None` if the rule is already there.
+pub fn merge_custom_rule(text: &str, rule: &str) -> Option<String> {
+    let key = |line: &str| -> Option<String> {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            return None;
+        }
+        let mut parts = line.splitn(3, ',').map(str::trim);
+        let (kind, value) = (parts.next()?, parts.next()?);
+        Some(format!("{},{}", kind.to_ascii_lowercase(), value.to_ascii_lowercase()))
+    };
+    let wanted = key(rule)?;
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    match lines.iter().position(|l| key(l).as_deref() == Some(wanted.as_str())) {
+        Some(i) if lines[i].trim().eq_ignore_ascii_case(rule.trim()) => return None,
+        Some(i) => lines[i] = rule.trim().to_string(),
+        None => lines.push(rule.trim().to_string()),
+    }
+    Some(lines.join("\n") + "\n")
+}
+
 pub fn parse_acl_ini(text: &str, geosite_url: &str, geoip_url: &str) -> Vec<IniRuleSet> {
     // Group name -> first member, to learn which groups mean DIRECT / REJECT.
     let mut group_first: Vec<(String, String)> = Vec::new();
@@ -428,10 +470,18 @@ pub fn parse_acl_ini(text: &str, geosite_url: &str, geoip_url: &str) -> Vec<IniR
         }
     }
     let target_of = |group: &str| -> String {
-        let first = group_first
-            .iter()
-            .find(|(n, _)| n == group)
-            .map(|(_, f)| f.to_ascii_uppercase());
+        // A group's first member is its default, and may be another group
+        // (`📺 哔哩哔哩` starts on `🎯 全球直连`, which starts on DIRECT).
+        let mut name = group.to_string();
+        let mut first = None;
+        for _ in 0..group_first.len() {
+            let Some((_, f)) = group_first.iter().find(|(n, _)| *n == name) else { break };
+            first = Some(f.to_ascii_uppercase());
+            match f.strip_prefix("[]") {
+                Some(next) if group_first.iter().any(|(n, _)| n == next) => name = next.to_string(),
+                _ => break,
+            }
+        }
         match first.as_deref() {
             Some("[]DIRECT") => "direct".into(),
             Some("[]REJECT") | Some("[]REJECT-TINYGIF") => "reject".into(),
@@ -575,5 +625,60 @@ custom_proxy_group=📲 电报消息`select`[]🚀 节点选择`[]DIRECT
         assert_eq!(sets[2].format, RuleFormat::ClashIpCidr);
         assert_eq!(sets[3].source, "https://g/geoip-cn.srs");
         assert_eq!(sets[3].target, "direct");
+    }
+
+    #[test]
+    fn acl_group_defaults_follow_other_groups() {
+        // ACL4SSR's Bilibili group starts on the direct group, not on DIRECT itself.
+        let ini = r#"
+ruleset=📺 哔哩哔哩,https://x/Bilibili.list
+ruleset=📹 油管视频,https://x/YouTube.list
+ruleset=🛑 拦截链,https://x/Ads.list
+ruleset=🔁 成环,https://x/Loop.list
+custom_proxy_group=🚀 节点选择`select`[]♻️ 自动选择`[]DIRECT
+custom_proxy_group=♻️ 自动选择`url-test`.*
+custom_proxy_group=🎯 全球直连`select`[]DIRECT`[]🚀 节点选择
+custom_proxy_group=📺 哔哩哔哩`select`[]🎯 全球直连`[]🚀 节点选择
+custom_proxy_group=📹 油管视频`select`[]🚀 节点选择`[]DIRECT
+custom_proxy_group=🛑 广告拦截`select`[]REJECT
+custom_proxy_group=🛑 拦截链`select`[]🛑 广告拦截
+custom_proxy_group=🔁 成环`select`[]🔁 成环
+"#;
+        let sets = parse_acl_ini(ini, "g{name}", "i{name}");
+        let target = |name: &str| sets.iter().find(|s| s.group == name).unwrap().target.as_str();
+        assert_eq!(target("📺 哔哩哔哩"), "direct");
+        assert_eq!(target("📹 油管视频"), "proxy");
+        assert_eq!(target("🛑 拦截链"), "reject");
+        // A group that leads back to itself ends instead of hanging.
+        assert_eq!(target("🔁 成环"), "proxy");
+    }
+
+    #[test]
+    fn base_domains() {
+        assert_eq!(base_domain("www.bilibili.com").as_deref(), Some("bilibili.com"));
+        assert_eq!(base_domain("d1--cn-gotcha04.bilivideo.com").as_deref(), Some("bilivideo.com"));
+        assert_eq!(base_domain("www.bbc.co.uk").as_deref(), Some("bbc.co.uk"));
+        assert_eq!(base_domain("a.b.example.com.cn").as_deref(), Some("example.com.cn"));
+        assert_eq!(base_domain("WWW.Example.ORG.").as_deref(), Some("example.org"));
+        assert_eq!(base_domain("example.co").as_deref(), Some("example.co"));
+        assert_eq!(base_domain("1.2.3.4"), None);
+        assert_eq!(base_domain("2001:db8::1"), None);
+        assert_eq!(base_domain("localhost"), None);
+    }
+
+    #[test]
+    fn merging_custom_rules() {
+        let text = "# mine\nDOMAIN-SUFFIX,a.com,proxy\n";
+        // New rules go last and keep what is there.
+        let added = merge_custom_rule(text, "DOMAIN,b.com,direct").unwrap();
+        assert_eq!(added, "# mine\nDOMAIN-SUFFIX,a.com,proxy\nDOMAIN,b.com,direct\n");
+        // The same match with a new target replaces it in place.
+        let changed = merge_custom_rule(&added, "domain-suffix,A.com,reject").unwrap();
+        assert_eq!(changed, "# mine\ndomain-suffix,A.com,reject\nDOMAIN,b.com,direct\n");
+        // Already there: nothing to do.
+        assert_eq!(merge_custom_rule(text, "domain-suffix,a.com,PROXY"), None);
+        // Works from empty, and comments never match.
+        assert_eq!(merge_custom_rule("", "DOMAIN,c.com,direct").unwrap(), "DOMAIN,c.com,direct\n");
+        assert!(merge_custom_rule("#DOMAIN,c.com,direct", "DOMAIN,c.com,direct").is_some());
     }
 }

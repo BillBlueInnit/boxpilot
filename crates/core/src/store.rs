@@ -77,6 +77,11 @@ impl Paths {
         self.root.join("rule_providers.json")
     }
 
+    /// The custom rules, one `TYPE,VALUE,TARGET` per line.
+    pub fn custom_rules_file(&self) -> PathBuf {
+        self.root.join("CustomRule.list")
+    }
+
     /// Converted rule-sets and the cached geosite / geoip files.
     pub fn rules_dir(&self) -> PathBuf {
         self.run_dir.join("rules")

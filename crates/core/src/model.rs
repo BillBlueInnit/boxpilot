@@ -248,7 +248,10 @@ pub struct Settings {
     pub ruleset_via_proxy: bool,
     pub geosite_url: String,
     pub geoip_url: String,
+    /// A copy of `CustomRule.list` for building the config; the file is what counts.
     pub custom_rules: String,
+    /// Connections page: column widths the user dragged to (empty: defaults).
+    pub conn_columns: Vec<f32>,
 
     // Core
     pub core_path: String,
@@ -343,6 +346,7 @@ impl Default for Settings {
                 "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{name}.srs"
                     .into(),
             custom_rules: String::new(),
+            conn_columns: Vec::new(),
             core_path: String::new(),
             log_level: "info".into(),
             record_logs: true,

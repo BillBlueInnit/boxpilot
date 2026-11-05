@@ -86,13 +86,14 @@ The step-by-step guide is in [docs/usage.md](docs/usage.md). Data lives in the f
   switched off until you pick the ones you want (Enable all / Disable all). A rule-set can get a
   **node group of its own** on the Proxies page — chosen by hand or picked automatically with the
   same modes and region filter as Auto — and its file can be opened in your text editor; saves
-  apply by themselves. Built-in China bypass and ad blocking, plus custom rules (`TYPE,VALUE,TARGET`).
+  apply by themselves. Built-in China bypass and ad blocking, plus custom rules (`TYPE,VALUE,TARGET`)
+  kept in `CustomRule.list`, which you can edit anywhere or add to by right-clicking a connection.
 - **DNS**: DoH/DoT/DoQ/UDP, FakeIP, IPv6. Rule-sets are cached by the app and handed to sing-box as
   local files, so a blocked GitHub or a dead node never stops the core from starting.
 - **App**: English, 简体中文, 繁體中文 and Русский (follows the system language, switchable
   live); run as administrator (login start through a highest-privilege scheduled task, so no UAC
   prompt); tray icon with mode/system-proxy/TUN toggles, close to tray, single instance, launch at
-  login (optionally minimized), live traffic chart, connections view, log viewer, light/dark themes,
+  login (optionally minimized), live traffic chart, connections view with resizable columns, log viewer, light/dark themes,
   a theme colour, and a translucent window (Mica, Mica Alt or Acrylic on Windows 11, the system blur
   on macOS and KDE Plasma).
 - **Proxies page**: a country code on every node — from the node name (flag, place, code), else a

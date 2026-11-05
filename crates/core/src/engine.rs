@@ -334,6 +334,15 @@ impl Engine {
     ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<Event>)> {
         let store = Store::new(paths)?;
         let mut settings = store.load_settings();
+        // Custom rules live in CustomRule.list; older versions kept them in the settings.
+        let custom_file = store.paths.custom_rules_file();
+        match std::fs::read_to_string(&custom_file) {
+            Ok(text) => settings.custom_rules = text,
+            Err(_) if !settings.custom_rules.trim().is_empty() => {
+                crate::store::write_atomic(&custom_file, settings.custom_rules.as_bytes())?;
+            }
+            Err(_) => {}
+        }
         if settings.clash_api_secret.is_empty() {
             settings.clash_api_secret = random_secret();
             store.save_settings(&settings)?;
@@ -655,6 +664,7 @@ impl Engine {
         // App self-updates replace the executable; the mobile apps update through their stores.
         if self.host.is_none() {
             self.rt.spawn(self.clone().update_loop());
+            self.rt.spawn(self.clone().custom_rules_loop());
         }
         self.rt.spawn(self.clone().auto_loop());
         let this = self.clone();
@@ -767,6 +777,7 @@ impl Engine {
         if scope.settings {
             remove(paths.settings_file());
             remove(paths.root.join("settings.broken.json"));
+            remove(paths.custom_rules_file());
         }
         if scope.subscriptions {
             remove(paths.subs_file());
@@ -2098,6 +2109,45 @@ impl Engine {
         id
     }
 
+    /// `CustomRule.list`, created if it isn't there yet (to open it in an editor).
+    pub fn custom_rules_file(&self) -> Result<PathBuf> {
+        let path = self.store.paths.custom_rules_file();
+        if !path.is_file() {
+            crate::store::write_atomic(&path, self.settings().custom_rules.as_bytes())?;
+        }
+        Ok(path)
+    }
+
+    /// Replaces the custom rules: saved to `CustomRule.list`, applied at once.
+    pub fn set_custom_rules(self: &Arc<Self>, text: String) -> Result<()> {
+        crate::store::write_atomic(&self.store.paths.custom_rules_file(), text.as_bytes())?;
+        self.update_settings(move |s| s.custom_rules = text);
+        Ok(())
+    }
+
+    /// Adds one `TYPE,VALUE,TARGET` rule (see [`rules::merge_custom_rule`]).
+    /// Returns false if it was already there.
+    pub fn add_custom_rule(self: &Arc<Self>, rule: &str) -> Result<bool> {
+        match rules::merge_custom_rule(&self.settings().custom_rules, rule) {
+            Some(text) => self.set_custom_rules(text).map(|()| true),
+            None => Ok(false),
+        }
+    }
+
+    /// Applies saves of `CustomRule.list` made outside the app, by any editor.
+    async fn custom_rules_loop(self: Arc<Self>) {
+        let path = self.store.paths.custom_rules_file();
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            // A file being replaced may be missing or half-written for a moment.
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            if text != self.settings().custom_rules {
+                self.log_app(LogLevel::Info, "CustomRule.list changed; applying it");
+                self.update_settings(move |s| s.custom_rules = text);
+            }
+        }
+    }
+
     /// The rule-set behind a group tag on the Proxies page, if it is one.
     pub fn rule_group(&self, tag: &str) -> Option<RuleProvider> {
         self.with(|s| {
@@ -2322,7 +2372,8 @@ impl Engine {
         let ids: Vec<String> = self.with(|s| {
             let mut ids = Vec::new();
             for r in &sets {
-                if s.providers.iter().any(|p| p.source == r.source && p.target == r.target) {
+                // Already imported: its action may have been changed since.
+                if s.providers.iter().any(|p| p.source == r.source) {
                     continue;
                 }
                 // A template brings dozens of rule-sets; the user turns on the ones they want.

@@ -35,6 +35,9 @@ pub struct RulesPage {
     geosite: Entity<InputState>,
     geoip: Entity<InputState>,
     sel: Selection,
+    /// The custom rules last shown, to notice changes made elsewhere: the
+    /// connections page, or `CustomRule.list` saved in an editor.
+    custom_seen: String,
     _subs: Vec<Subscription>,
 }
 
@@ -74,7 +77,7 @@ impl RulesPage {
             cx.subscribe_in(&geosite, window, commit(|s| s.geosite_url.clone(), |s, v| s.geosite_url = v)),
             cx.subscribe_in(&geoip, window, commit(|s| s.geoip_url.clone(), |s, v| s.geoip_url = v)),
         ];
-        Self { state, custom, geosite, geoip, sel: Selection::default(), _subs }
+        Self { state, custom, geosite, geoip, sel: Selection::default(), custom_seen: s.custom_rules.clone(), _subs }
     }
 
     fn provider_row(&self, p: &RuleProvider, idx: usize, total: usize, this: WeakEntity<Self>, cx: &App) -> impl IntoElement {
@@ -305,16 +308,21 @@ fn switch_row(id: &'static str, title: &str, desc: &str, checked: bool, set: fn(
 }
 
 impl Render for RulesPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let engine = self.state.read(cx).engine.clone();
         let s = engine.settings();
+        if self.custom_seen != s.custom_rules {
+            self.custom_seen = s.custom_rules.clone();
+            let text = s.custom_rules.clone();
+            self.custom.update(cx, |i, cx| i.set_value(text, window, cx));
+        }
         let providers = engine.rule_providers();
         let t = cx.theme();
         let muted = t.muted_foreground;
         let e_all = engine.clone();
         let any_updating = providers.iter().any(|p| engine.is_updating(&p.id));
         let rules = self.custom.clone();
-        let rules_engine = engine.clone();
+        let (rules_engine, file_engine) = (engine.clone(), engine.clone());
         let order: Vec<String> = providers.iter().map(|p| p.id.clone()).collect();
         self.sel.retain(&order);
         if providers.is_empty() {
@@ -479,17 +487,34 @@ impl Render for RulesPage {
                         .child(div().text_xs().text_color(muted).child(t!("rules.custom_help")))
                         .child(Textarea::new(&self.custom).h(dp(150.)))
                         .child(
-                            h_flex().justify_end().child(
-                                Button::new("apply-rules")
-                                    .small()
-                                    .primary()
-                                    .label(t!("btn.apply_rules"))
-                                    .on_click(move |_, window, cx| {
-                                        let text = rules.read(cx).value().to_string();
-                                        rules_engine.update_settings(|s| s.custom_rules = text);
-                                        window.push_notification(Notification::success(t!("rules.applied")), cx);
-                                    }),
-                            ),
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(div().flex_1().min_w_0().text_xs().text_color(muted).child(t!("rules.custom_file")))
+                                .child(
+                                    Button::new("edit-custom-rules")
+                                        .small()
+                                        .icon(extra_icon(Lucide::FilePen))
+                                        .label(t!("btn.edit_file"))
+                                        .tooltip(t!("tip.edit_custom_file"))
+                                        .on_click(move |_, window, cx| match file_engine.custom_rules_file() {
+                                            Ok(path) => crate::platform::open_in_text_editor(&path),
+                                            Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                                        }),
+                                )
+                                .child(
+                                    Button::new("apply-rules")
+                                        .small()
+                                        .primary()
+                                        .label(t!("btn.apply_rules"))
+                                        .on_click(move |_, window, cx| {
+                                            let text = rules.read(cx).value().to_string();
+                                            match rules_engine.set_custom_rules(text) {
+                                                Ok(()) => window.push_notification(Notification::success(t!("rules.applied")), cx),
+                                                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                                            }
+                                        }),
+                                ),
                         ),
                     "rules-custom",
                     anim::stagger(2),

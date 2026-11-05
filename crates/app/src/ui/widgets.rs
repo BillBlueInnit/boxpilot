@@ -173,7 +173,7 @@ pub fn choice<T: Copy + PartialEq + 'static>(
 }
 
 /// Approximate rendered width of `s` at `text_sm`, for equal-width segments.
-fn text_width(s: &str) -> f32 {
+pub fn text_width(s: &str) -> f32 {
     s.chars()
         .map(|c| if c.is_ascii() { 7.4 } else if (c as u32) < 0x2E80 { 8.2 } else { 14.0 })
         .sum()

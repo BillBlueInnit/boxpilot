@@ -150,8 +150,17 @@ The **Rules** page decides where traffic goes in Rule mode.
   For a local file, each save is converted and applied automatically. For a downloaded set, the
   stored copy is opened; saves apply at once and last until its next download. Binary `.srs` files
   can't be edited as text.
-- **Built-in rules** bypass mainland China and block ads; **Custom rules** take lines like
-  `DOMAIN-SUFFIX,openai.com,proxy`.
+- **Built-in rules** bypass mainland China and block ads.
+- **Custom rules** take lines like `DOMAIN-SUFFIX,openai.com,proxy` and are kept in
+  `CustomRule.list` in the data folder. Edit them here, or press **Edit file** and use any text
+  editor; saves apply by themselves.
+- **From a connection**: on the **Connections** page, right-click a row and choose **Always go
+  direct**, **Always use the proxy** or **Always block**, for that host, its whole site or the app.
+  The rule goes into `CustomRule.list`, and the core reloads to apply it, which drops open
+  connections. A rule for the same host or app replaces the old one.
+- **Connections columns**: drag the edge between two titles to resize a column, or double-click it
+  to fit the longest value. Widths are remembered. When the columns outgrow the page, use the bar
+  below them, a sideways wheel or Shift + wheel.
 
 ## 7. Settings worth knowing
 
