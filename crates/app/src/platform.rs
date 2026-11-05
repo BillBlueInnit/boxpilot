@@ -416,13 +416,19 @@ fn set_ns_appearance(window: &Window, dark: Option<bool>) {
 /// Lets the Mica backdrop show through the client area. DWM paints it in the
 /// window frame only, and the custom title bar leaves no visible frame, so the
 /// frame is extended over the whole window (content painted on top hides it).
+///
+/// It is extended up from the bottom edge rather than as a whole "sheet of
+/// glass" (-1): a frame that includes the top edge gets DWM's own caption
+/// buttons drawn into it, and those showed through the translucent title bar
+/// behind BoxPilot's, as doubled minimize / maximize / close glyphs.
 pub fn set_mica_frame(window: &Window, on: bool) {
     #[cfg(windows)]
     if let Some(h) = hwnd(window) {
         use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
         use windows_sys::Win32::UI::Controls::MARGINS;
-        let m = if on { -1 } else { 0 };
-        let margins = MARGINS { cxLeftWidth: m, cxRightWidth: m, cyTopHeight: m, cyBottomHeight: m };
+        // Taller than any window, so it reaches the top edge from below.
+        let bottom = if on { 1 << 20 } else { 0 };
+        let margins = MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 0, cyBottomHeight: bottom };
         unsafe { DwmExtendFrameIntoClientArea(h, &margins) };
     }
     let _ = (window, on);

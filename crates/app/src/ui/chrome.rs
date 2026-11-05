@@ -1,8 +1,9 @@
 //! Borderless window chrome that defers to each platform's window manager
 //! and draws the window controls in that platform's own style.
 //!
-//! * Windows: caption buttons use the system icon font (Segoe Fluent Icons /
-//!   Segoe MDL2 Assets) at the native 46×32 size with WinUI colours, and are
+//! * Windows: caption buttons at the native 46×32 size with WinUI colours and
+//!   glyphs drawn on the device-pixel grid (the ✕ from Segoe Fluent Icons /
+//!   Segoe MDL2 Assets), and are
 //!   reported to the OS as `HTMINBUTTON` / `HTMAXBUTTON` / `HTCLOSE` / `HTCAPTION`,
 //!   so Windows handles clicks, double-click to maximize, Aero Snap, the system
 //!   menu and the Windows 11 snap-layouts flyout itself.
@@ -13,7 +14,7 @@
 
 use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Div, ElementId, Stateful, Window, div, px};
+use gpui_kit::{AnyElement, App, Div, ElementId, Hsla, Stateful, Window, div, px};
 
 /// Height of the caption area above the page content.
 pub const CAPTION_H: f32 = if cfg!(windows) { 32.0 } else { 38.0 };
@@ -144,6 +145,59 @@ fn client_decorated(window: &Window) -> bool {
     }
 }
 
+/// Paints a minimize, maximize or restore glyph `size` px wide, centred in
+/// its box, on whole device pixels. Font and SVG glyphs land on fractional
+/// pixels at 125 % / 150 % scale and draw each 1 px stroke as two half-tone
+/// lines (a doubled square); Windows hints its own glyphs onto the pixel grid.
+/// Takes `hover` while the pointer is within `area` around the glyph's centre.
+fn grid_glyph(control: Control, maximized: bool, size: f32, color: Hsla, hover: Hsla, area: (f32, f32)) -> impl IntoElement {
+    use gpui_kit::{Bounds, canvas, fill, point};
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let s = window.scale_factor();
+            let on_grid = |v: f32| (v * s).round() / s;
+            let line = s.floor().max(1.0) / s;
+            let side = on_grid(size);
+            let (cx, cy) = (
+                f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.0,
+                f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.0,
+            );
+            let mouse = window.mouse_position();
+            let (mx, my) = (f32::from(mouse.x), f32::from(mouse.y));
+            let over = (mx - cx).abs() <= area.0 / 2.0 && (my - cy).abs() <= area.1 / 2.0;
+            let color = if over { hover } else { color };
+            let (x0, y0) = (on_grid(cx - side / 2.0), on_grid(cy - side / 2.0));
+            let mut rect = |x: f32, y: f32, w: f32, h: f32| {
+                window.paint_quad(fill(Bounds::new(point(px(x), px(y)), gpui_kit::size(px(w), px(h))), color));
+            };
+            let mut outline = |x: f32, y: f32, w: f32, h: f32| {
+                rect(x, y, w, line);
+                rect(x, y + h - line, w, line);
+                rect(x, y, line, h);
+                rect(x + w - line, y, line, h);
+            };
+            match control {
+                Control::Minimize => rect(x0, on_grid(cy), side, line),
+                Control::Maximize if maximized => {
+                    // Two overlapping windows: the back one shows its top and right edges.
+                    let inner = on_grid(size * 0.8);
+                    let off = side - inner;
+                    outline(x0, y0 + off, inner, inner);
+                    let mut rect = |x: f32, y: f32, w: f32, h: f32| {
+                        window.paint_quad(fill(Bounds::new(point(px(x), px(y)), gpui_kit::size(px(w), px(h))), color));
+                    };
+                    rect(x0 + off, y0, inner, line);
+                    rect(x0 + side - line, y0, line, inner);
+                }
+                Control::Maximize => outline(x0, y0, side, side),
+                Control::Close => {}
+            }
+        },
+    )
+    .size_full()
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;
@@ -180,12 +234,6 @@ mod windows {
             _ => (hsla(0., 0., 0., 0.0373), hsla(0., 0., 0., 0.0241), fg.opacity(1.0)),
         };
         let pressed_fg = if control == Control::Close { hsla(0., 0., 1., 0.7) } else { fg.opacity(0.6) };
-        let glyph = match control {
-            Control::Minimize => "\u{E921}",
-            Control::Maximize if maximized => "\u{E923}",
-            Control::Maximize => "\u{E922}",
-            Control::Close => "\u{E8BB}",
-        };
         div()
             .id(match control {
                 Control::Minimize => "caption-min",
@@ -199,6 +247,7 @@ mod windows {
             .items_center()
             .justify_center()
             .font_family(icon_font())
+            .relative()
             .text_size(px(10.))
             .text_color(fg)
             .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
@@ -222,7 +271,17 @@ mod windows {
                     }
                 }
             })
-            .child(glyph)
+            // The diagonal ✕ reads fine from the font; the others are drawn
+            // on the pixel grid (see `grid_glyph`).
+            .map(|d| match control {
+                Control::Close => d.child("\u{E8BB}"),
+                _ => d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(super::grid_glyph(control, maximized, 10., fg, hover_fg, (46., CAPTION_H))),
+                ),
+            })
     }
 }
 
@@ -295,12 +354,6 @@ mod linux {
 
     fn button(control: Control, maximized: bool, style: Style, cx: &App) -> impl IntoElement {
         let t = cx.theme();
-        let icon = match control {
-            Control::Minimize => IconName::WindowMinimize,
-            Control::Maximize if maximized => IconName::WindowRestore,
-            Control::Maximize => IconName::WindowMaximize,
-            Control::Close => IconName::WindowClose,
-        };
         let fg = t.foreground;
         // Adwaita: always-visible round buttons. Breeze: the circle appears on
         // hover, red for close.
@@ -316,6 +369,7 @@ mod linux {
                 Control::Close => "caption-close",
             })
             .size(px(24.))
+            .relative()
             .rounded_full()
             .flex()
             .flex_none()
@@ -342,6 +396,16 @@ mod linux {
                     }
                 }
             })
-            .child(Icon::new(icon).size(px(14.)))
+            // The ✕ is diagonal and reads fine as an icon; the others are
+            // drawn on the pixel grid (see `grid_glyph`).
+            .map(|d| match control {
+                Control::Close => d.child(Icon::new(IconName::WindowClose).size(px(14.))),
+                _ => d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(super::grid_glyph(control, maximized, 8., fg, hover_fg, (24., 24.))),
+                ),
+            })
     }
 }

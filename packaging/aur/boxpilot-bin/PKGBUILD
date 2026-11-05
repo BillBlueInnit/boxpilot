@@ -3,7 +3,7 @@
 # version and checksums when it pushes this to the AUR.
 pkgname=boxpilot-bin
 _pkgname=boxpilot
-pkgver=1.0.3
+pkgver=1.0.4
 pkgrel=1
 pkgdesc="A clean sing-box client with a built-in subscription converter"
 arch=('x86_64')

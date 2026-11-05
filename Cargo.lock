@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "boxpilot"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "boxpilot-core",
@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "boxpilot-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
