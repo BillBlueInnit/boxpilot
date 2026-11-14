@@ -777,7 +777,7 @@ mod imp {
 
     /// Reads the file capabilities (`security.capability`) directly, so no
     /// `getcap` is needed (and none runs on every UI refresh).
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     fn has_net_admin_cap(core: &Path) -> bool {
         use std::os::unix::ffi::OsStrExt as _;
         let Ok(path) = std::ffi::CString::new(core.as_os_str().as_bytes()) else { return false };
@@ -788,10 +788,18 @@ mod imp {
         n > 0 && caps_allow_tun(&buf[..n as usize])
     }
 
+    /// iOS (the phone app, where the core is embedded and never a file) has no
+    /// file capabilities, and Apple's `getxattr` takes other arguments.
+    #[cfg(target_os = "ios")]
+    fn has_net_admin_cap(_core: &Path) -> bool {
+        false
+    }
+
     /// Whether a `vfs_cap_data` (revision 2, or 3 with a namespace root id)
     /// lets the core create TUN interfaces: CAP_NET_ADMIN must be permitted
     /// and raised on exec, since sing-box does not raise capabilities itself.
     #[cfg(not(target_os = "macos"))]
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     pub(crate) fn caps_allow_tun(xattr: &[u8]) -> bool {
         const CAP_NET_ADMIN: u32 = 12;
         const VFS_CAP_FLAGS_EFFECTIVE: u32 = 1;
