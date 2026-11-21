@@ -1848,6 +1848,7 @@ impl Engine {
         }
         self.refresh_countries();
         if self.settings().auto_start_core
+            && self.host.as_ref().is_none_or(|h| h.can_autostart())
             && self.total_nodes() > 0
             && self.core_installed()
             && matches!(self.status(), CoreStatus::Stopped)
@@ -3392,7 +3393,11 @@ impl Engine {
         installed?;
         self.set_download(CoreDownloadState::UpToDate(version.clone()));
         self.notice(NoticeKind::Success, Msg::new("notice.core_installed").arg(&version));
-        if !was_running && self.settings().auto_start_core && self.total_nodes() > 0 {
+        if !was_running
+            && self.settings().auto_start_core
+            && self.host.as_ref().is_none_or(|h| h.can_autostart())
+            && self.total_nodes() > 0
+        {
             let _ = self.start_async().await;
         }
         Ok(())
