@@ -1,21 +1,35 @@
 //! Generates a complete sing-box configuration from settings and nodes.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
 use serde_json::{Map, Value, json};
 
 use crate::model::{Node, Settings};
-use crate::rules::{RuleFormat, RuleProvider};
+use crate::rules::{CustomRuleGroup, GROUP_PREFIX, RuleFormat, RuleProvider};
 
 pub const TAG_PROXY: &str = "Proxy";
 pub const TAG_AUTO: &str = "Auto";
 pub const TAG_DIRECT: &str = "direct";
-/// Hidden selector behind the probe inbound: the exit-location check points it
-/// at one node at a time without touching the user's selection.
+/// Legacy single probe selector tag (kept for compatibility; probe slots use `probe_tag`).
 pub const TAG_PROBE: &str = "BoxPilot-probe";
+/// Number of concurrent probe selectors sharing the single internal `probe-in` port via `auth_user`.
+pub const PROBE_SLOTS: usize = 8;
+pub const PROBE_PASS: &str = "bp";
 const PROBE_INBOUND: &str = "probe-in";
 const RESERVED: &[&str] = &[TAG_PROXY, TAG_AUTO, TAG_DIRECT, TAG_PROBE, "GLOBAL", "REJECT", "DIRECT"];
+
+pub fn probe_tag(slot: usize) -> String {
+    format!("{TAG_PROBE}-{slot}")
+}
+
+pub fn probe_user(slot: usize) -> String {
+    format!("p{slot}")
+}
+
+pub fn is_probe_tag(tag: &str) -> bool {
+    tag == TAG_PROBE || tag.starts_with("BoxPilot-probe-")
+}
 
 /// sing-box version, used to emit options the running core understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -71,6 +85,8 @@ pub struct BuildInput<'a> {
     pub rule_set_dir: Option<&'a std::path::Path>,
     /// Imported rule-sets, applied in order after the custom rules.
     pub providers: &'a [RuleProvider],
+    /// User-defined groups inside Custom Rules (`#!group <name>` sections).
+    pub custom_groups: &'a [CustomRuleGroup],
 }
 
 /// Where a provider's converted rule-set is stored.
@@ -122,6 +138,8 @@ pub struct BuiltConfig {
     pub missing_rule_sets: Vec<RuleSetSpec>,
     /// The node group of each rule-set that has one: (provider id, group tag).
     pub provider_groups: Vec<(String, String)>,
+    /// The node group of each custom rule group that has one: (group id, group tag).
+    pub custom_rule_groups: Vec<(String, String)>,
 }
 
 pub fn rule_set_file(dir: &std::path::Path, tag: &str) -> std::path::PathBuf {
@@ -134,9 +152,11 @@ struct TagAllocator {
 
 impl TagAllocator {
     fn new() -> Self {
-        Self {
-            used: RESERVED.iter().map(|s| s.to_string()).collect(),
+        let mut used: HashSet<String> = RESERVED.iter().map(|s| s.to_string()).collect();
+        for slot in 0..PROBE_SLOTS {
+            used.insert(probe_tag(slot));
         }
+        Self { used }
     }
 
     fn alloc(&mut self, wanted: &str) -> String {
@@ -240,12 +260,15 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
     }
     let probe = !all_tags.is_empty() && s.probe_port != 0;
     if probe {
-        head.push(json!({
-            "type": "selector",
-            "tag": TAG_PROBE,
-            "outbounds": all_tags,
-            "interrupt_exist_connections": false,
-        }));
+        for slot in 0..PROBE_SLOTS {
+            head.push(json!({
+                "type": "selector",
+                "tag": probe_tag(slot),
+                "outbounds": all_tags,
+                "default": all_tags[0],
+                "interrupt_exist_connections": false,
+            }));
+        }
     }
     head.extend(group_outbounds);
     // Rule-set groups go in ahead of the nodes, after the subscription groups.
@@ -255,9 +278,57 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
 
     let mut rule_sets = RuleSets::new(s, v, input.rule_set_dir);
     let mut warnings = Vec::new();
-    let known = all_known_tags(&head, &endpoints);
-    let mut custom = parse_custom_rules(&s.custom_rules, &mut rule_sets, &known, &mut warnings);
+    let base_known = all_known_tags(&head, &endpoints);
+
+    // Allocate selectors for user-defined custom rule groups FIRST (ahead of rule-set groups)
+    // so custom groups appear prominently on the Proxies page and can also be targeted by rules.
+    let mut custom_rule_groups = Vec::new();
+    let mut custom_group_targets: HashMap<String, Option<String>> = HashMap::new();
+    let mut custom_group_order: Vec<String> = Vec::new();
+    for g in input.custom_groups {
+        let key = g.name.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        if !g.enabled {
+            custom_group_targets.insert(key, None);
+            continue;
+        }
+        custom_group_order.push(key.clone());
+        if g.own_group && g.can_own_group() && !all_tags.is_empty() {
+            let gtag = tags.alloc(if g.name.trim().is_empty() { "Custom" } else { g.name.trim() });
+            let start = match g.target.to_ascii_lowercase().as_str() {
+                "direct" => TAG_DIRECT.to_string(),
+                _ if base_known.contains(&g.target) => g.target.clone(),
+                _ => TAG_PROXY.to_string(),
+            };
+            let mut members = vec![TAG_PROXY.to_string()];
+            members.extend(group_tags.iter().cloned());
+            members.extend(all_tags.iter().cloned());
+            members.push(TAG_DIRECT.into());
+            let start = if members.contains(&start) { start } else { TAG_PROXY.to_string() };
+            head.insert(
+                head.len() - 1 - outbounds_len,
+                json!({
+                    "type": "selector",
+                    "tag": gtag,
+                    "outbounds": members,
+                    "default": start,
+                    "interrupt_exist_connections": true,
+                }),
+            );
+            custom_rule_groups.push((g.id.clone(), gtag.clone()));
+            custom_group_targets.insert(key, Some(gtag));
+        } else {
+            custom_group_targets.insert(key, Some(g.target.clone()));
+        }
+    }
+
+    // Prepare enabled rule-sets and allocate their own node groups BEFORE
+    // parsing custom rules so custom rules can also target a rule-set's own group.
     let mut provider_groups = Vec::new();
+    let mut provider_rules = Vec::new();
+    let mut proxy_dns_sets: Vec<String> = Vec::new();
     if let Some(dir) = input.rule_set_dir {
         for p in input.providers.iter().filter(|p| p.enabled) {
             let Some(path) = provider_file(dir, p).filter(|f| f.is_file()) else { continue };
@@ -269,9 +340,10 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
             );
             let mut rule = Map::new();
             rule.insert("rule_set".into(), json!([tag]));
-            if !apply_target(&mut rule, &p.target, &known) {
+            if !apply_target(&mut rule, &p.target, &base_known) {
                 warnings.push(format!("rule-set {}: unknown target `{}`, using Proxy", p.name, p.target));
             }
+            let is_direct_or_reject = matches!(p.target.to_ascii_lowercase().as_str(), "direct" | "reject" | "block");
             if p.own_group && p.can_own_group() && !all_tags.is_empty() {
                 // A selector of its own: it starts on the rule-set's target and
                 // can be switched by hand or picked for like Auto.
@@ -295,18 +367,41 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
                 rule.insert("outbound".into(), json!(gtag));
                 provider_groups.push((p.id.clone(), gtag));
             }
-            custom.push(Value::Object(rule));
+            if !is_direct_or_reject || (p.own_group && p.can_own_group()) {
+                proxy_dns_sets.push(tag);
+            }
+            provider_rules.push(Value::Object(rule));
         }
     }
 
+    let known = all_known_tags(&head, &endpoints);
+    let mut custom = parse_custom_rules(
+        &s.custom_rules,
+        &custom_group_targets,
+        &custom_group_order,
+        &mut rule_sets,
+        &known,
+        &mut warnings,
+    );
+    custom.extend(provider_rules);
+
     let mut route = build_route(s, &mut rule_sets, custom);
     if probe {
-        // Ahead of the mode and private-IP rules, so it always reaches the chosen node.
+        // Ahead of the mode and private-IP rules, so each probe slot always reaches its chosen node.
         if let Some(rules) = route["rules"].as_array_mut() {
-            rules.insert(0, json!({ "inbound": [PROBE_INBOUND], "outbound": TAG_PROBE }));
+            for slot in (0..PROBE_SLOTS).rev() {
+                rules.insert(
+                    0,
+                    json!({
+                        "inbound": [PROBE_INBOUND],
+                        "auth_user": [probe_user(slot)],
+                        "outbound": probe_tag(slot),
+                    }),
+                );
+            }
         }
     }
-    let dns = build_dns(s, &mut rule_sets);
+    let dns = build_dns(s, &mut rule_sets, &proxy_dns_sets);
 
     let mut config = Map::new();
     config.insert(
@@ -316,11 +411,15 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
     config.insert("dns".into(), dns);
     let mut inbounds = build_inbounds(s);
     if probe {
+        let users: Vec<Value> = (0..PROBE_SLOTS)
+            .map(|slot| json!({ "username": probe_user(slot), "password": PROBE_PASS }))
+            .collect();
         inbounds.push(json!({
             "type": "mixed",
             "tag": PROBE_INBOUND,
             "listen": "127.0.0.1",
             "listen_port": s.probe_port,
+            "users": users,
         }));
     }
     config.insert("inbounds".into(), json!(inbounds));
@@ -362,6 +461,7 @@ pub fn build_config(input: &BuildInput) -> BuiltConfig {
         rule_sets: wanted,
         missing_rule_sets: missing,
         provider_groups,
+        custom_rule_groups,
     }
 }
 
@@ -528,14 +628,14 @@ fn build_route(s: &Settings, rs: &mut RuleSets, custom: Vec<Value>) -> Value {
     }
     json!({
         "rules": rules,
-        "final": TAG_PROXY,
+        "final": if s.final_direct { TAG_DIRECT } else { TAG_PROXY },
         "auto_detect_interface": true,
         "find_process": true,
         "default_domain_resolver": { "server": "dns-direct" },
     })
 }
 
-fn build_dns(s: &Settings, rs: &mut RuleSets) -> Value {
+fn build_dns(s: &Settings, rs: &mut RuleSets, proxy_dns_sets: &[String]) -> Value {
     let mut servers = vec![
         json!({ "type": "local", "tag": "dns-local" }),
         dns_server(&s.dns_remote, "dns-remote", Some(TAG_PROXY)),
@@ -555,6 +655,9 @@ fn build_dns(s: &Settings, rs: &mut RuleSets) -> Value {
             rules.push(json!({ "rule_set": [cn], "server": "dns-direct" }));
         }
     }
+    if s.final_direct && !proxy_dns_sets.is_empty() {
+        rules.push(json!({ "rule_set": proxy_dns_sets, "server": "dns-remote" }));
+    }
     if s.fake_ip {
         servers.push(json!({
             "type": "fakeip",
@@ -567,7 +670,7 @@ fn build_dns(s: &Settings, rs: &mut RuleSets) -> Value {
     json!({
         "servers": servers,
         "rules": rules,
-        "final": "dns-remote",
+        "final": if s.final_direct { "dns-direct" } else { "dns-remote" },
         "strategy": if s.ipv6 { "prefer_ipv4" } else { "ipv4_only" },
     })
 }
@@ -616,26 +719,51 @@ pub fn dns_server(addr: &str, tag: &str, detour: Option<&str>) -> Value {
     Value::Object(server)
 }
 
-/// Custom rule lines: `TYPE,VALUE,TARGET` (Clash style names are accepted).
-/// TARGET is `proxy`, `direct`, `reject` or any outbound / group tag.
+/// Custom rule lines: `TYPE,VALUE,TARGET` (Clash style names are accepted),
+/// optionally organized under `#!group <GroupName>` sections.
+/// Ungrouped rules are emitted first, followed by enabled registered groups in
+/// `custom_group_order`, followed by any ad-hoc `#!group` sections.
 fn parse_custom_rules(
     text: &str,
+    group_targets: &HashMap<String, Option<String>>,
+    group_order: &[String],
     rs: &mut RuleSets,
     known_tags: &HashSet<String>,
     warnings: &mut Vec<String>,
 ) -> Vec<Value> {
-    let mut rules = Vec::new();
+    let mut ungrouped: Vec<Value> = Vec::new();
+    let mut grouped: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut adhoc_order: Vec<String> = Vec::new();
+    let mut current_group: Option<String> = None;
+
     for (i, raw) in text.lines().enumerate() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+        if line.is_empty() {
             continue;
         }
+        if let Some(rest) = line.strip_prefix(GROUP_PREFIX) {
+            let g = rest.trim().to_ascii_lowercase();
+            current_group = (!g.is_empty()).then_some(g);
+            continue;
+        }
+        if line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+        // Skip rules inside a disabled custom group.
+        let override_target = match current_group.as_deref() {
+            Some(gk) => match group_targets.get(gk) {
+                Some(None) => continue,
+                Some(Some(t)) => Some(t.as_str()),
+                None => None,
+            },
+            None => None,
+        };
         let parts: Vec<&str> = line.splitn(3, ',').map(str::trim).collect();
         if parts.len() != 3 {
             warnings.push(format!("rule {}: expected TYPE,VALUE,TARGET", i + 1));
             continue;
         }
-        let (kind, value, target) = (parts[0].to_ascii_lowercase(), parts[1], parts[2]);
+        let (kind, value, target) = (parts[0].to_ascii_lowercase(), parts[1], override_target.unwrap_or(parts[2]));
         let values: Vec<String> = value.split('|').map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).collect();
         let key = match kind.replace('_', "-").as_str() {
             "domain" => "domain",
@@ -686,7 +814,28 @@ fn parse_custom_rules(
         if !apply_target(&mut rule, target, known_tags) {
             warnings.push(format!("rule {}: unknown target `{target}`, using Proxy", i + 1));
         }
-        rules.push(Value::Object(rule));
+        let val = Value::Object(rule);
+        match &current_group {
+            None => ungrouped.push(val),
+            Some(gk) => {
+                if !group_targets.contains_key(gk) && !adhoc_order.contains(gk) {
+                    adhoc_order.push(gk.clone());
+                }
+                grouped.entry(gk.clone()).or_default().push(val);
+            }
+        }
+    }
+
+    let mut rules = ungrouped;
+    for gk in group_order {
+        if let Some(list) = grouped.remove(gk) {
+            rules.extend(list);
+        }
+    }
+    for gk in adhoc_order {
+        if let Some(list) = grouped.remove(&gk) {
+            rules.extend(list);
+        }
     }
     rules
 }
@@ -728,6 +877,7 @@ mod tests {
             version: CoreVersion { major: 1, minor: 14, patch: 0 },
             rule_set_dir: None,
             providers: &[],
+            custom_groups: &[],
         });
         let c = &out.config;
         let tags: Vec<&str> = c["outbounds"].as_array().unwrap().iter().map(|o| o["tag"].as_str().unwrap()).collect();
@@ -777,6 +927,7 @@ vless://u@b.com:443#B").unwrap();
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: Some(&dir),
             providers: &providers,
+            custom_groups: &[],
         });
         assert_eq!(
             out.provider_groups,
@@ -813,6 +964,7 @@ vless://u@b.com:443#B").unwrap();
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: None,
             providers: &[],
+            custom_groups: &[],
         })
         .config;
         use_upstream_for_local_dns(&mut c, "192.168.1.1".parse().unwrap());
@@ -833,6 +985,7 @@ vless://u@b.com:443#B").unwrap();
             version: CoreVersion { major: 1, minor: 12, patch: 0 },
             rule_set_dir: None,
             providers: &[],
+            custom_groups: &[],
         });
         assert!(out.config.get("http_clients").is_none());
         assert_eq!(out.config["route"]["rule_set"][0]["download_detour"], "Proxy");
@@ -852,6 +1005,7 @@ vless://u@b.com:443#B").unwrap();
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: Some(&dir),
             providers: &[],
+            custom_groups: &[],
         });
         let sets = out.config["route"]["rule_set"].as_array().unwrap();
         assert_eq!(sets.len(), 1);
@@ -876,6 +1030,7 @@ vless://u@b.com:443#B").unwrap();
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: Some(&dir),
             providers: std::slice::from_ref(&provider),
+            custom_groups: &[],
         });
         let rules = out.config["route"]["rules"].as_array().unwrap();
         let r = rules.iter().find(|r| r["rule_set"][0] == "rp-abc").unwrap();
@@ -894,6 +1049,7 @@ vless://u@b.com:443#B").unwrap();
             version: CoreVersion { major: 1, minor: 14, patch: 4 },
             rule_set_dir: None,
             providers: &[],
+            custom_groups: &[],
         });
         out.config["outbounds"].as_array().unwrap().iter().find(|o| o["tag"] == TAG_AUTO).unwrap().clone()
     }
@@ -922,6 +1078,7 @@ vless://u@b.com:443#B").unwrap();
                 version: CoreVersion { major: 1, minor: 14, patch: 4 },
                 rule_set_dir: None,
                 providers: &[],
+                custom_groups: &[],
             })
             .config["route"]["rules"]
                 .clone()
@@ -934,5 +1091,116 @@ vless://u@b.com:443#B").unwrap();
         // Right after sniff + DNS hijack, ahead of every routing rule.
         assert_eq!(r[2], json!({ "protocol": "quic", "action": "reject" }));
         assert_eq!(r[3], json!({ "network": "udp", "outbound": TAG_DIRECT }));
+    }
+
+    #[test]
+    fn custom_rule_targets_provider_group_and_final_direct() {
+        let dir = std::env::temp_dir().join(format!("bp-cg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let nodes = parse_subscription("trojan://p@a.com:443#NodeA").unwrap();
+        let p = RuleProvider {
+            id: "ai1".into(),
+            name: "AI Services".into(),
+            target: "proxy".into(),
+            own_group: true,
+            stored: Some(RuleFormat::SingBoxSource),
+            ..Default::default()
+        };
+        std::fs::write(provider_file(&dir, &p).unwrap(), b"{}").unwrap();
+
+        let mut s = Settings::default();
+        s.probe_port = 17891;
+        s.final_direct = true;
+        s.bypass_cn = false;
+        s.custom_rules = "DOMAIN-SUFFIX,my-ai.test,AI Services".into();
+        let out = build_config(&BuildInput {
+            settings: &s,
+            groups: vec![NodeGroup { name: "Sub", nodes: &nodes.nodes }],
+            version: CoreVersion { major: 1, minor: 14, patch: 4 },
+            rule_set_dir: Some(&dir),
+            providers: std::slice::from_ref(&p),
+            custom_groups: &[],
+        });
+        assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
+        assert_eq!(out.config["route"]["final"], "direct");
+        assert_eq!(out.config["dns"]["final"], "dns-direct");
+        let rules = out.config["route"]["rules"].as_array().unwrap();
+        // Custom rule targets the rule-set's own group without falling back to Proxy.
+        let custom_rule = rules.iter().find(|r| r["domain_suffix"][0] == "my-ai.test").unwrap();
+        assert_eq!(custom_rule["outbound"], "AI Services");
+        // Probe pool emits PROBE_SLOTS auth_user rules.
+        let probe_rules = rules.iter().filter(|r| r["inbound"][0] == PROBE_INBOUND).count();
+        assert_eq!(probe_rules, PROBE_SLOTS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_rule_groups_emit_selectors_and_priority() {
+        let nodes = parse_subscription("trojan://p@a.com:443#US-1\nvless://u@b.com:443#JP-1").unwrap();
+        let groups = vec![
+            CustomRuleGroup {
+                id: "g-work".into(),
+                name: "Work".into(),
+                target: "direct".into(),
+                enabled: true,
+                own_group: false,
+                ..Default::default()
+            },
+            CustomRuleGroup {
+                id: "g-ai".into(),
+                name: "My AI".into(),
+                target: "proxy".into(),
+                enabled: true,
+                own_group: true,
+                ..Default::default()
+            },
+            CustomRuleGroup {
+                id: "g-off".into(),
+                name: "Paused".into(),
+                target: "reject".into(),
+                enabled: false,
+                own_group: false,
+                ..Default::default()
+            },
+        ];
+        let mut s = Settings::default();
+        s.bypass_cn = false;
+        // Notice My AI appears before Work in text, but `groups` puts Work before My AI.
+        s.custom_rules = "\
+DOMAIN-SUFFIX,top.example,reject
+#!group My AI
+DOMAIN-SUFFIX,myai.test,proxy
+#!group Work
+DOMAIN-SUFFIX,corp.test,proxy
+#!group Paused
+DOMAIN-SUFFIX,paused.test,reject
+"
+        .into();
+
+        let out = build_config(&BuildInput {
+            settings: &s,
+            groups: vec![NodeGroup { name: "Sub", nodes: &nodes.nodes }],
+            version: CoreVersion { major: 1, minor: 14, patch: 4 },
+            rule_set_dir: None,
+            providers: &[],
+            custom_groups: &groups,
+        });
+        assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
+        assert_eq!(out.custom_rule_groups, vec![("g-ai".into(), "My AI".into())]);
+        let obs = out.config["outbounds"].as_array().unwrap();
+        let ai_sel = obs.iter().find(|o| o["tag"] == "My AI").unwrap();
+        assert_eq!(ai_sel["type"], "selector");
+        assert_eq!(ai_sel["outbounds"], json!(["Proxy", "US-1", "JP-1", "direct"]));
+        let rules = out.config["route"]["rules"].as_array().unwrap();
+        let pos = |dom: &str| rules.iter().position(|r| r["domain_suffix"][0] == dom);
+        let p_top = pos("top.example").unwrap();
+        let p_work = pos("corp.test").unwrap();
+        let p_ai = pos("myai.test").unwrap();
+        assert!(p_top < p_work && p_work < p_ai);
+        // Group owns its target even if line had `proxy`.
+        assert_eq!(rules[p_work]["outbound"], "direct");
+        assert_eq!(rules[p_ai]["outbound"], "My AI");
+        // Disabled group rules are omitted.
+        assert!(pos("paused.test").is_none());
     }
 }

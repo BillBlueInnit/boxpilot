@@ -162,6 +162,23 @@ impl Backdrop {
     pub const ALL: [Backdrop; 3] = [Self::Mica, Self::MicaAlt, Self::Acrylic];
 }
 
+/// Primary UI typeface preference (applied live without restart).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UiFont {
+    /// Follow the operating system's native UI typeface (Segoe UI Variable / SF Pro / system sans).
+    System,
+    /// Bundled open-source Google Sans (SIL OFL) for Latin & numerals, with crisp CJK fallback.
+    #[default]
+    GoogleSans,
+    /// Source Han Sans / Noto Sans SC (思源黑体) for unified CJK + Latin typography.
+    SourceHanSans,
+}
+
+impl UiFont {
+    pub const ALL: [UiFont; 3] = [Self::System, Self::GoogleSans, Self::SourceHanSans];
+}
+
 /// How the Auto group picks its node.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -245,6 +262,8 @@ pub struct Settings {
     // Rules
     pub bypass_cn: bool,
     pub block_ads: bool,
+    /// When true, traffic that matches no rule goes direct instead of through Proxy.
+    pub final_direct: bool,
     pub ruleset_via_proxy: bool,
     pub geosite_url: String,
     pub geoip_url: String,
@@ -297,6 +316,10 @@ pub struct Settings {
     pub backdrop: Backdrop,
     /// How much of the backdrop shows through pages and cards, in percent.
     pub transparency: u32,
+    /// Primary UI typeface (System / Google Sans / Source Han Sans).
+    pub ui_font: UiFont,
+    /// Built-in DPI-adaptive FreeType-Light & 5-tap LCD font rendering engine (default ON on Windows, OFF on macOS/Linux).
+    pub enhanced_font_rendering: bool,
     pub gpu: GpuPreference,
     pub update_mode: UpdateMode,
     /// Unix time of the last update check.
@@ -338,6 +361,7 @@ impl Default for Settings {
             ipv6: false,
             bypass_cn: true,
             block_ads: false,
+            final_direct: false,
             ruleset_via_proxy: true,
             geosite_url:
                 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{name}.srs"
@@ -376,6 +400,8 @@ impl Default for Settings {
             mica: true,
             backdrop: Backdrop::MicaAlt,
             transparency: 80,
+            ui_font: UiFont::GoogleSans,
+            enhanced_font_rendering: cfg!(windows),
             gpu: GpuPreference::Auto,
             update_mode: UpdateMode::Notify,
             last_update_check: 0,

@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 use tokio::process::Child;
 use tokio::runtime::Handle;
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use crate::clash_api::{ClashApi, Traffic};
 use crate::config::{BuildInput, BuiltConfig, CoreVersion, NodeGroup, RuleSetSpec, build_config, rule_set_file};
@@ -26,7 +26,7 @@ use crate::geo;
 use crate::model::*;
 use crate::process::{self, LogLevel, LogLine};
 use crate::store::{APP_NAME, Paths, Store};
-use crate::rules::{self, RuleProvider};
+use crate::rules::{self, CustomRuleGroup, RuleProvider};
 use crate::speed;
 use crate::sys;
 use crate::update;
@@ -244,6 +244,8 @@ struct BuildMeta {
     unsupported: usize,
     /// Rule-set groups: group tag -> provider id.
     rule_groups: HashMap<String, String>,
+    /// Custom rule groups: group tag -> custom group id.
+    custom_rule_groups: HashMap<String, String>,
 }
 
 struct State {
@@ -265,6 +267,7 @@ struct State {
     last_error: Option<Arc<str>>,
     traffic: Traffic,
     providers: Vec<RuleProvider>,
+    custom_groups: Vec<CustomRuleGroup>,
     /// Country of each proxy outbound, by tag.
     countries: HashMap<String, geo::Country>,
     /// Exit checks are slow-ish; each node's answer is reused for a while.
@@ -283,6 +286,53 @@ struct State {
     editing: HashSet<String>,
 }
 
+/// Manages the concurrent hidden probe selectors (`BoxPilot-probe-0..N`).
+struct ProbePool {
+    sem: Arc<Semaphore>,
+    free: Arc<Mutex<Vec<usize>>>,
+}
+
+struct ProbeLease {
+    slot: usize,
+    _permit: OwnedSemaphorePermit,
+    free: Arc<Mutex<Vec<usize>>>,
+}
+
+impl ProbePool {
+    fn new(slots: usize) -> Self {
+        Self {
+            sem: Arc::new(Semaphore::new(slots)),
+            free: Arc::new(Mutex::new((0..slots).rev().collect())),
+        }
+    }
+
+    async fn acquire(&self) -> ProbeLease {
+        let permit = self.sem.clone().acquire_owned().await.expect("probe semaphore");
+        let slot = self.free.lock().unwrap().pop().unwrap_or(0);
+        ProbeLease { slot, _permit: permit, free: self.free.clone() }
+    }
+}
+
+impl ProbeLease {
+    fn tag(&self) -> String {
+        crate::config::probe_tag(self.slot)
+    }
+
+    fn proxy_url(&self, port: u16) -> String {
+        format!(
+            "http://{}:{}@127.0.0.1:{port}",
+            crate::config::probe_user(self.slot),
+            crate::config::PROBE_PASS
+        )
+    }
+}
+
+impl Drop for ProbeLease {
+    fn drop(&mut self) {
+        self.free.lock().unwrap().push(self.slot);
+    }
+}
+
 pub struct Engine {
     rt: Handle,
     store: Store,
@@ -299,8 +349,10 @@ pub struct Engine {
     wake_auto: Notify,
     /// One country refresh at a time.
     geo_lock: tokio::sync::Mutex<()>,
-    /// The probe selector points at one node at a time (exit and speed checks).
-    probe_lock: tokio::sync::Mutex<()>,
+    /// Concurrent probe slots sharing `probe-in` via `auth_user`.
+    probe_pool: ProbePool,
+    /// Cancels an active batch speed test when set.
+    speed_cancel: Arc<AtomicBool>,
     /// Latest reload request; an older pending one gives way to it.
     reload_ticket: AtomicU64,
     /// Embedded core (mobile); `None` runs the sing-box executable.
@@ -360,6 +412,7 @@ impl Engine {
             .map(|s| (s.id.clone(), store.load_nodes(&s.id)))
             .collect();
         let providers = store.load_rule_providers();
+        let custom_groups = store.load_custom_rule_groups();
         let (tx, rx) = mpsc::unbounded_channel();
         let engine = Arc::new(Self {
             rt,
@@ -382,6 +435,7 @@ impl Engine {
                 last_error: None,
                 traffic: Traffic::default(),
                 providers,
+                custom_groups,
                 countries: HashMap::new(),
                 exit_checked: HashMap::new(),
                 update: UpdateInfo::default(),
@@ -396,7 +450,8 @@ impl Engine {
             tx,
             proc: tokio::sync::Mutex::new(None),
             geo_lock: tokio::sync::Mutex::new(()),
-            probe_lock: tokio::sync::Mutex::new(()),
+            probe_pool: ProbePool::new(crate::config::PROBE_SLOTS),
+            speed_cancel: Arc::new(AtomicBool::new(false)),
             reload_ticket: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             active: AtomicU64::new(0),
@@ -778,6 +833,7 @@ impl Engine {
             remove(paths.settings_file());
             remove(paths.root.join("settings.broken.json"));
             remove(paths.custom_rules_file());
+            remove(paths.custom_rule_groups_file());
         }
         if scope.subscriptions {
             remove(paths.subs_file());
@@ -785,6 +841,7 @@ impl Engine {
         }
         if scope.rule_sets {
             remove(paths.rules_file());
+            remove(paths.custom_rule_groups_file());
             remove(paths.rules_dir());
         }
         if scope.caches {
@@ -1331,6 +1388,7 @@ impl Engine {
                 version,
                 rule_set_dir: Some(&rules_dir),
                 providers: &st.providers,
+                custom_groups: &st.custom_groups,
             })
         });
         // With TUN, macOS asks the core for DNS (see `sync_tun_dns`); the
@@ -1348,6 +1406,7 @@ impl Engine {
         let mut meta = BuildMeta {
             unsupported: skipped,
             rule_groups: built.provider_groups.iter().map(|(id, tag)| (tag.clone(), id.clone())).collect(),
+            custom_rule_groups: built.custom_rule_groups.iter().map(|(id, tag)| (tag.clone(), id.clone())).collect(),
             ..BuildMeta::default()
         };
         for ob in built
@@ -1360,7 +1419,7 @@ impl Engine {
         {
             let tag = ob["tag"].as_str().unwrap_or_default().to_string();
             let ty = ob["type"].as_str().unwrap_or_default().to_string();
-            if (ty == "selector" || ty == "urltest") && tag != crate::config::TAG_PROBE {
+            if (ty == "selector" || ty == "urltest") && !crate::config::is_probe_tag(&tag) {
                 meta.groups.push(tag.clone());
             }
             meta.types.insert(tag, ty);
@@ -2135,6 +2194,457 @@ impl Engine {
         }
     }
 
+    /// Parses `CustomRule.list` into structured rules for visual editing.
+    pub fn custom_rules_parsed(&self) -> Vec<rules::CustomRule> {
+        rules::parse_custom_rule_list(&self.settings().custom_rules)
+    }
+
+    /// Normalizes, validates and adds a structured custom rule.
+    pub fn add_structured_custom_rule(
+        self: &Arc<Self>,
+        kind: rules::CustomRuleKind,
+        raw_value: &str,
+        target: &str,
+    ) -> Result<bool> {
+        let value = rules::normalize_custom_value(kind, raw_value);
+        if let Err(e) = rules::validate_custom_value(kind, &value) {
+            bail!("{e}");
+        }
+        let target = target.trim();
+        if target.is_empty() {
+            bail!("missing target");
+        }
+        let line = rules::format_custom_rule_line(kind, &value, target, true);
+        self.add_custom_rule(&line)
+    }
+
+    /// Updates one structured custom rule in place, preserving comments & surrounding lines.
+    pub fn update_custom_rule(
+        self: &Arc<Self>,
+        line_index: usize,
+        kind: rules::CustomRuleKind,
+        raw_value: &str,
+        target: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let value = rules::normalize_custom_value(kind, raw_value);
+        if let Err(e) = rules::validate_custom_value(kind, &value) {
+            bail!("{e}");
+        }
+        let target = target.trim();
+        if target.is_empty() {
+            bail!("missing target");
+        }
+        let current = self.settings().custom_rules;
+        if let Some(next) = rules::update_custom_rule_line(&current, line_index, kind, &value, target, enabled) {
+            self.set_custom_rules(next)?;
+        }
+        Ok(())
+    }
+
+    /// Enables or disables one custom rule line without deleting it.
+    pub fn set_custom_rule_enabled(self: &Arc<Self>, line_index: usize, enabled: bool) -> Result<()> {
+        let current = self.settings().custom_rules;
+        if let Some(next) = rules::set_custom_rule_enabled(&current, line_index, enabled) {
+            self.set_custom_rules(next)?;
+        }
+        Ok(())
+    }
+
+    /// Removes one custom rule line from `CustomRule.list`.
+    pub fn remove_custom_rule(self: &Arc<Self>, line_index: usize) -> Result<()> {
+        let current = self.settings().custom_rules;
+        if let Some(next) = rules::remove_custom_rule_line(&current, line_index) {
+            self.set_custom_rules(next)?;
+        }
+        Ok(())
+    }
+
+    /// Moves one custom rule up (`delta < 0`) or down (`delta > 0`) among rule lines.
+    pub fn move_custom_rule(self: &Arc<Self>, line_index: usize, delta: isize) -> Result<()> {
+        let current = self.settings().custom_rules;
+        if let Some(next) = rules::move_custom_rule_line(&current, line_index, delta) {
+            self.set_custom_rules(next)?;
+        }
+        Ok(())
+    }
+
+    // --------------------------------------------------- custom rule groups
+
+    pub fn custom_rule_groups(&self) -> Vec<CustomRuleGroup> {
+        self.with(|s| s.custom_groups.clone())
+    }
+
+    fn save_custom_groups(&self) {
+        let groups = self.custom_rule_groups();
+        if let Err(e) = self.store.save_custom_rule_groups(&groups) {
+            self.notice(NoticeKind::Error, Msg::new("notice.save_failed").arg(format!("{e:#}")));
+        }
+        self.emit(Event::RuleProviders);
+    }
+
+    /// Creates a new custom rule group. Defaults to `own_group` when target is not reject.
+    pub fn create_custom_rule_group(
+        self: &Arc<Self>,
+        name: String,
+        target: String,
+        own_group: bool,
+    ) -> Result<String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            bail!("group name cannot be empty");
+        }
+        let dup = self.with(|s| s.custom_groups.iter().any(|g| g.name.eq_ignore_ascii_case(&name)));
+        if dup {
+            bail!("group `{name}` already exists");
+        }
+        let target = if target.trim().is_empty() { "proxy".to_string() } else { target.trim().to_string() };
+        let mut g = CustomRuleGroup {
+            id: new_id(),
+            name,
+            target,
+            enabled: true,
+            own_group,
+            pick: None,
+            region: String::new(),
+        };
+        g.own_group = g.own_group && g.can_own_group();
+        let id = g.id.clone();
+        self.with(|s| s.custom_groups.push(g));
+        self.save_custom_groups();
+        self.request_reload();
+        Ok(id)
+    }
+
+    /// Renames a custom rule group and updates its `#!group` header in `CustomRule.list`.
+    pub fn rename_custom_rule_group(self: &Arc<Self>, id: &str, new_name: String) -> Result<()> {
+        let new_name = new_name.trim().to_string();
+        if new_name.is_empty() {
+            bail!("group name cannot be empty");
+        }
+        let (old_name, new_display_target) = self.with(|s| -> Result<(String, String)> {
+            if s.custom_groups.iter().any(|g| g.id != id && g.name.eq_ignore_ascii_case(&new_name)) {
+                bail!("group `{new_name}` already exists");
+            }
+            let Some(g) = s.custom_groups.iter_mut().find(|g| g.id == id) else {
+                bail!("group not found");
+            };
+            let old = std::mem::replace(&mut g.name, new_name.clone());
+            Ok((old, g.display_target().to_string()))
+        })?;
+        self.save_custom_groups();
+        let current = self.settings().custom_rules;
+        let next = rules::rename_custom_rule_group_in_text(&current, &old_name, &new_name, Some(&new_display_target));
+        if next != current {
+            let _ = self.set_custom_rules(next);
+        } else {
+            self.request_reload();
+        }
+        Ok(())
+    }
+
+    /// Updates a custom rule group's routing target and whether it exposes its own Proxies group.
+    pub fn set_custom_rule_group_target(self: &Arc<Self>, id: &str, target: String, own_group: bool) {
+        let updated = self.with(|s| {
+            let g = s.custom_groups.iter_mut().find(|x| x.id == id)?;
+            g.target = target;
+            g.own_group = own_group && g.can_own_group();
+            Some((g.name.clone(), g.display_target().to_string()))
+        });
+        if let Some((name, display_target)) = updated {
+            self.save_custom_groups();
+            let current = self.settings().custom_rules;
+            let next = rules::sync_custom_group_target_in_text(&current, &name, &display_target);
+            if next != current {
+                let _ = self.set_custom_rules(next);
+            } else {
+                self.request_reload();
+            }
+        }
+    }
+
+    pub fn set_custom_rule_group_enabled(self: &Arc<Self>, id: &str, enabled: bool) {
+        let changed = self.with(|s| {
+            let g = s.custom_groups.iter_mut().find(|x| x.id == id)?;
+            if g.enabled == enabled {
+                return Some(false);
+            }
+            g.enabled = enabled;
+            Some(true)
+        });
+        if changed == Some(true) {
+            self.save_custom_groups();
+            self.request_reload();
+        }
+    }
+
+    pub fn move_custom_rule_group(self: &Arc<Self>, id: &str, delta: isize) {
+        self.with(|s| {
+            if let Some(i) = s.custom_groups.iter().position(|x| x.id == id) {
+                let j = (i as isize + delta).clamp(0, s.custom_groups.len() as isize - 1) as usize;
+                let item = s.custom_groups.remove(i);
+                s.custom_groups.insert(j, item);
+            }
+        });
+        self.save_custom_groups();
+        self.request_reload();
+    }
+
+    /// Deletes a custom rule group and safely moves its member rules back to Ungrouped.
+    pub fn remove_custom_rule_group(self: &Arc<Self>, id: &str) {
+        let removed = self.with(|s| {
+            let i = s.custom_groups.iter().position(|x| x.id == id)?;
+            Some(s.custom_groups.remove(i))
+        });
+        if let Some(g) = removed {
+            self.save_custom_groups();
+            let current = self.settings().custom_rules;
+            // If member rules pointed to the deleted group's own selector, fall back to its base target.
+            let fallback = if g.own_group { Some(g.target.as_str()) } else { None };
+            let next = rules::ungroup_custom_rule_group_in_text(&current, &g.name, fallback);
+            if next != current {
+                let _ = self.set_custom_rules(next);
+            } else {
+                self.request_reload();
+            }
+        }
+    }
+
+    /// The custom rule group behind a group tag on the Proxies page, if it is one.
+    pub fn custom_rule_group_for_tag(&self, tag: &str) -> Option<CustomRuleGroup> {
+        self.with(|s| {
+            let id = s.meta.custom_rule_groups.get(tag)?;
+            s.custom_groups.iter().find(|g| g.id == *id).cloned()
+        })
+    }
+
+    /// The Proxies-page group tag currently allocated to a custom rule group, if it has one.
+    pub fn custom_rule_group_tag_for(&self, group_id: &str) -> Option<String> {
+        self.with(|s| {
+            s.meta
+                .custom_rule_groups
+                .iter()
+                .find(|(_, id)| id.as_str() == group_id)
+                .map(|(tag, _)| tag.clone())
+        })
+    }
+
+    /// How a custom rule group's node group picks its node (Manual / Auto strategy + Region).
+    /// Applied live through the Clash API without restarting sing-box.
+    pub fn set_custom_rule_group_pick(self: &Arc<Self>, id: &str, pick: Option<AutoStrategy>, region: &str) {
+        let changed = self.with(|s| {
+            let g = s.custom_groups.iter_mut().find(|x| x.id == id)?;
+            let changed = g.pick != pick || g.region != region;
+            g.pick = pick;
+            g.region = region.to_string();
+            Some(changed)
+        });
+        if changed == Some(true) {
+            self.save_custom_groups();
+            self.wake_auto.notify_one();
+            let this = self.clone();
+            self.rt.spawn(async move {
+                let _ = this.refresh_proxies_async().await;
+            });
+        }
+    }
+
+    /// Normalizes, validates and adds a structured custom rule into Ungrouped (`None`)
+    /// or the specified custom rule group (`Some(group_id)`).
+    pub fn add_structured_custom_rule_in_group(
+        self: &Arc<Self>,
+        kind: rules::CustomRuleKind,
+        raw_value: &str,
+        target: &str,
+        group_id: Option<&str>,
+    ) -> Result<bool> {
+        let value = rules::normalize_custom_value(kind, raw_value);
+        if let Err(e) = rules::validate_custom_value(kind, &value) {
+            bail!("{e}");
+        }
+        let group = group_id.and_then(|gid| {
+            self.with(|s| s.custom_groups.iter().find(|g| g.id == gid).cloned())
+        });
+        let effective_target = match &group {
+            Some(g) => g.display_target().to_string(),
+            None => {
+                let t = target.trim();
+                if t.is_empty() {
+                    bail!("missing target");
+                }
+                t.to_string()
+            }
+        };
+        let line = rules::format_custom_rule_line(kind, &value, &effective_target, true);
+        let group_name = group.as_ref().map(|g| g.name.as_str());
+        match rules::add_custom_rule_in_group(&self.settings().custom_rules, &line, group_name) {
+            Some(text) => self.set_custom_rules(text).map(|()| true),
+            None => Ok(false),
+        }
+    }
+
+    /// Moves a custom rule into a custom rule group (`Some(group_id)`) or back to
+    /// Ungrouped (`None`). When moved into a group, its target follows the group.
+    pub fn move_custom_rule_to_group(self: &Arc<Self>, line_index: usize, group_id: Option<&str>) -> Result<()> {
+        let dest = group_id.and_then(|gid| {
+            self.with(|s| s.custom_groups.iter().find(|g| g.id == gid).cloned())
+        });
+        if group_id.is_some() && dest.is_none() {
+            bail!("group not found");
+        }
+        let current = self.settings().custom_rules;
+        // If moving back to Ungrouped from an own_group custom group, keep a valid target.
+        let (group_name, new_target): (Option<&str>, Option<String>) = match &dest {
+            Some(g) => (Some(g.name.as_str()), Some(g.display_target().to_string())),
+            None => (None, None),
+        };
+        if let Some(next) = rules::move_custom_rule_to_group(&current, line_index, group_name, new_target.as_deref()) {
+            self.set_custom_rules(next)?;
+        }
+        Ok(())
+    }
+
+    /// Updates a rule-set's routing target and whether it uses an independent node group
+    /// in a single save + debounced reload.
+    pub fn set_rule_provider_target(self: &Arc<Self>, id: &str, target: String, own_group: bool) {
+        if let Some(mut p) = self.with(|s| s.providers.iter().find(|x| x.id == id).cloned()) {
+            p.target = target;
+            p.own_group = own_group && p.can_own_group();
+            self.save_rule_provider(p);
+        }
+    }
+
+    /// The Proxies-page group tag currently allocated to a rule-set, if it has one.
+    pub fn rule_group_tag_for(&self, provider_id: &str) -> Option<String> {
+        self.with(|s| {
+            s.meta
+                .rule_groups
+                .iter()
+                .find(|(_, id)| id.as_str() == provider_id)
+                .map(|(tag, _)| tag.clone())
+        })
+    }
+
+    /// Whether a curated service preset is currently present in rule providers.
+    pub fn has_service_preset(&self, preset_id: &str) -> bool {
+        self.with(|s| s.providers.iter().any(|p| p.preset.as_deref() == Some(preset_id)))
+    }
+
+    /// Adds a curated service from [`rules::SERVICE_PRESETS`] if not already present.
+    pub fn add_service_preset(self: &Arc<Self>, preset_id: &str) -> Option<String> {
+        let preset = rules::service_preset(preset_id)?;
+        if let Some(existing) = self.with(|s| s.providers.iter().find(|p| p.preset.as_deref() == Some(preset_id)).map(|p| p.id.clone())) {
+            return Some(existing);
+        }
+        let geosite_url = self.settings().geosite_url;
+        let p = preset.to_provider(&geosite_url, None);
+        Some(self.save_rule_provider(p))
+    }
+
+    /// Removes a curated service preset from rule providers.
+    pub fn remove_service_preset(self: &Arc<Self>, preset_id: &str) {
+        let ids: Vec<String> = self.with(|s| {
+            s.providers
+                .iter()
+                .filter(|p| p.preset.as_deref() == Some(preset_id))
+                .map(|p| p.id.clone())
+                .collect()
+        });
+        if !ids.is_empty() {
+            self.remove_rule_providers(&ids);
+        }
+    }
+
+    /// Applies a one-click routing profile: replaces only preset-managed rule-sets
+    /// and fallback switches, preserving all custom rules and manually added rule-sets.
+    pub fn apply_rule_profile(self: &Arc<Self>, profile: rules::RuleProfile) {
+        let spec = profile.spec();
+        let geosite_url = self.settings().geosite_url;
+        let (to_remove, to_fetch): (Vec<RuleProvider>, Vec<String>) = self.with(|s| {
+            let (old_presets, kept): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut s.providers).into_iter().partition(|p| p.preset.is_some());
+            // Keep cached files & ids for presets that remain in the new profile.
+            let mut reused_by_preset: HashMap<String, RuleProvider> = old_presets
+                .into_iter()
+                .filter_map(|p| p.preset.clone().map(|k| (k, p)))
+                .collect();
+            let mut next_presets = Vec::new();
+            let mut fetch = Vec::new();
+            for &(pid, own_group) in spec.services {
+                let Some(sp) = rules::service_preset(pid) else { continue };
+                if let Some(mut existing) = reused_by_preset.remove(pid) {
+                    existing.enabled = true;
+                    existing.target = sp.default_target.to_string();
+                    existing.own_group = own_group && existing.can_own_group();
+                    if existing.stored.is_none() {
+                        fetch.push(existing.id.clone());
+                    }
+                    next_presets.push(existing);
+                } else {
+                    let p = sp.to_provider(&geosite_url, Some(own_group));
+                    fetch.push(p.id.clone());
+                    next_presets.push(p);
+                }
+            }
+            let removed: Vec<RuleProvider> = reused_by_preset.into_values().collect();
+            next_presets.extend(kept);
+            s.providers = next_presets;
+            (removed, fetch)
+        });
+        for p in &to_remove {
+            if let Some(f) = crate::config::provider_file(&self.rules_dir(), p) {
+                let _ = std::fs::remove_file(f);
+            }
+        }
+        self.save_providers();
+        self.update_settings(move |s| {
+            s.bypass_cn = spec.bypass_cn;
+            s.block_ads = spec.block_ads;
+            s.final_direct = spec.final_direct;
+        });
+        if !to_fetch.is_empty() {
+            let this = self.clone();
+            self.rt.spawn(async move {
+                this.update_providers(to_fetch, true).await;
+                this.request_reload();
+            });
+        }
+    }
+
+    /// Which one-click profile currently matches settings and enabled preset rule-sets.
+    pub fn active_rule_profile(&self) -> Option<rules::RuleProfile> {
+        let s = self.settings();
+        let active_presets: Vec<String> = self.with(|st| {
+            st.providers
+                .iter()
+                .filter(|p| p.enabled)
+                .filter_map(|p| p.preset.clone())
+                .collect()
+        });
+        rules::RuleProfile::ALL.into_iter().find(|&profile| {
+            let spec = profile.spec();
+            if s.bypass_cn != spec.bypass_cn || s.block_ads != spec.block_ads || s.final_direct != spec.final_direct {
+                return false;
+            }
+            if active_presets.len() != spec.services.len() {
+                return false;
+            }
+            spec.services.iter().all(|(id, _)| active_presets.iter().any(|a| a == id))
+        })
+    }
+
+    /// Simulates which rule layer and target a domain, URL, IP or process name hits.
+    pub fn test_rule_match(&self, query: &str) -> Option<rules::RuleMatchResult> {
+        let settings = self.settings();
+        let custom_groups = self.custom_rule_groups();
+        let providers = self.rule_providers();
+        let rules_dir = self.rules_dir();
+        let geo_path = self.geoip_file();
+        rules::match_rule_query(query, &settings, &custom_groups, &providers, &rules_dir, |ip| {
+            geo::lookup(&geo_path, &[ip]).ok().and_then(|m| m.get(&ip).cloned()).is_some_and(|c| c == "CN")
+        })
+    }
+
     /// Applies saves of `CustomRule.list` made outside the app, by any editor.
     async fn custom_rules_loop(self: Arc<Self>) {
         let path = self.store.paths.custom_rules_file();
@@ -2461,8 +2971,8 @@ impl Engine {
         self.with(|s| !s.real_testing.is_empty())
     }
 
-    /// Real-connection latency through each node: a fresh HTTPS request, one
-    /// node at a time via the probe selector (no data beyond the handshake).
+    /// Real-connection latency through each node: concurrent HTTPS requests via
+    /// the multi-slot probe pool (no data beyond the handshake).
     pub fn test_real_latency(self: &Arc<Self>, tags: Vec<String>) {
         if !self.status().is_running() {
             self.notice(NoticeKind::Warning, Msg::new("notice.start_core_first"));
@@ -2476,22 +2986,27 @@ impl Engine {
         let this = self.clone();
         self.rt.spawn(async move {
             let port = this.with(|s| s.settings.probe_port);
-            for tag in queued {
-                let d = if port == 0 || !this.status().is_running() {
-                    None
-                } else {
-                    let _probe = this.probe_lock.lock().await;
-                    match this.api().select(crate::config::TAG_PROBE, &tag).await {
-                        Ok(()) => speed::latency(&format!("http://127.0.0.1:{port}")).await,
-                        Err(_) => None,
+            futures_util::stream::iter(queued)
+                .for_each_concurrent(crate::config::PROBE_SLOTS, |tag| {
+                    let this = this.clone();
+                    async move {
+                        let d = if port == 0 || !this.status().is_running() {
+                            None
+                        } else {
+                            let lease = this.probe_pool.acquire().await;
+                            match this.api().select(&lease.tag(), &tag).await {
+                                Ok(()) => speed::latency(&lease.proxy_url(port)).await,
+                                Err(_) => None,
+                            }
+                        };
+                        this.with(|s| {
+                            s.real_testing.remove(&tag);
+                            s.real_delays.insert(tag.clone(), d);
+                        });
+                        this.emit(Event::Proxies);
                     }
-                };
-                this.with(|s| {
-                    s.real_testing.remove(&tag);
-                    s.real_delays.insert(tag.clone(), d);
-                });
-                this.emit(Event::Proxies);
-            }
+                })
+                .await;
         });
     }
 
@@ -2499,22 +3014,97 @@ impl Engine {
         self.with(|s| !s.speed_testing.is_empty())
     }
 
-    /// Download speed and real-connection latency through each node, one node
-    /// at a time via the probe selector (the user's selection is untouched).
+    /// Cancels any running speed test immediately.
+    pub fn cancel_speed_test(&self) {
+        self.speed_cancel.store(true, Ordering::Relaxed);
+        let cleared = self.with(|s| {
+            let had = !s.speed_testing.is_empty();
+            s.speed_testing.clear();
+            had
+        });
+        if cleared {
+            self.emit(Event::Proxies);
+        }
+    }
+
+    /// Download speed and real-connection latency through each node.
+    ///
+    /// For batches (> 1 node), runs a fast parallel liveness check first so dead
+    /// nodes fail in ~2 s instead of blocking the queue, then measures alive nodes
+    /// fastest-first (one at a time so local bandwidth isn't split).
     pub fn speed_test(self: &Arc<Self>, tags: Vec<String>) {
+        if !self.status().is_running() {
+            self.notice(NoticeKind::Warning, Msg::new("notice.start_core_first"));
+            return;
+        }
         let queued: Vec<String> = self.with(|s| tags.into_iter().filter(|t| s.speed_testing.insert(t.clone())).collect());
         if queued.is_empty() {
             return;
         }
+        self.speed_cancel.store(false, Ordering::Relaxed);
         self.emit(Event::Proxies);
         let this = self.clone();
         self.rt.spawn(async move {
-            for tag in queued {
-                let result = this.speed_test_one(&tag, speed::DOWNLOAD_BYTES).await;
+            let mut order = queued;
+            if order.len() > 1 {
+                // Phase 1: fast parallel liveness pre-check via Clash API delay (3 s timeout).
+                let api = this.api();
+                let url = this.settings().urltest_url;
+                let checked: Vec<(String, Option<u32>)> = futures_util::stream::iter(order)
+                    .map(|tag| {
+                        let (api, url, cancel) = (api.clone(), url.clone(), this.speed_cancel.clone());
+                        async move {
+                            if cancel.load(Ordering::Relaxed) {
+                                return (tag, None);
+                            }
+                            let d = api.delay(&tag, &url, 3000).await.ok();
+                            (tag, d)
+                        }
+                    })
+                    .buffer_unordered(16)
+                    .collect()
+                    .await;
+                let mut alive: Vec<(String, u32)> = Vec::new();
+                for (tag, delay) in checked {
+                    if this.speed_cancel.load(Ordering::Relaxed) {
+                        this.with(|s| s.speed_testing.remove(&tag));
+                        continue;
+                    }
+                    match delay {
+                        Some(ms) => {
+                            this.with(|s| s.delays.insert(tag.clone(), Some(ms)));
+                            alive.push((tag, ms));
+                        }
+                        None => {
+                            // Dead node: mark failed immediately without wasting download time.
+                            this.with(|s| {
+                                s.speed_testing.remove(&tag);
+                                s.delays.insert(tag.clone(), None);
+                                s.speeds.insert(tag.clone(), speed::SpeedResult::default());
+                                s.real_delays.insert(tag.clone(), None);
+                            });
+                        }
+                    }
+                }
+                this.emit(Event::Proxies);
+                alive.sort_by_key(|(_, ms)| *ms);
+                order = alive.into_iter().map(|(tag, _)| tag).collect();
+            }
+
+            // Phase 2: measure alive nodes sequentially for accurate unsplit throughput.
+            for tag in order {
+                if this.speed_cancel.load(Ordering::Relaxed) || !this.status().is_running() {
+                    this.with(|s| s.speed_testing.remove(&tag));
+                    continue;
+                }
+                let result = this.speed_test_one_cancellable(&tag, speed::DOWNLOAD_BYTES).await;
+                let cancelled = this.speed_cancel.load(Ordering::Relaxed);
                 this.with(|s| {
                     s.speed_testing.remove(&tag);
-                    s.speeds.insert(tag.clone(), result);
-                    s.real_delays.insert(tag.clone(), result.latency_ms);
+                    if !cancelled {
+                        s.speeds.insert(tag.clone(), result);
+                        s.real_delays.insert(tag.clone(), result.latency_ms);
+                    }
                 });
                 this.emit(Event::Proxies);
             }
@@ -2526,11 +3116,23 @@ impl Engine {
         if port == 0 || !self.status().is_running() {
             return speed::SpeedResult::default();
         }
-        let _probe = self.probe_lock.lock().await;
-        if self.api().select(crate::config::TAG_PROBE, tag).await.is_err() {
+        let lease = self.probe_pool.acquire().await;
+        if self.api().select(&lease.tag(), tag).await.is_err() {
             return speed::SpeedResult::default();
         }
-        speed::measure(&format!("http://127.0.0.1:{port}"), bytes).await
+        speed::measure(&lease.proxy_url(port), bytes).await
+    }
+
+    async fn speed_test_one_cancellable(&self, tag: &str, bytes: u64) -> speed::SpeedResult {
+        let port = self.with(|s| s.settings.probe_port);
+        if port == 0 || !self.status().is_running() || self.speed_cancel.load(Ordering::Relaxed) {
+            return speed::SpeedResult::default();
+        }
+        let lease = self.probe_pool.acquire().await;
+        if self.speed_cancel.load(Ordering::Relaxed) || self.api().select(&lease.tag(), tag).await.is_err() {
+            return speed::SpeedResult::default();
+        }
+        speed::measure_cancellable(&lease.proxy_url(port), bytes, &self.speed_cancel).await
     }
 
     // -------------------------------------------------------------- auto group
@@ -2609,7 +3211,7 @@ impl Engine {
         }
     }
 
-    /// The groups BoxPilot picks for: Auto, then each rule-set group set to pick.
+    /// The groups BoxPilot picks for: Auto, then each custom rule group and rule-set group set to pick.
     fn pickers(&self, s: &Settings) -> Vec<Picker> {
         let mut out = vec![Picker {
             tag: crate::config::TAG_AUTO.into(),
@@ -2617,6 +3219,13 @@ impl Engine {
             region: s.auto_region.clone(),
         }];
         self.with(|st| {
+            for (tag, id) in &st.meta.custom_rule_groups {
+                if let Some(g) = st.custom_groups.iter().find(|g| g.id == *id)
+                    && let Some(strategy) = g.pick
+                {
+                    out.push(Picker { tag: tag.clone(), strategy, region: g.region.clone() });
+                }
+            }
             for (tag, id) in &st.meta.rule_groups {
                 if let Some(p) = st.providers.iter().find(|p| p.id == *id)
                     && let Some(strategy) = p.pick
@@ -2944,44 +3553,58 @@ impl Engine {
         self.check_exits(unsure).await;
         // A region filter may now match different nodes.
         let regional = !self.settings().auto_region.is_empty()
-            || self.with(|s| s.providers.iter().any(|p| p.own_group && p.pick.is_some() && !p.region.is_empty()));
+            || self.with(|s| {
+                s.providers.iter().any(|p| p.own_group && p.pick.is_some() && !p.region.is_empty())
+                    || s.custom_groups.iter().any(|g| g.own_group && g.pick.is_some() && !g.region.is_empty())
+            });
         if regional {
             self.wake_auto.notify_one();
         }
     }
 
-    /// Asks an IP service through each node (via the hidden probe selector)
+    /// Asks an IP service through each node (via the hidden probe pool)
     /// where its traffic leaves. Needs the core running; answers are reused for 6 h.
     async fn check_exits(self: &Arc<Self>, tags: Vec<String>) {
         let port = self.with(|s| s.settings.probe_port);
         if tags.is_empty() || port == 0 || !self.status().is_running() {
             return;
         }
-        let probe_url = format!("http://127.0.0.1:{port}");
         let api = self.api();
-        for tag in tags {
-            let cached = self.with(|s| s.exit_checked.get(&tag).filter(|(_, at)| at.elapsed() < EXIT_REUSE).map(|(c, _)| c.clone()));
-            let country = match cached {
-                Some(c) => Some(c),
-                None => {
-                    if !self.status().is_running() {
-                        return;
+        futures_util::stream::iter(tags)
+            .for_each_concurrent(4, |tag| {
+                let (this, api) = (self.clone(), api.clone());
+                async move {
+                    let cached = this.with(|s| {
+                        s.exit_checked
+                            .get(&tag)
+                            .filter(|(_, at)| at.elapsed() < EXIT_REUSE)
+                            .map(|(c, _)| c.clone())
+                    });
+                    let country = match cached {
+                        Some(c) => Some(c),
+                        None => {
+                            if !this.status().is_running() {
+                                return;
+                            }
+                            let lease = this.probe_pool.acquire().await;
+                            if api.select(&lease.tag(), &tag).await.is_err() {
+                                return;
+                            }
+                            geo::exit_country(&lease.proxy_url(port))
+                                .await
+                                .map(|(ip, code)| geo::Country { code, origin: geo::Origin::Exit(ip) })
+                        }
+                    };
+                    if let Some(c) = country {
+                        this.with(|s| {
+                            s.exit_checked.insert(tag.clone(), (c.clone(), Instant::now()));
+                            s.countries.insert(tag, c);
+                        });
+                        this.emit(Event::Proxies);
                     }
-                    let _probe = self.probe_lock.lock().await;
-                    if api.select(crate::config::TAG_PROBE, &tag).await.is_err() {
-                        continue;
-                    }
-                    geo::exit_country(&probe_url).await.map(|(ip, code)| geo::Country { code, origin: geo::Origin::Exit(ip) })
                 }
-            };
-            if let Some(c) = country {
-                self.with(|s| {
-                    s.exit_checked.insert(tag.clone(), (c.clone(), Instant::now()));
-                    s.countries.insert(tag, c);
-                });
-                self.emit(Event::Proxies);
-            }
-        }
+            })
+            .await;
     }
 
     /// Downloads the GeoIP database when missing or older than 30 days; a
@@ -3165,6 +3788,7 @@ impl Engine {
                     // sing-box, but BoxPilot picks for it.
                     kind: if p.name == crate::config::TAG_AUTO
                         || meta.rule_groups.get(&p.name).is_some_and(|id| s.providers.iter().any(|x| x.id == *id && x.pick.is_some()))
+                        || meta.custom_rule_groups.get(&p.name).is_some_and(|id| s.custom_groups.iter().any(|x| x.id == *id && x.pick.is_some()))
                     {
                         "URLTest".to_string()
                     } else {
@@ -3434,5 +4058,107 @@ mod tests {
         assert_eq!(current_node(&[]), None);
         // A loop stops instead of spinning, and is not a node.
         assert_eq!(current_node(&[group("Proxy", "A"), group("A", "Proxy")]), None);
+    }
+
+    #[test]
+    fn rule_profiles_preserve_custom_and_manual_rules() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("bp-eng-rules-{}", new_id()));
+        let (engine, _rx) = Engine::with_paths(rt.handle().clone(), Paths::at(dir.clone())).unwrap();
+
+        // Add a structured custom rule and a manual (non-preset) rule-set.
+        assert!(engine.add_structured_custom_rule(rules::CustomRuleKind::DomainSuffix, "https://sub.corp.test/login", "direct").unwrap());
+        engine.save_rule_provider(RuleProvider {
+            name: "Manual Corp".into(),
+            source: "https://example.com/corp.list".into(),
+            target: "direct".into(),
+            ..Default::default()
+        });
+
+        // Apply Daily profile -> preset providers appear, custom rule & manual provider stay intact.
+        engine.apply_rule_profile(rules::RuleProfile::Daily);
+        assert_eq!(engine.active_rule_profile(), Some(rules::RuleProfile::Daily));
+        assert!(engine.has_service_preset("ai"));
+        assert!(engine.rule_providers().iter().any(|p| p.name == "Manual Corp"));
+        let custom = engine.custom_rules_parsed();
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].value, "corp.test");
+        assert!(custom[0].enabled);
+
+        // Switch to DirectFirst -> old presets swapped, final_direct toggled, custom & manual preserved.
+        engine.apply_rule_profile(rules::RuleProfile::DirectFirst);
+        assert_eq!(engine.active_rule_profile(), Some(rules::RuleProfile::DirectFirst));
+        assert!(engine.settings().final_direct);
+        assert!(!engine.settings().bypass_cn);
+        assert!(engine.has_service_preset("overseas"));
+        assert!(engine.rule_providers().iter().any(|p| p.name == "Manual Corp"));
+        assert_eq!(engine.custom_rules_parsed().len(), 1);
+
+        // Toggle custom rule disabled & back, then remove.
+        let line = engine.custom_rules_parsed()[0].line_index;
+        engine.set_custom_rule_enabled(line, false).unwrap();
+        assert!(!engine.custom_rules_parsed()[0].enabled);
+        let disk = std::fs::read_to_string(engine.custom_rules_file().unwrap()).unwrap();
+        assert!(disk.contains("#!disabled DOMAIN-SUFFIX,corp.test,direct"));
+        engine.remove_custom_rule(line).unwrap();
+        assert!(engine.custom_rules_parsed().is_empty());
+
+        // Cancel speed test clears any pending testing flags cleanly.
+        engine.with(|s| {
+            s.speed_testing.insert("Node-1".into());
+        });
+        assert!(engine.any_speed_testing());
+        engine.cancel_speed_test();
+        assert!(!engine.any_speed_testing());
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_rule_groups_crud_move_and_pick() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("bp-eng-cg-{}", new_id()));
+        let (engine, _rx) = Engine::with_paths(rt.handle().clone(), Paths::at(dir.clone())).unwrap();
+
+        let gid = engine.create_custom_rule_group("My AI".into(), "proxy".into(), true).unwrap();
+        assert_eq!(engine.custom_rule_groups().len(), 1);
+        assert!(engine.create_custom_rule_group("my ai".into(), "proxy".into(), true).is_err());
+
+        // Add rule ungrouped and another directly into My AI.
+        engine.add_structured_custom_rule_in_group(rules::CustomRuleKind::DomainSuffix, "top.test", "direct", None).unwrap();
+        engine.add_structured_custom_rule_in_group(rules::CustomRuleKind::DomainSuffix, "claude.ai", "proxy", Some(&gid)).unwrap();
+
+        let parsed = engine.custom_rules_parsed();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].group, None);
+        assert_eq!(parsed[1].group.as_deref(), Some("My AI"));
+
+        // Drag/move top.test into My AI -> inherits group target.
+        engine.move_custom_rule_to_group(parsed[0].line_index, Some(&gid)).unwrap();
+        let parsed = engine.custom_rules_parsed();
+        assert!(parsed.iter().all(|r| r.group.as_deref() == Some("My AI")));
+
+        // Rename My AI -> Work AI, set pick strategy + region.
+        engine.rename_custom_rule_group(&gid, "Work AI".into()).unwrap();
+        engine.set_custom_rule_group_pick(&gid, Some(AutoStrategy::Quickest), "JP");
+        assert_eq!(engine.custom_rule_groups()[0].name, "Work AI");
+        assert_eq!(engine.custom_rule_groups()[0].region, "JP");
+        assert!(engine.custom_rules_parsed().iter().all(|r| r.group.as_deref() == Some("Work AI")));
+
+        // Match tester hits CustomGroup layer.
+        let m = engine.test_rule_match("claude.ai").unwrap();
+        assert_eq!(m.layer, rules::RuleMatchLayer::CustomGroup { id: gid.clone(), name: "Work AI".into() });
+        assert_eq!(m.target, "Work AI");
+
+        // Deleting the group rescues all rules back to Ungrouped cleanly.
+        engine.remove_custom_rule_group(&gid);
+        assert!(engine.custom_rule_groups().is_empty());
+        let after = engine.custom_rules_parsed();
+        assert_eq!(after.len(), 2);
+        assert!(after.iter().all(|r| r.group.is_none() && r.target == "proxy"));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

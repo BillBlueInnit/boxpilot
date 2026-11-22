@@ -77,6 +77,10 @@ impl Paths {
         self.root.join("rule_providers.json")
     }
 
+    pub fn custom_rule_groups_file(&self) -> PathBuf {
+        self.root.join("custom_rule_groups.json")
+    }
+
     /// The custom rules, one `TYPE,VALUE,TARGET` per line.
     pub fn custom_rules_file(&self) -> PathBuf {
         self.root.join("CustomRule.list")
@@ -179,6 +183,22 @@ impl Store {
             return Ok(());
         }
         write_json(&self.paths.rules_file(), providers)
+    }
+
+    pub fn load_custom_rule_groups(&self) -> Vec<crate::rules::CustomRuleGroup> {
+        read_json(&self.paths.custom_rule_groups_file())
+            .unwrap_or_else(|e| {
+                log::error!("custom rule groups unreadable: {e:#}");
+                None
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn save_custom_rule_groups(&self, groups: &[crate::rules::CustomRuleGroup]) -> Result<()> {
+        if self.frozen() {
+            return Ok(());
+        }
+        write_json(&self.paths.custom_rule_groups_file(), groups)
     }
 
     pub fn load_subscriptions(&self) -> Vec<Subscription> {

@@ -3,6 +3,7 @@
 use boxpilot_core::config::{BuildInput, CoreVersion, NodeGroup, build_config};
 use boxpilot_core::convert::parse_subscription;
 use boxpilot_core::model::{Settings, TunStack};
+use boxpilot_core::rules::CustomRuleGroup;
 
 const LINKS: &str = "\
 vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.apple.com&fp=chrome&pbk=jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0&sid=ab12&type=tcp#Reality
@@ -45,10 +46,25 @@ fn main() {
     s.ipv6 = true;
     s.block_ads = true;
     s.allow_lan = true;
+    s.probe_port = 17891;
     s.dns_remote = "tls://dns.google".into();
     s.dns_direct = "223.5.5.5".into();
-    s.custom_rules = "DOMAIN-SUFFIX,openai.com,proxy\nGEOSITE,netflix,Sub B\nIP-CIDR,10.0.0.0/8,direct\nPROCESS-NAME,steam.exe,direct\nDST-PORT,22|2222,reject\nRULE-SET,https://example.com/x.srs,proxy".into();
+    s.custom_rules = "DOMAIN-SUFFIX,openai.com,proxy\n#!disabled DOMAIN,paused.example.com,direct\nGEOSITE,netflix,Sub B\nIP-CIDR,10.0.0.0/8,direct\nPROCESS-NAME,steam.exe,direct\nDST-PORT,22|2222,reject\nRULE-SET,https://example.com/x.srs,proxy\n\n#!group My AI\nDOMAIN-SUFFIX,claude.ai,My AI\n".into();
     variants.push(("everything", s));
+    let sample_groups = [CustomRuleGroup {
+        id: "sample-ai".into(),
+        name: "My AI".into(),
+        target: "proxy".into(),
+        enabled: true,
+        own_group: true,
+        ..Default::default()
+    }];
+    let mut s = Settings::default();
+    s.bypass_cn = false;
+    s.block_ads = true;
+    s.final_direct = true;
+    s.probe_port = 17892;
+    variants.push(("direct_first", s));
     let mut s = Settings::default();
     s.bypass_cn = false;
     s.ruleset_via_proxy = false;
@@ -64,6 +80,7 @@ fn main() {
                 version,
                 rule_set_dir: None,
                 providers: &[],
+                custom_groups: if *name == "everything" { &sample_groups } else { &[] },
             });
             assert!(built.warnings.is_empty(), "{:?}", built.warnings);
             let path = out.join(format!("{name}-{}.{}.json", version.major, version.minor));
@@ -71,7 +88,7 @@ fn main() {
             println!("{}", path.display());
         }
     }
-    let empty = build_config(&BuildInput { settings: &Settings::default(), groups: vec![], version: CoreVersion { major: 1, minor: 14, patch: 4 }, rule_set_dir: None, providers: &[] });
+    let empty = build_config(&BuildInput { settings: &Settings::default(), groups: vec![], version: CoreVersion { major: 1, minor: 14, patch: 4 }, rule_set_dir: None, providers: &[], custom_groups: &[] });
     let path = out.join("empty-1.14.json");
     std::fs::write(&path, serde_json::to_string_pretty(&empty.config).unwrap()).unwrap();
     println!("{}", path.display());
