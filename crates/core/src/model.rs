@@ -167,9 +167,9 @@ impl Backdrop {
 #[serde(rename_all = "snake_case")]
 pub enum UiFont {
     /// Follow the operating system's native UI typeface (Segoe UI Variable / SF Pro / system sans).
+    #[default]
     System,
     /// Bundled open-source Google Sans (SIL OFL) for Latin & numerals, with crisp CJK fallback.
-    #[default]
     GoogleSans,
     /// Source Han Sans / Noto Sans SC (思源黑体) for unified CJK + Latin typography.
     SourceHanSans,
@@ -318,8 +318,6 @@ pub struct Settings {
     pub transparency: u32,
     /// Primary UI typeface (System / Google Sans / Source Han Sans).
     pub ui_font: UiFont,
-    /// Built-in DPI-adaptive FreeType-Light & 5-tap LCD font rendering engine (default ON on Windows, OFF on macOS/Linux).
-    pub enhanced_font_rendering: bool,
     pub gpu: GpuPreference,
     pub update_mode: UpdateMode,
     /// Unix time of the last update check.
@@ -400,8 +398,7 @@ impl Default for Settings {
             mica: true,
             backdrop: Backdrop::MicaAlt,
             transparency: 80,
-            ui_font: UiFont::GoogleSans,
-            enhanced_font_rendering: cfg!(windows),
+            ui_font: UiFont::System,
             gpu: GpuPreference::Auto,
             update_mode: UpdateMode::Notify,
             last_update_check: 0,

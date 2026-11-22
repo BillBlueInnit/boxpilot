@@ -325,6 +325,10 @@ impl Render for ProxiesPage {
         }
 
         let groups = engine.groups();
+        if let Some(pending) = self.state.read(cx).pending_proxy_group.clone() {
+            self.group = Some(pending);
+            self.state.update(cx, |s, _| s.pending_proxy_group = None);
+        }
         let current = self
             .group
             .clone()
@@ -389,15 +393,25 @@ impl Render for ProxiesPage {
                     move |_, _, _| e_real.test_real_latency(targets.clone())
                 })
                 .into_any_element(),
-            Button::new("speed-test")
-                .small()
-                .icon(extra_icon(Lucide::Gauge))
-                .label(t!("btn.speed_test"))
-                .tooltip(t!("tip.speed_test"))
-                .loading(speed_testing)
-                .disabled(speed_targets.is_empty())
-                .on_click(move |_, _, _| e_speed.speed_test(speed_targets.clone()))
-                .into_any_element(),
+            if speed_testing {
+                let e_stop = engine.clone();
+                Button::new("speed-stop")
+                    .small()
+                    .danger()
+                    .icon(IconName::Close)
+                    .label(t!("btn.stop_speed"))
+                    .on_click(move |_, _, _| e_stop.cancel_speed_test())
+                    .into_any_element()
+            } else {
+                Button::new("speed-test")
+                    .small()
+                    .icon(extra_icon(Lucide::Gauge))
+                    .label(t!("btn.speed_test"))
+                    .tooltip(t!("tip.speed_test"))
+                    .disabled(speed_targets.is_empty())
+                    .on_click(move |_, _, _| e_speed.speed_test(speed_targets.clone()))
+                    .into_any_element()
+            },
         ];
 
         page(
@@ -421,7 +435,56 @@ impl Render for ProxiesPage {
             let e = engine.clone();
             let id = rule_set.id.clone();
             let set: SetPick = std::rc::Rc::new(move |pick, region| e.set_rule_group_pick(&id, pick, &region));
-            pick_line("rule-group", &engine, &group, rule_set.pick, true, &rule_set.region, set, cx).into_any_element()
+            let state_nav = self.state.clone();
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .child(pick_line("rule-group", &engine, &group, rule_set.pick, true, &rule_set.region, set, cx))
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .child(pill(t!("proxies.from_rule"), t.primary, t.primary.opacity(0.1)))
+                        .child(
+                            Button::new("goto-rules")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("proxies.edit_in_rules"))
+                                .on_click(move |_, _, cx| {
+                                    state_nav.update(cx, |s, cx| s.set_page(crate::state::Page::Rules, cx));
+                                }),
+                        ),
+                )
+                .into_any_element()
+        } else if let Some(custom_group) = engine.custom_rule_group_for_tag(&group.name) {
+            let e = engine.clone();
+            let id = custom_group.id.clone();
+            let set: SetPick = std::rc::Rc::new(move |pick, region| e.set_custom_rule_group_pick(&id, pick, &region));
+            let state_nav = self.state.clone();
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .child(pick_line("custom-group", &engine, &group, custom_group.pick, true, &custom_group.region, set, cx))
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .child(pill(t!("proxies.from_custom_group"), t.primary, t.primary.opacity(0.1)))
+                        .child(
+                            Button::new("goto-custom-rules")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("proxies.edit_in_rules"))
+                                .on_click(move |_, _, cx| {
+                                    state_nav.update(cx, |s, cx| s.set_page(crate::state::Page::Rules, cx));
+                                }),
+                        ),
+                )
+                .into_any_element()
         } else {
             h_flex()
                 .gap_2()

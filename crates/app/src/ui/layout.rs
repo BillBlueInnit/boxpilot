@@ -11,11 +11,14 @@
 //! * Layout: breakpoints on the window width (in `dp`) collapse the sidebar to
 //!   icons, tighten spacing and drop table columns as space runs out.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use boxpilot_core::model::{SavedWindow, Settings};
+use boxpilot_core::model::{Language, SavedWindow, Settings, UiFont};
 use gpui_kit::component::Theme;
-use gpui_kit::{App, Bounds, Pixels, Size, Window, WindowBounds, point, px, size};
+use gpui_kit::{App, Bounds, FontFallbacks, Pixels, SharedString, Size, Window, WindowBounds, point, px, size};
 
 const BASE_FONT: f32 = 16.0;
 
@@ -30,17 +33,23 @@ pub fn surface_alpha() -> f32 {
     f32::from_bits(SURFACE_ALPHA.load(Ordering::Relaxed))
 }
 
-/// Sets how opaque sheets and cards are; returns whether it changed.
 /// Whether the window actually shows a backdrop (set with the material, so
 /// drawing follows what was applied, not just the setting).
 static TRANSLUCENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether the active backdrop is Acrylic / OS Blur (as opposed to Mica / Opaque).
+static GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn translucent() -> bool {
     TRANSLUCENT.load(Ordering::Relaxed)
 }
 
-pub fn set_surface_alpha(translucent: bool, transparency: u32) -> bool {
+pub fn is_glass() -> bool {
+    GLASS.load(Ordering::Relaxed)
+}
+
+pub fn set_surface_alpha(translucent: bool, glass: bool, transparency: u32) -> bool {
     TRANSLUCENT.store(translucent, Ordering::Relaxed);
+    GLASS.store(translucent && glass, Ordering::Relaxed);
     // Never fully clear: text needs something to sit on.
     let a = if translucent { 1.0 - transparency.min(80) as f32 / 100.0 } else { 1.0 };
     let changed = (a - surface_alpha()).abs() > f32::EPSILON;
@@ -77,16 +86,189 @@ fn wanted_scale(settings: &Settings) -> f32 {
     }
 }
 
-/// Applies the interface scale; returns whether it changed.
+/// Applies the interface scale and UI font; returns whether either changed.
 pub fn apply_scale(settings: &Settings, cx: &mut App) -> bool {
     let s = wanted_scale(settings);
-    let changed = (s - scale()).abs() > f32::EPSILON;
+    let scale_changed = (s - scale()).abs() > f32::EPSILON;
     SCALE.store(s.to_bits(), Ordering::Relaxed);
     // Component controls are sized in rems; the root derives rem from this.
     let theme = Theme::global_mut(cx);
     theme.font_size = px(BASE_FONT * s);
     theme.mono_font_size = px(13.0 * s);
+    let font_changed = apply_fonts(settings, cx);
+    scale_changed || font_changed
+}
+
+/// Bundled Google Sans variable font (SIL Open Font License 1.1, `assets/fonts/OFL.txt`).
+const GOOGLE_SANS_TTF: &[u8] = include_bytes!("../../assets/fonts/GoogleSans.ttf");
+static GOOGLE_SANS_LOADED: AtomicBool = AtomicBool::new(false);
+static DEFAULT_UI_FONT: OnceLock<SharedString> = OnceLock::new();
+
+/// Registers bundled open-source fonts before the first window opens.
+pub fn register_bundled_fonts(cx: &mut App) {
+    let _ = DEFAULT_UI_FONT.get_or_init(|| Theme::global(cx).font_family.clone());
+    if GOOGLE_SANS_LOADED.load(Ordering::Relaxed) {
+        return;
+    }
+    match cx.text_system().add_fonts(vec![Cow::Borrowed(GOOGLE_SANS_TTF)]) {
+        Ok(()) => {
+            GOOGLE_SANS_LOADED.store(true, Ordering::Relaxed);
+            log::info!("registered bundled Google Sans font");
+        }
+        Err(e) => log::warn!("could not register bundled Google Sans font: {e:#}"),
+    }
+}
+
+fn installed_fonts(cx: &App) -> &'static HashSet<String> {
+    static FONTS: OnceLock<HashSet<String>> = OnceLock::new();
+    FONTS.get_or_init(|| cx.text_system().all_font_names().into_iter().collect())
+}
+
+fn pick_installed(candidates: &[&'static str], cx: &App) -> Option<&'static str> {
+    let all = installed_fonts(cx);
+    candidates.iter().copied().find(|name| all.contains(*name))
+}
+
+const SOURCE_HAN_SANS_SC: &[&str] = &[
+    "Source Han Sans SC",
+    "Source Han Sans CN",
+    "思源黑体 CN",
+    "思源黑体",
+    "Noto Sans SC",
+    "Noto Sans CJK SC",
+];
+
+const SOURCE_HAN_SANS_TC: &[&str] = &[
+    "Source Han Sans TC",
+    "Source Han Sans TW",
+    "思源黑體 TW",
+    "思源黑體",
+    "Noto Sans TC",
+    "Noto Sans CJK TC",
+];
+
+fn pick_source_han_sans(lang: Language, cx: &App) -> Option<&'static str> {
+    let resolved = match lang {
+        Language::System => crate::i18n::active_language(),
+        other => other,
+    };
+    if resolved == Language::TraditionalChinese {
+        pick_installed(SOURCE_HAN_SANS_TC, cx).or_else(|| pick_installed(SOURCE_HAN_SANS_SC, cx))
+    } else {
+        pick_installed(SOURCE_HAN_SANS_SC, cx).or_else(|| pick_installed(SOURCE_HAN_SANS_TC, cx))
+    }
+}
+
+/// Whether Source Han Sans / Noto Sans CJK (思源黑体) is installed on this system.
+pub fn has_source_han_sans(lang: Language, cx: &App) -> bool {
+    pick_source_han_sans(lang, cx).is_some()
+}
+
+/// Applies the user's chosen UI typeface and monospace font; returns whether the
+/// active UI font family changed (for live refresh without restart).
+pub fn apply_fonts(settings: &Settings, cx: &mut App) -> bool {
+    #[cfg(windows)]
+    let system_ui_candidates: &[&str] = &["Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI"];
+    #[cfg(not(windows))]
+    let system_ui_candidates: &[&str] = &[];
+
+    #[cfg(windows)]
+    let mono_candidates: &[&str] = &["Cascadia Mono", "Cascadia Code", "Consolas"];
+    #[cfg(target_os = "macos")]
+    let mono_candidates: &[&str] = &["SF Mono", "Menlo"];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mono_candidates: &[&str] = &["JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono"];
+
+    let system_ui = || -> SharedString {
+        pick_installed(system_ui_candidates, cx)
+            .map(SharedString::from)
+            .or_else(|| DEFAULT_UI_FONT.get().cloned())
+            .unwrap_or_else(|| ".SystemUIFont".into())
+    };
+
+    let wanted_ui: SharedString = match settings.ui_font {
+        UiFont::System => system_ui(),
+        UiFont::GoogleSans => {
+            if GOOGLE_SANS_LOADED.load(Ordering::Relaxed) {
+                "Google Sans".into()
+            } else {
+                system_ui()
+            }
+        }
+        UiFont::SourceHanSans => pick_source_han_sans(settings.language, cx)
+            .map(SharedString::from)
+            .unwrap_or_else(system_ui),
+    };
+
+    let mono = pick_installed(mono_candidates, cx);
+    let theme = Theme::global_mut(cx);
+    let changed = theme.font_family != wanted_ui;
+    theme.font_family = wanted_ui;
+    if let Some(name) = mono {
+        theme.mono_font_family = name.into();
+    }
     changed
+}
+
+/// Explicit fallback chain for CJK & symbols so DirectWrite / FreeType never
+/// drop back to jagged legacy bitmap/GDI fonts when a smoother CJK font exists.
+pub fn font_fallbacks(lang: Language, cx: &App) -> Option<FontFallbacks> {
+    #[cfg(windows)]
+    {
+        let resolved = match lang {
+            Language::System => crate::i18n::active_language(),
+            other => other,
+        };
+        let list: &[&str] = match resolved {
+            Language::SimplifiedChinese => &[
+                "Source Han Sans SC",
+                "Source Han Sans CN",
+                "思源黑体 CN",
+                "Noto Sans SC",
+                "Noto Sans CJK SC",
+                "HarmonyOS Sans SC",
+                "MiSans",
+                "Microsoft YaHei UI",
+                "Segoe UI",
+                "Segoe UI Symbol",
+                "Segoe UI Emoji",
+            ],
+            Language::TraditionalChinese => &[
+                "Source Han Sans TC",
+                "Source Han Sans TW",
+                "思源黑體 TW",
+                "Noto Sans TC",
+                "Noto Sans CJK TC",
+                "Microsoft JhengHei UI",
+                "Microsoft YaHei UI",
+                "Segoe UI",
+                "Segoe UI Symbol",
+                "Segoe UI Emoji",
+            ],
+            _ => &[
+                "Source Han Sans SC",
+                "Source Han Sans CN",
+                "Noto Sans SC",
+                "Noto Sans CJK SC",
+                "Microsoft YaHei UI",
+                "Segoe UI",
+                "Segoe UI Symbol",
+                "Segoe UI Emoji",
+            ],
+        };
+        let all = installed_fonts(cx);
+        let picked: Vec<String> = list
+            .iter()
+            .filter(|name| all.contains(**name))
+            .map(|name| (*name).to_string())
+            .collect();
+        (!picked.is_empty()).then(|| FontFallbacks::from_fonts(picked))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (lang, cx);
+        None
+    }
 }
 
 /// Layout decisions for the current window width.

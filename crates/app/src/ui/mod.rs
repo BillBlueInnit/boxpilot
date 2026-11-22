@@ -36,7 +36,9 @@ use crate::t;
 use widgets::*;
 use layout::dp;
 
-pub fn init(_cx: &mut App) {}
+pub fn init(cx: &mut App) {
+    layout::register_bundled_fonts(cx);
+}
 
 pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
     let pref = AppState::engine(cx).settings().theme;
@@ -127,12 +129,17 @@ fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
             Backdrop::MicaAlt => 4,
         };
         crate::platform::set_system_backdrop(window, kind);
+        // Kick DWM so the live material paints even before the window receives focus.
+        crate::platform::refresh_backdrop_active(window);
     }
     let acrylic = active
         && settings.backdrop == Backdrop::Acrylic
         && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials;
+    let glass = active
+        && (settings.backdrop == Backdrop::Acrylic
+            || crate::platform::translucency() == crate::platform::Translucency::Blur);
     crate::platform::set_window_border(window, dark, acrylic);
-    layout::set_surface_alpha(active, settings.transparency);
+    layout::set_surface_alpha(active, glass, settings.transparency);
 }
 
 pub fn open_main_window(cx: &mut App, show: bool) {
@@ -176,6 +183,21 @@ pub fn open_main_window(cx: &mut App, show: bool) {
         Ok(handle) => {
             let state = AppState::global(cx);
             state.update(cx, |s, _| s.window = Some(handle.into()));
+            // Windows DWM only paints Mica/Acrylic once the window has been shown and
+            // received WM_NCACTIVATE(1); nudge it right after the first frame presents.
+            if show && cfg!(windows) {
+                let any: gpui_kit::AnyWindowHandle = handle.into();
+                cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+                    for delay_ms in [60u64, 200] {
+                        cx.background_executor().timer(std::time::Duration::from_millis(delay_ms)).await;
+                        let _ = any.update(cx, |_, window, _| {
+                            crate::platform::refresh_backdrop_active(window);
+                            window.refresh();
+                        });
+                    }
+                })
+                .detach();
+            }
         }
         Err(e) => log::error!("failed to open window: {e:#}"),
     }
@@ -515,7 +537,7 @@ impl MainView {
         }
     }
 
-    fn render_sidebar(&self, page: Page, mica: bool, m: layout::Metrics, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, page: Page, mica: bool, glass: bool, m: layout::Metrics, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = m.compact_nav;
         // Linux desktops may put the window buttons on the left (button-layout).
         let left_controls = chrome::window_controls(chrome::Side::Left, window, cx);
@@ -533,7 +555,22 @@ impl MainView {
             .map(|v| format!("sing-box {v}"))
             .unwrap_or_else(|| t!("core.not_installed_short").to_string());
         let sub_count = engine.subscriptions().len();
-        let rule_count = engine.rule_providers().len();
+        let custom_groups = engine.custom_rule_groups();
+        let custom_count = engine
+            .custom_rules_parsed()
+            .iter()
+            .filter(|r| {
+                r.enabled
+                    && r.error.is_none()
+                    && r.group.as_deref().is_none_or(|gn| {
+                        custom_groups
+                            .iter()
+                            .find(|g| g.name.eq_ignore_ascii_case(gn))
+                            .is_none_or(|g| g.enabled)
+                    })
+            })
+            .count();
+        let rule_count = engine.rule_providers().iter().filter(|p| p.enabled).count() + custom_count;
 
         // The selection indicator is a box whose top and bottom edges are two
         // springs. The leading edge is stiffer than the trailing one, so the box
@@ -548,7 +585,37 @@ impl MainView {
         } else {
             (anim::SNAPPY, anim::TRAILING)
         };
-        let accent = if mica { t.sidebar_accent.opacity(0.85) } else { t.sidebar_accent };
+        let dark = t.is_dark();
+        let a = layout::surface_alpha();
+        // Sibling frosted rail for Acrylic / OS blur: clearer than the content
+        // pane so the sidebar reads as a luminous glass strip with clear depth.
+        let sidebar_glass_fill = if dark {
+            let floor = if cfg!(windows) { 0.24 } else { 0.58 };
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x16171B)).opacity(floor + (0.86 - floor) * a)
+        } else {
+            let floor = if cfg!(windows) { 0.26 } else { 0.62 };
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xF6F8FC)).opacity(floor + (0.86 - floor) * a)
+        };
+        let accent = if glass {
+            if dark {
+                gpui_kit::white().opacity(0.11)
+            } else {
+                gpui_kit::white().opacity(0.56)
+            }
+        } else if mica {
+            t.sidebar_accent.opacity(0.85)
+        } else {
+            t.sidebar_accent
+        };
+        let status_bg = if glass {
+            if dark {
+                gpui_kit::white().opacity(0.07)
+            } else {
+                gpui_kit::white().opacity(0.42)
+            }
+        } else {
+            accent.opacity(0.5)
+        };
         let indicator = div()
             .absolute()
             .left_0()
@@ -628,6 +695,7 @@ impl MainView {
             .h_full()
             .flex_none()
             .when(!mica, |d| d.bg(t.sidebar))
+            .when(glass, |d| d.bg(sidebar_glass_fill))
             .when_some(left_controls, |d, controls| {
                 d.child(
                     h_flex()
@@ -678,7 +746,14 @@ impl MainView {
                     .gap_2()
                     .items_center()
                     .rounded(t.radius)
-                    .bg(accent.opacity(0.5))
+                    .bg(status_bg)
+                    .when(glass, |d| {
+                        d.border_1().border_color(if dark {
+                            gpui_kit::white().opacity(0.08)
+                        } else {
+                            gpui_kit::black().opacity(0.06)
+                        })
+                    })
                     .when(compact, |d| d.justify_center().px_0())
                     .child(status_dot)
                     .when(!compact, |d| d.child(div().text_sm().min_w_0().truncate().child(status_text(&status)))),
@@ -706,23 +781,27 @@ impl Render for MainView {
             Page::Settings => self.settings.clone().into(),
         };
         let full_height = matches!(page, Page::Connections | Page::Logs);
-        let (bg, fg, sidebar_bg) = (t.background, t.foreground, t.sidebar);
+        let (fg, sidebar_bg) = (t.foreground, t.sidebar);
+        let dark = t.is_dark();
         let sheet_edge = hairline(cx);
         let layer_fill = layer(cx);
-        // Acrylic (and the single blur elsewhere) is drawn as one pane; Mica
-        // keeps Windows 11's content layer.
-        let glass = mica
-            && (self.last_look.1 == Backdrop::Acrylic
-                || crate::platform::translucency() == crate::platform::Translucency::Blur);
-        // Floors keep text readable: the macOS and KWin blurs have no tint of
-        // their own (white windows behind would wash out light text), and a
-        // light pane over dark windows behind would otherwise turn grey.
-        let glass_alpha = if cfg!(any(target_os = "linux", target_os = "macos")) {
-            layout::surface_alpha().max(0.78)
-        } else if !t.is_dark() {
-            layout::surface_alpha().max(0.5)
+        // Acrylic (and the macOS / KDE blur) uses two non-overlapping sibling
+        // frosted layers: a clearer glass sidebar rail and a luminous frosted
+        // content pane separated by a crisp hairline (never stacked translucent
+        // fills, so Light Acrylic stays bright porcelain white instead of grey).
+        let glass = layout::is_glass();
+        let a = layout::surface_alpha();
+        let content_glass_fill = if dark {
+            let floor = if cfg!(windows) { 0.34 } else { 0.68 };
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x1E1F25)).opacity(floor + (0.90 - floor) * a)
         } else {
-            layout::surface_alpha()
+            let floor = if cfg!(windows) { 0.38 } else { 0.72 };
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xFCFDFE)).opacity(floor + (0.92 - floor) * a)
+        };
+        let glass_divider = if dark {
+            gpui_kit::white().opacity(0.09)
+        } else {
+            gpui_kit::black().opacity(0.075)
         };
 
         let m = layout::metrics(window);
@@ -761,30 +840,37 @@ impl Render for MainView {
         };
 
         let caption = chrome::caption_bar(window, cx);
+        let lang = self.state.read(cx).language;
+        let fallbacks = layout::font_fallbacks(lang, cx);
         let content =
             h_flex()
                 .size_full()
+                .when_some(fallbacks, |mut d, fb| {
+                    d.text_style().font_fallbacks = Some(fb);
+                    d
+                })
                 .text_color(fg)
                 .when(!mica, |d| d.bg(sidebar_bg))
-                // Acrylic and the macOS/KDE blur are one even pane: Transparency
-                // sets a single tint over the whole window (those blurs have no
-                // tint of their own, so it keeps a floor for readable text).
-                .when(glass && !cfg!(windows), |d| d.bg(bg.opacity(glass_alpha)))
-                .child(self.render_sidebar(page, mica, m, window, cx))
+                .child(self.render_sidebar(page, mica, glass, m, window, cx))
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
                         .h_full()
+                        .when(glass, |d| {
+                            d.bg(content_glass_fill)
+                                .border_l_1()
+                                .border_color(glass_divider)
+                        })
                         .child(caption)
                         .child(
                             v_flex()
                                 .flex_1()
                                 .min_h_0()
                                 // An opaque window puts the content on a raised layer, as
-                                // in Windows 11 apps. A translucent one has none: stacked
-                                // translucent fills composite grey in GPUI, so the pages
-                                // sit straight on the backdrop and only cards are veiled.
+                                // in Windows 11 apps. Mica sits straight on the backdrop;
+                                // Acrylic/Blur already carries its luminous frosted pane
+                                // on the sibling right column above.
                                 .when(!mica, |d| {
                                     d.bg(layer_fill)
                                         .border_l_1()

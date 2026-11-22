@@ -87,18 +87,18 @@ pub fn apply(settings: &Settings, cx: &mut App) {
     // read the same over a solid base and over a backdrop.
     let (white, black) = (gpui_kit::white(), gpui_kit::black());
     let base: Hsla = rgb(if dark { 0x202020 } else { 0xF3F3F3 }).into();
-    let text: Hsla = if dark { white } else { rgb(0x1A1A1A).into() };
-    let text_secondary = if dark { white.opacity(0.72) } else { black.opacity(0.6) };
+    let text: Hsla = if dark { white } else { rgb(0x141414).into() };
+    let text_secondary = if dark { white.opacity(0.76) } else { black.opacity(0.66) };
     let divider = if dark { white.opacity(0.084) } else { black.opacity(0.08) };
-    let control_stroke = if dark { white.opacity(0.08) } else { black.opacity(0.1) };
+    let control_stroke = if dark { white.opacity(0.09) } else { black.opacity(0.11) };
     // Light fills are solid: translucent whites stacked on a translucent card
     // composite grey in GPUI. Dark ones are faint lifts, where that is unseen.
     let (fill, hover, pressed): (Hsla, Hsla, Hsla) = if dark {
-        (white.opacity(0.061), white.opacity(0.084), white.opacity(0.033))
+        (white.opacity(0.068), white.opacity(0.095), white.opacity(0.04))
     } else {
-        (rgb(0xFBFBFB).into(), rgb(0xF5F5F5).into(), rgb(0xEFEFEF).into())
+        (rgb(0xFFFFFF).into(), rgb(0xF6F7F9).into(), rgb(0xEDEFF2).into())
     };
-    let subtle = if dark { white.opacity(0.06) } else { black.opacity(0.04) };
+    let subtle = if dark { white.opacity(0.068) } else { black.opacity(0.05) };
     // Menus, dialogs and tooltips stay solid so they read over anything.
     let flyout: Hsla = rgb(if dark { 0x2C2C2C } else { 0xF9F9F9 }).into();
     set!(

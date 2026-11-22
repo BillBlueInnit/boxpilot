@@ -21,8 +21,8 @@ fn main() {
     let autostart = std::env::args().any(|a| a == "--autostart");
     // CI: start the full UI, check the window came up, then exit.
     let smoke_test = std::env::args().any(|a| a == "--smoke-test");
-    // The renderer picks its GPU at start-up; apply the preference before
-    // GPUI (or any other thread) starts.
+    // The renderer picks its GPU at start-up; apply the preference before GPUI
+    // (or any other thread) starts.
     if let Ok(store) = boxpilot_core::store::Store::new(boxpilot_core::store::Paths::detect()) {
         gpu::apply_at_startup(store.load_settings().gpu);
     }
@@ -122,8 +122,11 @@ fn main() {
             }
             engine.startup();
             if smoke_test {
+                if std::env::var("BOXPILOT_SMOKE_PAGE").ok().as_deref() == Some("rules") {
+                    state.update(cx, |s, cx| s.set_page(crate::state::Page::Rules, cx));
+                }
                 cx.spawn(async move |cx: &mut AsyncApp| {
-                    cx.background_executor().timer(Duration::from_secs(6)).await;
+                    cx.background_executor().timer(Duration::from_secs(4)).await;
                     cx.update(|cx| {
                         let ok = AppState::global(cx).read(cx).window.is_some();
                         println!("ui smoke test: window {}", if ok { "open" } else { "missing" });

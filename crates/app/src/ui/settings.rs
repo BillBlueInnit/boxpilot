@@ -1,5 +1,5 @@
 use boxpilot_core::CoreDownloadState;
-use boxpilot_core::model::{Accent, Backdrop, GpuPreference, Language, Settings, ThemePref, TunStack, UpdateMode};
+use boxpilot_core::model::{Accent, Backdrop, GpuPreference, Language, Settings, ThemePref, TunStack, UiFont, UpdateMode};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -405,7 +405,7 @@ impl SettingsPage {
         let engine = self.state.read(cx).engine.clone();
         let s = engine.settings();
         let muted = cx.theme().muted_foreground;
-        let (e_scale, e_gpu, e_mica) = (engine.clone(), engine.clone(), engine.clone());
+        let (e_scale, e_font, e_gpu, e_mica) = (engine.clone(), engine.clone(), engine.clone(), engine.clone());
         let system_pct = (super::layout::system_scale() * 100.0).round() as u32;
         let scale_options: Vec<(SharedString, u32)> = super::layout::SCALES
             .iter()
@@ -414,6 +414,19 @@ impl SettingsPage {
                 (SharedString::from(label), *v)
             })
             .collect();
+        let font_options: Vec<(SharedString, UiFont)> = UiFont::ALL
+            .iter()
+            .map(|f| {
+                let label = match f {
+                    UiFont::System => t!("font.system"),
+                    UiFont::GoogleSans => t!("font.google_sans"),
+                    UiFont::SourceHanSans => t!("font.source_han_sans"),
+                };
+                (SharedString::from(label), *f)
+            })
+            .collect();
+        let source_han_missing = s.ui_font == UiFont::SourceHanSans
+            && !super::layout::has_source_han_sans(s.language, cx);
         let gpu_options: Vec<(SharedString, GpuPreference)> =
             crate::gpu::choices().iter().map(|g| (SharedString::from(gpu_label(*g)), *g)).collect();
         // What the running renderer actually uses.
@@ -421,7 +434,7 @@ impl SettingsPage {
             let kind = if g.is_software_emulated { t!("gpu.cpu") } else { t!("gpu.hardware") };
             t!("gpu.current", format!("{} · {kind}", g.device_name))
         });
-        let needs_restart = s.gpu != crate::gpu::startup_preference();
+        let gpu_needs_restart = s.gpu != crate::gpu::startup_preference();
         card(cx)
             .gap_1()
             .child(section_title(t!("set.graphics"), cx))
@@ -431,6 +444,15 @@ impl SettingsPage {
                 choice("ui-scale", s.ui_scale, scale_options, move |v, _, _| e_scale.update_settings(|s| s.ui_scale = v)),
                 cx,
             ))
+            .child(setting_row(
+                t!("set.ui_font"),
+                Some(t!("set.ui_font_desc")),
+                choice("ui-font", s.ui_font, font_options, move |v, _, _| e_font.update_settings(|s| s.ui_font = v)),
+                cx,
+            ))
+            .when(source_han_missing, |d| {
+                d.child(div().text_xs().text_color(cx.theme().warning).pb_1().child(t!("set.source_han_missing")))
+            })
             .when(!gpu_options.is_empty(), |d| {
                 d.child(setting_row(
                     t!("set.gpu"),
@@ -444,7 +466,7 @@ impl SettingsPage {
             .when_some(crate::gpu::missing_display_driver(), |d, (maker, packages)| {
                 d.child(div().text_xs().text_color(cx.theme().warning).pb_1().child(t!("gpu.no_display_driver", maker, packages)))
             })
-            .when(needs_restart, |d| {
+            .when(gpu_needs_restart, |d| {
                 d.child(
                     h_flex().justify_end().child(
                         Button::new("restart-gpu")

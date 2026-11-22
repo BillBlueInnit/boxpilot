@@ -276,6 +276,31 @@ fn connection_menu(
             sub
         });
     }
+    // Also offer routing to any rule-set or subscription group.
+    let extra_groups: Vec<String> = engine
+        .groups()
+        .into_iter()
+        .map(|g| g.name)
+        .filter(|n| n != boxpilot_core::config::TAG_PROXY && n != boxpilot_core::config::TAG_AUTO)
+        .collect();
+    if !extra_groups.is_empty() && !matches.is_empty() {
+        let (matches, engine) = (matches.clone(), engine.clone());
+        menu = menu.submenu(t!("conn.route_to_group"), window, cx, move |mut sub, window, cx| {
+            for group_name in &extra_groups {
+                let (matches, engine, target) = (matches.clone(), engine.clone(), group_name.clone());
+                sub = sub.submenu(outbound_label(group_name), window, cx, move |mut leaf, _, _| {
+                    for (label, key) in matches.iter() {
+                        let (rule, engine) = (format!("{key},{target}"), engine.clone());
+                        leaf = leaf.item(
+                            PopupMenuItem::new(label.clone()).on_click(move |_, window, cx| add_rule(&engine, &rule, window, cx)),
+                        );
+                    }
+                    leaf
+                });
+            }
+            sub
+        });
+    }
     let target = c.target();
     let (id, e_close) = (c.id.clone(), engine.clone());
     menu.separator()

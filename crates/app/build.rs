@@ -54,6 +54,13 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    // Match macOS/Linux's 8 MB main-thread stack so deeply nested GPUI debug
+    // builds never overflow Windows' 1 MB default stack.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg=/STACK:8388608");
+    } else {
+        println!("cargo:rustc-link-arg=-Wl,--stack,8388608");
+    }
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("app.ico");
     write_ico(&out).expect("write icon");
     let mut res = winresource::WindowsResource::new();

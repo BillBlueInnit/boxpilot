@@ -48,11 +48,21 @@ pub fn card(cx: &App) -> Div {
         .bg(surface(cx))
 }
 
-/// Edge colour for cards and the page sheet. An opaque window keeps the theme
-/// border. A translucent one uses Fluent's card stroke: black at low opacity,
-/// which reads as a soft edge over any backdrop instead of a bright grey line.
+/// Edge colour for cards and the page sheet. On Dark Acrylic/Blur a faint
+/// luminous rim defines elevated glass cards; on Light surfaces a crisp dark
+/// hairline keeps cards sharp without heavy borders.
 pub fn hairline(cx: &App) -> Hsla {
-    gpui_kit::black().opacity(if cx.theme().is_dark() { 0.1 } else { 0.06 })
+    if cx.theme().is_dark() {
+        if super::layout::is_glass() {
+            gpui_kit::white().opacity(0.095)
+        } else {
+            gpui_kit::black().opacity(0.14)
+        }
+    } else if super::layout::is_glass() {
+        gpui_kit::black().opacity(0.075)
+    } else {
+        gpui_kit::black().opacity(0.06)
+    }
 }
 
 /// The raised content layer behind the pages, as in Windows 11: solid on an
@@ -386,13 +396,18 @@ pub fn mode_label(mode: boxpilot_core::model::ProxyMode) -> &'static str {
     }
 }
 
-/// Display name for built-in outbound tags.
+/// Display name for built-in outbound tags and curated service groups.
 pub fn outbound_label(tag: &str) -> String {
     match tag {
         "Proxy" => t!("group.proxy").to_string(),
         "Auto" => t!("group.auto").to_string(),
         "direct" => t!("group.direct").to_string(),
         boxpilot_core::model::LOCAL_NODES_NAME => t!("local.title").to_string(),
+        "AI Services" => t!("svc.ai").to_string(),
+        "Bilibili" => t!("svc.bilibili").to_string(),
+        "Apple CN" => t!("svc.apple").to_string(),
+        "Microsoft CN" => t!("svc.microsoft").to_string(),
+        "Overseas Sites" => t!("svc.overseas").to_string(),
         other => strip_flags(other),
     }
 }
@@ -529,27 +544,33 @@ impl RenderOnce for Toggle {
     }
 }
 
-/// Fill for cards. On a translucent window it is a faint veil over the
-/// backdrop (light in light mode), so cards read as raised, as in Windows 11.
+/// Fill for cards. Adapts to Opaque, Mica, and Acrylic/Blur so cards stay
+/// crisp, bright porcelain white in Light mode and elevated smoked glass in
+/// Dark mode instead of washing out over dark desktop windows.
 pub fn surface(cx: &App) -> Hsla {
     let dark = cx.theme().is_dark();
     let white = gpui_kit::white();
-    if super::layout::translucent() {
-        // Cards are the one translucent layer over the backdrop (GPUI adds up
-        // alpha when translucent fills stack, which greys them), so they
-        // carry Transparency: solid at 0 %, half see-through at 80 % in light
-        // mode, a faint lift over the backdrop in dark mode.
+    if super::layout::is_glass() {
         let a = super::layout::surface_alpha();
         if dark {
-            gpui_kit::Hsla::from(gpui_kit::rgb(0x2B2B2B)).opacity(a.max(0.25))
+            // Subtle luminous glass lift over the smoked Acrylic content pane.
+            white.opacity(0.065 + 0.03 * a)
         } else {
-            white.opacity(0.375 + 0.625 * a)
+            // Luminous frosted white glass card over the airy light content pane.
+            white.opacity(0.46 + 0.48 * a)
+        }
+    } else if super::layout::translucent() {
+        let a = super::layout::surface_alpha();
+        if dark {
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x2B2B2B)).opacity(a.max(0.28))
+        } else {
+            white.opacity(0.58 + 0.38 * a)
         }
     } else if dark {
         // Fluent's card fill over the solid content layer.
         white.opacity(0.05)
     } else {
-        white.opacity(0.7)
+        white.opacity(0.75)
     }
 }
 

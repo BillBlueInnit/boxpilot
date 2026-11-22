@@ -298,11 +298,43 @@ impl DashboardPage {
         let s = engine.settings();
         let tun_ok = engine.tun_permitted();
         let (e1, e2, e3) = (engine.clone(), engine.clone(), engine.clone());
+        let state_rules = self.state.clone();
+        let rule_summary = if s.mode == ProxyMode::Rule {
+            let label = match engine.active_rule_profile() {
+                Some(boxpilot_core::rules::RuleProfile::Daily) => t!("profile.daily").to_string(),
+                Some(boxpilot_core::rules::RuleProfile::MinimalBypassCn) => t!("profile.minimal").to_string(),
+                Some(boxpilot_core::rules::RuleProfile::StreamingGaming) => t!("profile.streaming").to_string(),
+                Some(boxpilot_core::rules::RuleProfile::DirectFirst) => t!("profile.direct_first").to_string(),
+                None => {
+                    let active = engine.rule_providers().iter().filter(|p| p.enabled).count()
+                        + engine.custom_rules_parsed().iter().filter(|r| r.enabled && r.error.is_none()).count();
+                    t!("dash.rules_custom", active)
+                }
+            };
+            Some(label)
+        } else {
+            None
+        };
         card(cx)
             .flex_1()
             .min_w(dp(340.))
             .gap_1()
-            .child(section_title(t!("quick.title"), cx))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap_2()
+                    .child(section_title(t!("quick.title"), cx))
+                    .when_some(rule_summary, |d, summary| {
+                        d.child(
+                            Button::new("dash-goto-rules")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("dash.manage_rules", summary))
+                                .on_click(move |_, _, cx| state_rules.update(cx, |s, cx| s.set_page(Page::Rules, cx))),
+                        )
+                    }),
+            )
             .child(setting_row(
                 t!("quick.mode"),
                 Some(t!("quick.mode_desc")),

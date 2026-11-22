@@ -66,6 +66,8 @@ pub struct AppState {
     pub window: Option<AnyWindowHandle>,
     pub tray: Option<TrayHandle>,
     pub language: Language,
+    /// When jumping from Rules to Proxies, selects this group tab once.
+    pub pending_proxy_group: Option<String>,
 }
 
 struct GlobalAppState(Entity<AppState>);
@@ -99,6 +101,7 @@ impl AppState {
             window: None,
             tray: None,
             language,
+            pending_proxy_group: None,
         }
     }
 
@@ -122,6 +125,14 @@ impl AppState {
             }
             cx.notify();
         }
+    }
+
+    /// Navigates to the Proxies page and focuses a specific group tab.
+    pub fn open_proxy_group(&mut self, group: String, cx: &mut Context<Self>) {
+        self.pending_proxy_group = Some(group);
+        self.page = Page::Proxies;
+        self.engine.refresh_proxies();
+        cx.notify();
     }
 
     pub fn handle_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {

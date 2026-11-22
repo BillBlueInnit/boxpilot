@@ -134,30 +134,32 @@ The **Proxies** page has a tab for every group.
 
 ## 6. Rules
 
-The **Rules** page decides where traffic goes in Rule mode.
+The **Rules** page decides where traffic goes in Rule mode, laid out from top to bottom in exact
+matching order (**① Custom rules → ② Routing rule-sets → ③ Default fallback**):
 
-- **Add rule-set**: a URL or a local file — sing-box `.srs` / `.json`, Clash rule providers or
-  ACL4SSR `.list` files. Pick where matches go (Proxy, Direct, Reject or any group). Order matters:
-  use the arrows to move a set up or down.
-- **Import ACL4SSR**: reads a subconverter `.ini` (ACL4SSR_Online_Full is one click away) and adds
-  all of its rule-sets **switched off**. Turn on the ones you want, or use **Enable all** /
-  **Disable all** above the list.
-- **Own node group**: the switch under a rule-set gives its matches a group of their own on the
-  Proxies page, named after the rule-set (its target then reads **Custom**). In that group choose
-  **Manual** and click a node, or one of Auto's four modes with an optional region — for example
-  streaming through a fast node in one country while everything else uses Auto.
-- **Edit file**: the pencil-on-page button opens the rule-set file in your default text editor.
-  For a local file, each save is converted and applied automatically. For a downloaded set, the
-  stored copy is opened; saves apply at once and last until its next download. Binary `.srs` files
-  can't be edited as text.
-- **Built-in rules** bypass mainland China and block ads.
-- **Custom rules** take lines like `DOMAIN-SUFFIX,openai.com,proxy` and are kept in
-  `CustomRule.list` in the data folder. Edit them here, or press **Edit file** and use any text
-  editor; saves apply by themselves.
+- **One-click setups**: pick a preset profile (**Recommended Daily**, **Minimal Bypass CN**,
+  **Streaming & Gaming**, or **Direct First**) to configure curated rule-sets and fallback switches
+  in one click. Your custom rules and manually added rule-sets are always preserved.
+- **Test match**: enter any domain, URL, IP or app name to immediately see which layer, rule and
+  target it matches.
+- **① Custom rules & custom groups**: visual rule editor with one-line quick add (choose site, exact
+  domain, keyword, app/process with a file picker, IP/CIDR, port, GeoSite/GeoIP; pasting a URL
+  extracts the domain automatically). Click **New group** to create your own named groups (such as
+  "My AI", "Work", or "Gaming") and **drag-and-drop** any rule into or between groups (or back to
+  **Ungrouped**). Each group decides the target for all rules inside it, and with **Own node group**
+  it appears as its own tab on the **Proxies** page with region and strategy selection. Switch to
+  **Text** mode or press **Edit file** anytime — it stays 100% synced with `CustomRule.list`
+  (`#!group <Name>` sections).
+- **② Routing rule-sets**: press **Service library** to add popular services (AI, YouTube, Netflix,
+  Disney+, Telegram, GitHub, Steam, Bilibili…) in one click without URLs, or use **Add rule-set** /
+  **Import ACL4SSR** for external lists. Change any rule-set's target inline — including **Own node
+  group (Proxies)**, which gives it a dedicated tab on the **Proxies** page with a direct jump link.
+- **③ Default fallback**: toggle **Bypass mainland China**, **Block ads**, and choose where
+  unmatched traffic goes (**Proxy** or **Direct**). Geosite/GeoIP URL templates live inside the
+  collapsible **Advanced rule sources** section.
 - **From a connection**: on the **Connections** page, right-click a row and choose **Always go
-  direct**, **Always use the proxy** or **Always block**, for that host, its whole site or the app.
-  The rule goes into `CustomRule.list`, and the core reloads to apply it, which drops open
-  connections. A rule for the same host or app replaces the old one.
+  direct**, **Always use the proxy**, **Always block**, or **Route to group** for that host, its
+  whole site or the app. The rule appears immediately in your custom rules.
 - **Connections columns**: drag the edge between two titles to resize a column, or double-click it
   to fit the longest value. Widths are remembered. When the columns outgrow the page, use the bar
   below them, a sideways wheel or Shift + wheel.
@@ -166,8 +168,9 @@ The **Rules** page decides where traffic goes in Rule mode.
 
 - **General**: language, theme, **Theme colour**, launch at login, close to tray and
   **Lightweight mode** (closing the window frees the UI; the proxy keeps running in the tray).
-- **Graphics**: **Translucent window** with **Material** (Mica, Mica Alt, Acrylic on Windows 11) and
-  **Transparency**. macOS and KDE Plasma use the system blur.
+- **Graphics**: **Enhanced font rendering** (built-in pure-Rust analytical vector text engine, on by
+  default on Windows and off on macOS/Linux), **Translucent window** with **Material** (Mica, Mica
+  Alt, Acrylic on Windows 11) and **Transparency**. macOS and KDE Plasma use the system blur.
 - **Proxy / TUN / DNS**: ports, LAN access, UDP and QUIC handling, TUN stack, DNS servers, FakeIP.
 - **Updates**: how BoxPilot handles new versions, and **Check now**.
 - **Advanced → Reset BoxPilot**: clear settings, subscriptions, rule-sets or caches.
