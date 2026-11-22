@@ -668,9 +668,18 @@ impl MainView {
                 })
                 .on_click(move |_, _, cx| state.update(cx, |s, cx| s.set_page(p, cx)))
                 .child(Self::page_icon(p).size(dp(16.)))
-                .when(!compact, |d| d.child(div().flex_1().min_w_0().truncate().child(title)))
+                .when(!compact, |d| {
+                    d.child(div().flex_1().min_w_0().line_height(gpui_kit::relative(1.15)).truncate().child(title))
+                })
                 .when_some(badge.filter(|_| !compact), |d, n| {
-                    d.child(div().flex_none().text_xs().text_color(t.muted_foreground).child(n.to_string()))
+                    d.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .line_height(gpui_kit::relative(1.0))
+                            .text_color(t.muted_foreground)
+                            .child(n.to_string()),
+                    )
                 })
         });
 
@@ -756,7 +765,16 @@ impl MainView {
                     })
                     .when(compact, |d| d.justify_center().px_0())
                     .child(status_dot)
-                    .when(!compact, |d| d.child(div().text_sm().min_w_0().truncate().child(status_text(&status)))),
+                    .when(!compact, |d| {
+                        d.child(
+                            div()
+                                .text_sm()
+                                .line_height(gpui_kit::relative(1.15))
+                                .min_w_0()
+                                .truncate()
+                                .child(status_text(&status)),
+                        )
+                    }),
             )
     }
 }

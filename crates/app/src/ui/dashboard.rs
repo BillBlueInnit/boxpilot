@@ -256,6 +256,7 @@ impl DashboardPage {
                     .child(
                         h_flex()
                             .gap_4()
+                            .items_center()
                             .text_xs()
                             .text_color(t.muted_foreground)
                             .child(h_flex().gap_1p5().items_center().child(dot(down_c)).child(t!("stat.download")))

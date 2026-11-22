@@ -164,20 +164,199 @@ pub fn has_source_han_sans(lang: Language, cx: &App) -> bool {
     pick_source_han_sans(lang, cx).is_some()
 }
 
-/// Applies the user's chosen UI typeface and monospace font; returns whether the
-/// active UI font family changed (for live refresh without restart).
-pub fn apply_fonts(settings: &Settings, cx: &mut App) -> bool {
+#[cfg(windows)]
+fn normalized_noto_cjk(family: &str, cx: &mut App) -> Option<SharedString> {
+    let (file_name, alias) = match family {
+        "Noto Sans SC" => ("NotoSansSC-VF.ttf", "BoxPilot CJK"),
+        "Noto Sans TC" => ("NotoSansTC-VF.ttf", "BoxPilot CJT"),
+        _ => return None,
+    };
+    static SC_ALIAS: OnceLock<Option<SharedString>> = OnceLock::new();
+    static TC_ALIAS: OnceLock<Option<SharedString>> = OnceLock::new();
+    let slot = if family == "Noto Sans SC" { &SC_ALIAS } else { &TC_ALIAS };
+    slot.get_or_init(|| {
+        let mut candidates = Vec::new();
+        if let Ok(win) = std::env::var("WINDIR") {
+            candidates.push(std::path::PathBuf::from(win).join("Fonts").join(file_name));
+        } else {
+            candidates.push(std::path::PathBuf::from(r"C:\Windows\Fonts").join(file_name));
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            candidates.push(std::path::PathBuf::from(local).join(r"Microsoft\Windows\Fonts").join(file_name));
+        }
+        let mut bytes = candidates.into_iter().find_map(|p| std::fs::read(p).ok())?;
+        if !normalize_sfnt_for_ui(&mut bytes, family, alias) {
+            return None;
+        }
+        match cx.text_system().add_fonts(vec![Cow::Owned(bytes)]) {
+            Ok(()) => {
+                log::info!("registered vertically-normalized {family} as {alias}");
+                Some(SharedString::from(alias))
+            }
+            Err(e) => {
+                log::warn!("could not register normalized {family}: {e:#}");
+                None
+            }
+        }
+    })
+    .clone()
+}
+
+/// Normalizes an SFNT (`ttf`/`otf`) font's vertical metrics (`hhea`, `OS/2`
+/// `sTypo*` and `usWin*`, `USE_TYPO_METRICS`) to the same optical baseline as
+/// `Microsoft YaHei UI` and bundled `Google Sans` (`0.968 / -0.241 em`, midpoint
+/// `0.3635 em`) and aliases `old_family` → `new_family` in-place (must be same
+/// ASCII byte length) so DirectWrite picks up the normalized copy cleanly.
+#[cfg(any(windows, test))]
+fn normalize_sfnt_for_ui(data: &mut [u8], old_family: &str, new_family: &str) -> bool {
+    if data.len() < 12 || old_family.len() != new_family.len() || !old_family.is_ascii() || !new_family.is_ascii() {
+        return false;
+    }
+    let sfnt = &data[0..4];
+    if sfnt != b"\x00\x01\x00\x00" && sfnt != b"OTTO" && sfnt != b"true" {
+        return false;
+    }
+    let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+    if data.len() < 12 + num_tables * 16 {
+        return false;
+    }
+
+    let table_checksum = |buf: &[u8]| -> u32 {
+        let mut sum = 0u32;
+        let mut chunks = buf.chunks_exact(4);
+        for c in &mut chunks {
+            sum = sum.wrapping_add(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
+        }
+        let rem = chunks.remainder();
+        if !rem.is_empty() {
+            let mut tail = [0u8; 4];
+            tail[..rem.len()].copy_from_slice(rem);
+            sum = sum.wrapping_add(u32::from_be_bytes(tail));
+        }
+        sum
+    };
+
+    let mut head = None;
+    let mut hhea = None;
+    let mut os2 = None;
+    let mut name = None;
+    for i in 0..num_tables {
+        let rec = 12 + i * 16;
+        let tag = &data[rec..rec + 4];
+        let off = u32::from_be_bytes([data[rec + 8], data[rec + 9], data[rec + 10], data[rec + 11]]) as usize;
+        let len = u32::from_be_bytes([data[rec + 12], data[rec + 13], data[rec + 14], data[rec + 15]]) as usize;
+        if off.checked_add(len).is_none_or(|end| end > data.len()) {
+            return false;
+        }
+        match tag {
+            b"head" => head = Some((rec, off, len)),
+            b"hhea" => hhea = Some((rec, off, len)),
+            b"OS/2" => os2 = Some((rec, off, len)),
+            b"name" => name = Some((rec, off, len)),
+            _ => {}
+        }
+    }
+    let (Some((head_rec, head_off, head_len)), Some((hhea_rec, hhea_off, hhea_len)), Some((os2_rec, os2_off, os2_len)), Some((name_rec, name_off, name_len))) =
+        (head, hhea, os2, name)
+    else {
+        return false;
+    };
+    if head_len < 20 || hhea_len < 10 || os2_len < 78 || name_len < 6 {
+        return false;
+    }
+
+    let upem = u16::from_be_bytes([data[head_off + 18], data[head_off + 19]]) as f32;
+    if upem < 64.0 {
+        return false;
+    }
+    let asc = (0.968 * upem).round() as i16;
+    let desc = (0.241 * upem).round() as i16;
+
+    // hhea: ascent, descent, lineGap
+    data[hhea_off + 4..hhea_off + 6].copy_from_slice(&asc.to_be_bytes());
+    data[hhea_off + 6..hhea_off + 8].copy_from_slice(&(-desc).to_be_bytes());
+    data[hhea_off + 8..hhea_off + 10].copy_from_slice(&0i16.to_be_bytes());
+    let hhea_csum = table_checksum(&data[hhea_off..hhea_off + hhea_len]);
+    data[hhea_rec + 4..hhea_rec + 8].copy_from_slice(&hhea_csum.to_be_bytes());
+
+    // OS/2: USE_TYPO_METRICS (bit 7), sTypoAscender/Descender/LineGap, usWinAscent/Descent
+    let fs_sel = u16::from_be_bytes([data[os2_off + 62], data[os2_off + 63]]) | 0x0080;
+    data[os2_off + 62..os2_off + 64].copy_from_slice(&fs_sel.to_be_bytes());
+    data[os2_off + 68..os2_off + 70].copy_from_slice(&asc.to_be_bytes());
+    data[os2_off + 70..os2_off + 72].copy_from_slice(&(-desc).to_be_bytes());
+    data[os2_off + 72..os2_off + 74].copy_from_slice(&0i16.to_be_bytes());
+    data[os2_off + 74..os2_off + 76].copy_from_slice(&(asc as u16).to_be_bytes());
+    data[os2_off + 76..os2_off + 78].copy_from_slice(&(desc as u16).to_be_bytes());
+    let os2_csum = table_checksum(&data[os2_off..os2_off + os2_len]);
+    data[os2_rec + 4..os2_rec + 8].copy_from_slice(&os2_csum.to_be_bytes());
+
+    // name: replace family strings in-place (UTF-16BE for platform 3/0, ASCII for platform 1)
+    let count = u16::from_be_bytes([data[name_off + 2], data[name_off + 3]]) as usize;
+    let str_base = name_off + u16::from_be_bytes([data[name_off + 4], data[name_off + 5]]) as usize;
+    let old_u16: Vec<u8> = old_family.bytes().flat_map(|b| [0u8, b]).collect();
+    let new_u16: Vec<u8> = new_family.bytes().flat_map(|b| [0u8, b]).collect();
+    let mut renamed = false;
+    for i in 0..count {
+        let rec = name_off + 6 + i * 12;
+        if rec + 12 > name_off + name_len {
+            break;
+        }
+        let platform = u16::from_be_bytes([data[rec], data[rec + 1]]);
+        let name_id = u16::from_be_bytes([data[rec + 6], data[rec + 7]]);
+        let slen = u16::from_be_bytes([data[rec + 8], data[rec + 9]]) as usize;
+        let soff = u16::from_be_bytes([data[rec + 10], data[rec + 11]]) as usize;
+        if !matches!(name_id, 1 | 4 | 16) {
+            continue;
+        }
+        let start = str_base + soff;
+        let Some(end) = start.checked_add(slen) else { continue };
+        if end > name_off + name_len {
+            continue;
+        }
+        if platform == 1 && &data[start..end] == old_family.as_bytes() {
+            data[start..end].copy_from_slice(new_family.as_bytes());
+            renamed = true;
+        } else if (platform == 3 || platform == 0) && &data[start..end] == old_u16.as_slice() {
+            data[start..end].copy_from_slice(&new_u16);
+            renamed = true;
+        }
+    }
+    if !renamed {
+        return false;
+    }
+    let name_csum = table_checksum(&data[name_off..name_off + name_len]);
+    data[name_rec + 4..name_rec + 8].copy_from_slice(&name_csum.to_be_bytes());
+
+    // head: zero checkSumAdjustment, update head checksum, then write whole-file adjustment
+    data[head_off + 8..head_off + 12].copy_from_slice(&0u32.to_be_bytes());
+    let head_csum = table_checksum(&data[head_off..head_off + head_len]);
+    data[head_rec + 4..head_rec + 8].copy_from_slice(&head_csum.to_be_bytes());
+    let adj = 0xB1B0_AFBAu32.wrapping_sub(table_checksum(data));
+    data[head_off + 8..head_off + 12].copy_from_slice(&adj.to_be_bytes());
+    true
+}
+
+/// Resolves a `UiFont` choice to the concrete font family name for `lang`,
+/// lazily registering any vertically-normalized copy on Windows when needed.
+pub fn resolve_ui_font(ui_font: UiFont, lang: Language, cx: &mut App) -> SharedString {
     #[cfg(windows)]
-    let system_ui_candidates: &[&str] = &["Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI"];
+    let resolved_lang = match lang {
+        Language::System => crate::i18n::active_language(),
+        other => other,
+    };
+    // On Windows, Segoe UI Variable and Windows 11's bundled NotoSansSC-VF both
+    // leave OS/2 USE_TYPO_METRICS unset with tall winAscent (1.08–1.16 em), which
+    // pushes CJK glyphs ~2 px below vertical center inside buttons and pills.
+    // Microsoft YaHei UI / JhengHei UI set USE_TYPO_METRICS with balanced ascent/descent
+    // (0.968 / 0.241 em) so Chinese UI controls sit dead-center on their midline.
+    #[cfg(windows)]
+    let system_ui_candidates: &[&str] = match resolved_lang {
+        Language::SimplifiedChinese => &["Microsoft YaHei UI", "Segoe UI Variable", "Segoe UI"],
+        Language::TraditionalChinese => &["Microsoft JhengHei UI", "Microsoft YaHei UI", "Segoe UI Variable", "Segoe UI"],
+        _ => &["Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI"],
+    };
     #[cfg(not(windows))]
     let system_ui_candidates: &[&str] = &[];
-
-    #[cfg(windows)]
-    let mono_candidates: &[&str] = &["Cascadia Mono", "Cascadia Code", "Consolas"];
-    #[cfg(target_os = "macos")]
-    let mono_candidates: &[&str] = &["SF Mono", "Menlo"];
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mono_candidates: &[&str] = &["JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono"];
 
     let system_ui = || -> SharedString {
         pick_installed(system_ui_candidates, cx)
@@ -186,7 +365,7 @@ pub fn apply_fonts(settings: &Settings, cx: &mut App) -> bool {
             .unwrap_or_else(|| ".SystemUIFont".into())
     };
 
-    let wanted_ui: SharedString = match settings.ui_font {
+    match ui_font {
         UiFont::System => system_ui(),
         UiFont::GoogleSans => {
             if GOOGLE_SANS_LOADED.load(Ordering::Relaxed) {
@@ -195,11 +374,27 @@ pub fn apply_fonts(settings: &Settings, cx: &mut App) -> bool {
                 system_ui()
             }
         }
-        UiFont::SourceHanSans => pick_source_han_sans(settings.language, cx)
-            .map(SharedString::from)
-            .unwrap_or_else(system_ui),
-    };
+        UiFont::SourceHanSans => match pick_source_han_sans(lang, cx) {
+            #[cfg(windows)]
+            Some(name) => normalized_noto_cjk(name, cx).unwrap_or_else(|| SharedString::from(name)),
+            #[cfg(not(windows))]
+            Some(name) => SharedString::from(name),
+            None => system_ui(),
+        },
+    }
+}
 
+/// Applies the user's chosen UI typeface and monospace font; returns whether the
+/// active UI font family changed (for live refresh without restart).
+pub fn apply_fonts(settings: &Settings, cx: &mut App) -> bool {
+    #[cfg(windows)]
+    let mono_candidates: &[&str] = &["Cascadia Mono", "Cascadia Code", "Consolas"];
+    #[cfg(target_os = "macos")]
+    let mono_candidates: &[&str] = &["SF Mono", "Menlo"];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mono_candidates: &[&str] = &["JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono"];
+
+    let wanted_ui = resolve_ui_font(settings.ui_font, settings.language, cx);
     let mono = pick_installed(mono_candidates, cx);
     let theme = Theme::global_mut(cx);
     let changed = theme.font_family != wanted_ui;
@@ -211,7 +406,8 @@ pub fn apply_fonts(settings: &Settings, cx: &mut App) -> bool {
 }
 
 /// Explicit fallback chain for CJK & symbols so DirectWrite / FreeType never
-/// drop back to jagged legacy bitmap/GDI fonts when a smoother CJK font exists.
+/// drop back to jagged legacy bitmap/GDI fonts or top-heavy metrics that shift
+/// CJK labels below vertical center inside buttons and pills.
 pub fn font_fallbacks(lang: Language, cx: &App) -> Option<FontFallbacks> {
     #[cfg(windows)]
     {
@@ -219,38 +415,42 @@ pub fn font_fallbacks(lang: Language, cx: &App) -> Option<FontFallbacks> {
             Language::System => crate::i18n::active_language(),
             other => other,
         };
+        // Prefer Microsoft YaHei UI / JhengHei UI first because their balanced
+        // OS/2 typo metrics (0.968 / 0.241 em) align identically with Google Sans
+        // and icons inside buttons; Windows 11's NotoSansSC-VF has winAscent=1.16 em
+        // which shifts fallback CJK text ~2.5 px downward.
         let list: &[&str] = match resolved {
             Language::SimplifiedChinese => &[
+                "Microsoft YaHei UI",
                 "Source Han Sans SC",
                 "Source Han Sans CN",
                 "思源黑体 CN",
-                "Noto Sans SC",
-                "Noto Sans CJK SC",
                 "HarmonyOS Sans SC",
                 "MiSans",
-                "Microsoft YaHei UI",
+                "Noto Sans SC",
+                "Noto Sans CJK SC",
                 "Segoe UI",
                 "Segoe UI Symbol",
                 "Segoe UI Emoji",
             ],
             Language::TraditionalChinese => &[
+                "Microsoft JhengHei UI",
+                "Microsoft YaHei UI",
                 "Source Han Sans TC",
                 "Source Han Sans TW",
                 "思源黑體 TW",
                 "Noto Sans TC",
                 "Noto Sans CJK TC",
-                "Microsoft JhengHei UI",
-                "Microsoft YaHei UI",
                 "Segoe UI",
                 "Segoe UI Symbol",
                 "Segoe UI Emoji",
             ],
             _ => &[
+                "Microsoft YaHei UI",
                 "Source Han Sans SC",
                 "Source Han Sans CN",
                 "Noto Sans SC",
                 "Noto Sans CJK SC",
-                "Microsoft YaHei UI",
                 "Segoe UI",
                 "Segoe UI Symbol",
                 "Segoe UI Emoji",
@@ -369,5 +569,27 @@ mod tests {
         assert_eq!(grid_columns(1468.0, 236.0, 12.0), 5);
         // Narrower than one card: a single full-width column.
         assert_eq!(grid_columns(200.0, 236.0, 12.0), 1);
+    }
+
+    #[test]
+    fn sfnt_normalizer_unifies_vertical_metrics_and_aliases_family() {
+        let mut copy = GOOGLE_SANS_TTF.to_vec();
+        assert!(normalize_sfnt_for_ui(&mut copy, "Google Sans", "BoxPilot UI"));
+        // Verify GoogleSans.ttf itself already carries the unified 968/-241 metrics.
+        let num = u16::from_be_bytes([GOOGLE_SANS_TTF[4], GOOGLE_SANS_TTF[5]]) as usize;
+        for i in 0..num {
+            let rec = 12 + i * 16;
+            let off = u32::from_be_bytes([
+                GOOGLE_SANS_TTF[rec + 8],
+                GOOGLE_SANS_TTF[rec + 9],
+                GOOGLE_SANS_TTF[rec + 10],
+                GOOGLE_SANS_TTF[rec + 11],
+            ]) as usize;
+            if &GOOGLE_SANS_TTF[rec..rec + 4] == b"OS/2" {
+                let w_asc = u16::from_be_bytes([GOOGLE_SANS_TTF[off + 74], GOOGLE_SANS_TTF[off + 75]]);
+                let w_desc = u16::from_be_bytes([GOOGLE_SANS_TTF[off + 76], GOOGLE_SANS_TTF[off + 77]]);
+                assert_eq!((w_asc, w_desc), (968, 241));
+            }
+        }
     }
 }

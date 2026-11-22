@@ -240,18 +240,19 @@ pub fn segmented<T: Copy + PartialEq + 'static, F: Fn(T, &mut Window, &mut App) 
                         .id(SharedString::from(format!("{id}-{i}")))
                         .w(dp(seg_w))
                         .h_full()
+                        .px_1()
                         .flex()
                         .items_center()
                         .justify_center()
                         .text_sm()
-                        .truncate()
+                        .line_height(relative(1.0))
                         .cursor_pointer()
                         .when(selected, |d| d.font_weight(FontWeight::MEDIUM).text_color(t.primary_foreground))
                         .when(!selected, |d| {
                             d.text_color(t.muted_foreground).hover(|d| d.text_color(t.foreground))
                         })
                         .on_click(move |_, window, cx| on_select(value, window, cx))
-                        .child(*label)
+                        .child(div().min_w_0().truncate().child(*label))
                 })),
         )
 }
@@ -283,12 +284,15 @@ pub fn dot(color: Hsla) -> Div {
 }
 
 pub fn pill(text: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> Div {
-    div()
+    h_flex()
         .flex_none()
+        .items_center()
+        .justify_center()
         .px_2()
-        .py(dp(1.))
+        .py(dp(2.))
         .rounded_full()
         .text_xs()
+        .line_height(relative(1.1))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .text_color(fg)
@@ -638,7 +642,13 @@ pub fn bulk_actions(count: usize, all: bool, ops: BulkOps, cx: &App) -> Vec<AnyE
     let BulkOps { select_all, enable, update, delete, done } = ops;
     let disable = enable.clone();
     vec![
-        div().text_sm().text_color(muted).child(t!("bulk.selected", count)).into_any_element(),
+        h_flex()
+            .items_center()
+            .text_sm()
+            .line_height(relative(1.1))
+            .text_color(muted)
+            .child(t!("bulk.selected", count))
+            .into_any_element(),
         Button::new("bulk-all")
             .small()
             .ghost()
@@ -729,7 +739,8 @@ pub fn metric_chip(
             h_flex()
                 .gap_1()
                 .items_center()
-                .child(div().text_color(t.muted_foreground).child(extra_icon(icon).xsmall()))
+                .line_height(relative(1.1))
+                .child(div().flex().items_center().text_color(t.muted_foreground).child(extra_icon(icon).xsmall()))
                 // A new result remounts the value, which fades in.
                 .child(
                     div()
@@ -747,15 +758,19 @@ pub fn country_badge(c: &Country, id: SharedString, cx: &App) -> impl IntoElemen
         Origin::Ip(ip) => t!("geo.from_ip", ip).into(),
         Origin::Exit(ip) => t!("geo.from_exit", ip).into(),
     };
-    div()
+    h_flex()
         .id(id)
         .flex_none()
-        .px_1()
+        .items_center()
+        .justify_center()
+        .px_1p5()
+        .py(dp(1.5))
         .rounded(dp(4.))
         .border_1()
         .border_color(t.border)
         .bg(t.muted)
         .text_xs()
+        .line_height(relative(1.0))
         .font_family(t.mono_font_family.clone())
         .font_weight(FontWeight::MEDIUM)
         .text_color(t.muted_foreground)

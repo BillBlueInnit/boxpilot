@@ -516,6 +516,7 @@ impl RulesPage {
                 d.child(
                     h_flex()
                         .gap_1p5()
+                        .items_center()
                         .px_2p5()
                         .py_1p5()
                         .rounded(t.radius)
@@ -1351,6 +1352,7 @@ fn step_header(step: &'static str, title: &str, hint: &str, count: usize, cx: &A
                 .rounded_full()
                 .bg(t.primary.opacity(0.14))
                 .text_xs()
+                .line_height(gpui_kit::relative(1.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(t.primary)
                 .flex()
@@ -2053,6 +2055,7 @@ impl Render for CustomGroupEditor {
                 d.child(
                     h_flex()
                         .gap_2()
+                        .items_center()
                         .p_2()
                         .rounded(t.radius)
                         .bg(t.danger.opacity(0.1))
@@ -2251,6 +2254,7 @@ impl Render for CustomRuleEditor {
                 d.child(
                     h_flex()
                         .gap_2()
+                        .items_center()
                         .p_2()
                         .rounded(t.radius)
                         .bg(t.danger.opacity(0.1))
@@ -2484,6 +2488,7 @@ impl Render for RuleEditor {
                 d.child(
                     h_flex()
                         .gap_2()
+                        .items_center()
                         .p_2()
                         .rounded(t.radius)
                         .bg(t.danger.opacity(0.1))

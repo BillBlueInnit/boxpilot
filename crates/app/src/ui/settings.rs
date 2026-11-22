@@ -3,6 +3,7 @@ use boxpilot_core::model::{Accent, Backdrop, GpuPreference, Language, Settings, 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -414,17 +415,44 @@ impl SettingsPage {
                 (SharedString::from(label), *v)
             })
             .collect();
-        let font_options: Vec<(SharedString, UiFont)> = UiFont::ALL
-            .iter()
-            .map(|f| {
-                let label = match f {
-                    UiFont::System => t!("font.system"),
-                    UiFont::GoogleSans => t!("font.google_sans"),
-                    UiFont::SourceHanSans => t!("font.source_han_sans"),
-                };
-                (SharedString::from(label), *f)
+        let font_label = |f: UiFont| -> SharedString {
+            SharedString::from(match f {
+                UiFont::System => t!("font.system"),
+                UiFont::GoogleSans => t!("font.google_sans"),
+                UiFont::SourceHanSans => t!("font.source_han_sans"),
             })
-            .collect();
+        };
+        let current_font = s.ui_font;
+        let current_lang = s.language;
+        let font_picker = Button::new("ui-font")
+            .outline()
+            .small()
+            .label(font_label(current_font))
+            .dropdown_caret(true)
+            .dropdown_menu(move |mut menu, _, cx| {
+                let fallbacks = super::layout::font_fallbacks(current_lang, cx);
+                for f in UiFont::ALL {
+                    let label = font_label(f);
+                    let family = super::layout::resolve_ui_font(f, current_lang, cx);
+                    let fb = fallbacks.clone();
+                    let e = e_font.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div()
+                                .font_family(family.clone())
+                                .whitespace_nowrap()
+                                .when_some(fb.clone(), |mut d, fb| {
+                                    d.text_style().font_fallbacks = Some(fb);
+                                    d
+                                })
+                                .child(label.clone())
+                        })
+                        .checked(f == current_font)
+                        .on_click(move |_, _, _| e.update_settings(|s| s.ui_font = f)),
+                    );
+                }
+                menu
+            });
         let source_han_missing = s.ui_font == UiFont::SourceHanSans
             && !super::layout::has_source_han_sans(s.language, cx);
         let gpu_options: Vec<(SharedString, GpuPreference)> =
@@ -447,7 +475,7 @@ impl SettingsPage {
             .child(setting_row(
                 t!("set.ui_font"),
                 Some(t!("set.ui_font_desc")),
-                choice("ui-font", s.ui_font, font_options, move |v, _, _| e_font.update_settings(|s| s.ui_font = v)),
+                font_picker,
                 cx,
             ))
             .when(source_han_missing, |d| {

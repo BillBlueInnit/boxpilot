@@ -678,6 +678,7 @@ impl Render for SubEditor {
                 d.child(anim::enter(
                     h_flex()
                         .gap_2()
+                        .items_center()
                         .p_2()
                         .rounded(t.radius)
                         .bg(t.danger.opacity(0.1))

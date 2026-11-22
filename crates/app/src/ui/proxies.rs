@@ -49,7 +49,10 @@ impl ProxiesPage {
                 .rounded(t.radius)
                 .border_1()
                 .cursor_pointer()
+                .flex()
+                .items_center()
                 .text_sm()
+                .line_height(gpui_kit::relative(1.15))
                 .max_w(dp(260.))
                 .when(selected, |d| d.text_color(t.foreground).font_weight(FontWeight::MEDIUM))
                 .when(!selected, |d| d.text_color(t.muted_foreground).hover(|d| d.bg(muted_bg)))
@@ -60,9 +63,17 @@ impl ProxiesPage {
                 .child(
                     h_flex()
                         .gap_2()
+                        .items_center()
                         .min_w_0()
                         .child(div().min_w_0().truncate().child(outbound_label(&g.name)))
-                        .child(div().flex_none().text_xs().text_color(t.muted_foreground).child(g.members.len().to_string())),
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .line_height(gpui_kit::relative(1.0))
+                                .text_color(t.muted_foreground)
+                                .child(g.members.len().to_string()),
+                        ),
                 )
                 // The highlight eases in and out instead of snapping.
                 .with_spring(
