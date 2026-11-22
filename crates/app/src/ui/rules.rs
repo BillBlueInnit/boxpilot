@@ -17,14 +17,13 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AsyncApp, Context, Div, Entity, FocusHandle, Focusable, FontWeight, PathPromptOptions, SharedString,
-    Subscription, WeakEntity, Window, div,
+    App, AsyncApp, Context, Div, Entity, FocusHandle, Focusable, FontWeight, PathPromptOptions, ScrollHandle,
+    SharedString, Subscription, WeakEntity, Window, div,
 };
 
 use super::anim;
@@ -77,9 +76,6 @@ impl Render for DragRulePreview {
 
 pub struct RulesPage {
     state: Entity<AppState>,
-    // Rule match tester
-    tester_open: bool,
-    tester_input: Entity<InputState>,
     // Custom rules: visual quick-add + groups + text editor
     custom_mode: CustomViewMode,
     quick_kind: CustomRuleKind,
@@ -104,7 +100,6 @@ impl RulesPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
         let s = state.read(cx).engine.settings();
-        let tester_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("rules.tester_placeholder")));
         let quick_value = cx.new(|cx| {
             InputState::new(window, cx).placeholder(quick_placeholder(CustomRuleKind::DomainSuffix))
         });
@@ -145,11 +140,6 @@ impl RulesPage {
 
         let _subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
-            cx.subscribe(&tester_input, |_, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::Change) {
-                    cx.notify();
-                }
-            }),
             cx.subscribe_in(&quick_value, window, |this, _, e: &InputEvent, window, cx| {
                 match e {
                     InputEvent::PressEnter { .. } => this.submit_quick_rule(window, cx),
@@ -166,8 +156,6 @@ impl RulesPage {
 
         Self {
             state,
-            tester_open: false,
-            tester_input,
             custom_mode: CustomViewMode::Visual,
             quick_kind: CustomRuleKind::DomainSuffix,
             quick_value,
@@ -314,55 +302,6 @@ impl RulesPage {
                     .child(div().text_xs().text_color(t.muted_foreground).child(t!("rules.profiles_hint"))),
             )
             .child(div().grid().grid_cols(cols).gap_2p5().children(cards))
-    }
-
-    fn render_tester(&self, cx: &App) -> Div {
-        let engine = self.state.read(cx).engine.clone();
-        let query = self.tester_input.read(cx).value().to_string();
-        let result = engine.test_rule_match(&query);
-        let t = cx.theme();
-
-        card(cx)
-            .gap_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().flex_none().text_color(t.muted_foreground).child(IconName::Search))
-                    .child(div().flex_1().min_w_0().child(Input::new(&self.tester_input).small().cleanable(true))),
-            )
-            .when_some(result, |d, m| {
-                let (fg, bg) = target_colors(&m.target, cx);
-                let layer_label = match &m.layer {
-                    RuleMatchLayer::PrivateIp => t!("rules.match_private").to_string(),
-                    RuleMatchLayer::CustomRule { line_index } => t!("rules.match_custom", line_index + 1),
-                    RuleMatchLayer::CustomGroup { name, .. } => t!("rules.match_custom_group", name),
-                    RuleMatchLayer::RuleSet { name, .. } => t!("rules.match_ruleset", outbound_label(name)),
-                    RuleMatchLayer::BuiltIn { .. } => t!("rules.match_builtin").to_string(),
-                    RuleMatchLayer::Fallback => t!("rules.match_fallback").to_string(),
-                };
-                d.child(
-                    h_flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .items_center()
-                        .pt_0p5()
-                        .text_xs()
-                        .child(pill(layer_label, t.foreground, t.muted))
-                        .child(
-                            div()
-                                .font_family(t.mono_font_family.clone())
-                                .text_color(t.muted_foreground)
-                                .truncate()
-                                .child(m.rule),
-                        )
-                        .child(div().text_color(t.muted_foreground).child("→"))
-                        .child(pill(target_label(&m.target), fg, bg))
-                        .when(m.approximate, |d| {
-                            d.child(pill(t!("rules.match_approx"), t.muted_foreground, t.muted))
-                        }),
-                )
-            })
     }
 
     fn render_custom_section(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -1448,7 +1387,6 @@ fn switch_row(
 
 impl Render for RulesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        sync_placeholder(&self.tester_input, t!("rules.tester_placeholder"), window, cx);
         let engine = self.state.read(cx).engine.clone();
         let s = engine.settings();
         if self.custom_seen != s.custom_rules {
@@ -1467,7 +1405,41 @@ impl Render for RulesPage {
         }
         let this = cx.entity().downgrade();
 
-        let actions = if self.sel.active {
+        let actions = vec![
+            Button::new("open-tester")
+                .small()
+                .icon(IconName::Search)
+                .label(t!("btn.test_rules"))
+                .on_click(|_, window, cx| open_rule_tester(window, cx))
+                .into_any_element(),
+            Button::new("open-library")
+                .small()
+                .icon(IconName::Star)
+                .label(t!("btn.service_library"))
+                .on_click(|_, window, cx| open_service_library(window, cx))
+                .into_any_element(),
+            Button::new("import-acl")
+                .small()
+                .icon(extra_icon(Lucide::Download))
+                .label(t!("btn.import_acl"))
+                .on_click(|_, window, cx| open_acl_import(window, cx))
+                .into_any_element(),
+            Button::new("add-ruleset")
+                .small()
+                .primary()
+                .icon(IconName::Plus)
+                .label(t!("btn.add_ruleset"))
+                .on_click(|_, window, cx| open_rule_editor(None, window, cx))
+                .into_any_element(),
+        ];
+
+        // Section ②: Routing rule-sets
+        let ids = Rc::new(order.clone());
+        let (e_on, e_off, e_all, ids_on, ids_off) = (engine.clone(), engine.clone(), engine.clone(), ids.clone(), ids);
+        let all_on = providers.iter().all(|p| p.enabled);
+        let all_off = providers.iter().all(|p| !p.enabled);
+        let this_sel = this.clone();
+        let bulk_bar = self.sel.active.then(|| {
             let chosen = Rc::new(self.sel.ordered(&order));
             let all = !order.is_empty() && chosen.len() == order.len();
             let (this_all, this_del, this_done) = (this.clone(), this.clone(), this.clone());
@@ -1512,50 +1484,7 @@ impl Render for RulesPage {
                 },
                 cx,
             )
-        } else {
-            let this_test = this.clone();
-            let tester_open = self.tester_open;
-            vec![
-                Button::new("toggle-tester")
-                    .small()
-                    .when(!tester_open, |b| b.ghost())
-                    .icon(IconName::Search)
-                    .label(t!("btn.test_rules"))
-                    .on_click(move |_, _, cx| {
-                        let _ = this_test.update(cx, |page, cx| {
-                            page.tester_open = !page.tester_open;
-                            cx.notify();
-                        });
-                    })
-                    .into_any_element(),
-                Button::new("open-library")
-                    .small()
-                    .icon(IconName::Star)
-                    .label(t!("btn.service_library"))
-                    .on_click(|_, window, cx| open_service_library(window, cx))
-                    .into_any_element(),
-                Button::new("import-acl")
-                    .small()
-                    .icon(extra_icon(Lucide::Download))
-                    .label(t!("btn.import_acl"))
-                    .on_click(|_, window, cx| open_acl_import(window, cx))
-                    .into_any_element(),
-                Button::new("add-ruleset")
-                    .small()
-                    .primary()
-                    .icon(IconName::Plus)
-                    .label(t!("btn.add_ruleset"))
-                    .on_click(|_, window, cx| open_rule_editor(None, window, cx))
-                    .into_any_element(),
-            ]
-        };
-
-        // Section ②: Routing rule-sets
-        let ids = Rc::new(order.clone());
-        let (e_on, e_off, e_all, ids_on, ids_off) = (engine.clone(), engine.clone(), engine.clone(), ids.clone(), ids);
-        let all_on = providers.iter().all(|p| p.enabled);
-        let all_off = providers.iter().all(|p| !p.enabled);
-        let this_sel = this.clone();
+        });
         let rulesets_card = card(cx)
             .gap_0()
             .child(
@@ -1566,6 +1495,9 @@ impl Render for RulesPage {
                     .gap_2()
                     .pb_2()
                     .child(step_header("2", t!("rules.step_sets"), t!("rules.step_sets_badge"), providers.len(), cx))
+                    .when_some(bulk_bar, |d, items| {
+                        d.child(h_flex().gap_1().items_center().flex_wrap().children(items))
+                    })
                     .when(!self.sel.active, |d| {
                         d.child(
                             h_flex()
@@ -1727,13 +1659,11 @@ impl Render for RulesPage {
             });
 
         let profiles_card = self.render_profiles(window, cx);
-        let tester_card = self.tester_open.then(|| self.render_tester(cx));
         let custom_card = self.render_custom_section(window, cx);
 
         page(t!("nav.rules"), Some(t!("rules.pipeline_subtitle").to_string()), actions, cx).child(
             v_flex()
                 .gap_4()
-                .when_some(tester_card, |d, c| d.child(anim::enter(c, "rules-tester", 0.0)))
                 .child(anim::enter(profiles_card, "rules-profiles", 0.0))
                 .child(anim::enter(custom_card, "rules-custom", anim::stagger(1) * 0.5))
                 .child(anim::enter(rulesets_card, "rules-list", anim::stagger(2) * 0.5))
@@ -1773,8 +1703,114 @@ fn confirm_apply_profile(
     });
 }
 
+struct RuleTesterView {
+    state: Entity<AppState>,
+    input: Entity<InputState>,
+    _subs: Vec<Subscription>,
+}
+
+impl RuleTesterView {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let state = AppState::global(cx);
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("rules.tester_placeholder")));
+        let _subs = vec![
+            cx.observe(&state, |_, _, cx| cx.notify()),
+            cx.subscribe(&input, |_, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+        ];
+        Self { state, input, _subs }
+    }
+}
+
+impl Render for RuleTesterView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        sync_placeholder(&self.input, t!("rules.tester_placeholder"), window, cx);
+        let engine = self.state.read(cx).engine.clone();
+        let query = self.input.read(cx).value().to_string();
+        let result = engine.test_rule_match(&query);
+        let t = cx.theme();
+
+        v_flex()
+            .gap_3()
+            .child(div().text_xs().text_color(t.muted_foreground).child(t!("rules.pipeline_subtitle")))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_none().text_color(t.muted_foreground).child(IconName::Search))
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.input).small().cleanable(true))),
+            )
+            .when_some(result, |d, m| {
+                let (fg, bg) = target_colors(&m.target, cx);
+                let layer_label = match &m.layer {
+                    RuleMatchLayer::PrivateIp => t!("rules.match_private").to_string(),
+                    RuleMatchLayer::CustomRule { line_index } => t!("rules.match_custom", line_index + 1),
+                    RuleMatchLayer::CustomGroup { name, .. } => t!("rules.match_custom_group", name),
+                    RuleMatchLayer::RuleSet { name, .. } => t!("rules.match_ruleset", outbound_label(name)),
+                    RuleMatchLayer::BuiltIn { .. } => t!("rules.match_builtin").to_string(),
+                    RuleMatchLayer::Fallback => t!("rules.match_fallback").to_string(),
+                };
+                d.child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .items_center()
+                        .px_3()
+                        .py_2p5()
+                        .rounded(t.radius)
+                        .border_1()
+                        .border_color(hairline(cx))
+                        .bg(t.muted.opacity(0.35))
+                        .text_xs()
+                        .child(pill(layer_label, t.foreground, t.muted))
+                        .child(
+                            div()
+                                .font_family(t.mono_font_family.clone())
+                                .text_color(t.muted_foreground)
+                                .truncate()
+                                .child(m.rule),
+                        )
+                        .child(div().text_color(t.muted_foreground).child("→"))
+                        .child(pill(target_label(&m.target), fg, bg))
+                        .when(m.approximate, |d| {
+                            d.child(pill(t!("rules.match_approx"), t.muted_foreground, t.muted))
+                        }),
+                )
+            })
+    }
+}
+
+/// Auto-focused rule match tester dialog (no layout shift on the Rules page).
+pub fn open_rule_tester(window: &mut Window, cx: &mut App) {
+    let view = cx.new(|cx| RuleTesterView::new(window, cx));
+    let dialog_w = (window.viewport_size().width.as_f32() / super::layout::scale() - 48.0).clamp(360.0, 560.0);
+    let first = Cell::new(true);
+    window.open_dialog(cx, move |dialog, window, cx| {
+        if first.replace(false) {
+            let focus = view.read(cx).input.read(cx).focus_handle(cx);
+            focus.focus(window, cx);
+        }
+        dialog
+            .title(t!("btn.test_rules"))
+            .w(dp(dialog_w))
+            .child(view.clone())
+            .footer(
+                DialogFooter::new().child(
+                    Button::new("tester-done")
+                        .primary()
+                        .label(t!("btn.done"))
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                ),
+            )
+    });
+}
+
 struct ServiceLibraryView {
     state: Entity<AppState>,
+    scroll: ScrollHandle,
     _sub: Subscription,
 }
 
@@ -1782,12 +1818,12 @@ impl ServiceLibraryView {
     fn new(cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
         let _sub = cx.observe(&state, |_, _, cx| cx.notify());
-        Self { state, _sub }
+        Self { state, scroll: ScrollHandle::new(), _sub }
     }
 }
 
 impl Render for ServiceLibraryView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let engine = self.state.read(cx).engine.clone();
         let t = cx.theme();
         let mut sections = v_flex().gap_3();
@@ -1858,22 +1894,41 @@ impl Render for ServiceLibraryView {
             );
         }
 
+        let avail_h = (window.viewport_size().height.as_f32() / super::layout::scale() - 250.0).clamp(220.0, 460.0);
+        let list_scroll = super::smooth_scroll::with_scrollbar(
+            "service-lib-scrollbar",
+            &self.scroll,
+            super::smooth_scroll::smooth_scroll(
+                "service-lib-smooth",
+                &self.scroll,
+                div()
+                    .id("service-lib-list")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .pr_3()
+                    .pb_2()
+                    .child(sections),
+            ),
+        )
+        .w_full()
+        .h(dp(avail_h));
+
         v_flex()
             .gap_3()
-            .max_h(dp(500.))
-            .overflow_y_scrollbar()
             .child(div().text_sm().text_color(t.muted_foreground).child(t!("rules.library_desc")))
-            .child(sections)
+            .child(list_scroll)
     }
 }
 
 /// Curated service library dialog: one-click add/remove popular services with zero URLs.
 pub fn open_service_library(window: &mut Window, cx: &mut App) {
     let view = cx.new(ServiceLibraryView::new);
+    let dialog_w = (window.viewport_size().width.as_f32() / super::layout::scale() - 48.0).clamp(380.0, 600.0);
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
             .title(t!("rules.library_title"))
-            .w(dp(600.))
+            .w(dp(dialog_w))
             .child(view.clone())
             .footer(
                 DialogFooter::new().child(
