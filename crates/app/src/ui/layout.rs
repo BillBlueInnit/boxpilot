@@ -28,16 +28,30 @@ static SCALE: AtomicU32 = AtomicU32::new(0x3F80_0000);
 static SYSTEM_SCALE: AtomicU32 = AtomicU32::new(0x3F80_0000);
 /// Opacity of page sheets and cards: below 1 when the window is translucent.
 static SURFACE_ALPHA: AtomicU32 = AtomicU32::new(0x3F80_0000);
+/// Discrete transparency tier (0 = Solid .. 4 = Ultra).
+static TRANSPARENCY_TIER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2);
 
 pub fn surface_alpha() -> f32 {
     f32::from_bits(SURFACE_ALPHA.load(Ordering::Relaxed))
 }
 
+/// Maps a stored percentage (`0 / 20 / 40 / 60 / 80`) to its nearest tier index `0..=4`.
+pub fn transparency_tier_for(pct: u32) -> usize {
+    ((pct.min(80) + 10) / 20).min(4) as usize
+}
+
+/// Selects a per-tier value `[Solid, Subtle, Balanced, Clear, Ultra]`.
+pub fn pick_tier(levels: [f32; 5]) -> f32 {
+    levels[TRANSPARENCY_TIER.load(Ordering::Relaxed).min(4)]
+}
+
 /// Whether the window actually shows a backdrop (set with the material, so
 /// drawing follows what was applied, not just the setting).
 static TRANSLUCENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Whether the active backdrop is Acrylic / OS Blur (as opposed to Mica / Opaque).
+/// Whether the active backdrop is Acrylic / OS Blur / Frosted (as opposed to Mica / Opaque).
 static GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether Windows is using the macOS-style Frosted vibrancy backdrop.
+static FROSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn translucent() -> bool {
     TRANSLUCENT.load(Ordering::Relaxed)
@@ -47,9 +61,16 @@ pub fn is_glass() -> bool {
     GLASS.load(Ordering::Relaxed)
 }
 
-pub fn set_surface_alpha(translucent: bool, glass: bool, transparency: u32) -> bool {
+pub fn is_frosted() -> bool {
+    FROSTED.load(Ordering::Relaxed)
+}
+
+pub fn set_surface_alpha(translucent: bool, glass: bool, frosted: bool, transparency: u32) -> bool {
     TRANSLUCENT.store(translucent, Ordering::Relaxed);
     GLASS.store(translucent && glass, Ordering::Relaxed);
+    FROSTED.store(translucent && frosted, Ordering::Relaxed);
+    let tier = if translucent { transparency_tier_for(transparency) } else { 0 };
+    TRANSPARENCY_TIER.store(tier, Ordering::Relaxed);
     // Never fully clear: text needs something to sit on.
     let a = if translucent { 1.0 - transparency.min(80) as f32 / 100.0 } else { 1.0 };
     let changed = (a - surface_alpha()).abs() > f32::EPSILON;
@@ -95,6 +116,11 @@ pub fn apply_scale(settings: &Settings, cx: &mut App) -> bool {
     let theme = Theme::global_mut(cx);
     theme.font_size = px(BASE_FONT * s);
     theme.mono_font_size = px(13.0 * s);
+    // Align internal corner radii to the host platform's native window & control HIG:
+    // Windows 11 Fluent 2 (8 px cards / 6 px controls), macOS & Linux (10 px cards / 6 px controls).
+    let (r_ctrl, r_card) = if cfg!(windows) { (6.0, 8.0) } else { (6.0, 10.0) };
+    theme.radius = px(r_ctrl * s);
+    theme.radius_lg = px(r_card * s);
     let font_changed = apply_fonts(settings, cx);
     scale_changed || font_changed
 }

@@ -26,7 +26,6 @@ use gpui_kit::{
     SharedString, Subscription, WeakEntity, Window, div,
 };
 
-use super::anim;
 use super::layout::dp;
 use super::subscriptions::{confirm_delete, field};
 use super::widgets::*;
@@ -383,7 +382,7 @@ impl RulesPage {
                 .gap_2p5()
                 .child(header)
                 .child(div().text_xs().text_color(t.muted_foreground).child(t!("rules.custom_help")))
-                .child(Textarea::new(&self.custom_text).h(dp(190.)))
+                .child(blur_on_outside_click(&self.custom_text, Textarea::new(&self.custom_text).h(dp(190.)), cx))
                 .child(
                     h_flex()
                         .gap_2()
@@ -447,7 +446,7 @@ impl RulesPage {
                     cx.notify();
                 });
             }))
-            .child(div().flex_1().min_w(dp(190.)).child(Input::new(&self.quick_value).small()))
+            .child(div().flex_1().min_w(dp(190.)).child(blur_on_outside_click(&self.quick_value, Input::new(&self.quick_value).small(), cx)))
             .when(show_pick_app, |d| {
                 d.child(
                     Button::new("quick-pick-app")
@@ -1649,13 +1648,13 @@ impl Render for RulesPage {
                     .child(setting_row(
                         t!("rules.geosite_url"),
                         Some(t!("rules.template_desc")),
-                        div().w(dp(340.)).child(Input::new(&self.geosite).small()),
+                        div().w(dp(340.)).child(blur_on_outside_click(&self.geosite, Input::new(&self.geosite).small(), cx)),
                         cx,
                     ))
                     .child(setting_row(
                         t!("rules.geoip_url"),
                         Some(t!("rules.template_desc")),
-                        div().w(dp(340.)).child(Input::new(&self.geoip).small()),
+                        div().w(dp(340.)).child(blur_on_outside_click(&self.geoip, Input::new(&self.geoip).small(), cx)),
                         cx,
                     ))
             });
@@ -1666,11 +1665,11 @@ impl Render for RulesPage {
         page(t!("nav.rules"), Some(t!("rules.pipeline_subtitle").to_string()), actions, cx).child(
             v_flex()
                 .gap_4()
-                .child(anim::enter(profiles_card, "rules-profiles", 0.0))
-                .child(anim::enter(custom_card, "rules-custom", anim::stagger(1) * 0.5))
-                .child(anim::enter(rulesets_card, "rules-list", anim::stagger(2) * 0.5))
-                .child(anim::enter(fallback_card, "rules-fallback", anim::stagger(3) * 0.5))
-                .child(anim::enter(advanced_card, "rules-advanced", anim::stagger(4) * 0.5)),
+                .child(profiles_card)
+                .child(custom_card)
+                .child(rulesets_card)
+                .child(fallback_card)
+                .child(advanced_card),
         )
     }
 }

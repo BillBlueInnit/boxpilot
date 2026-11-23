@@ -22,6 +22,24 @@ pub fn extra_icon(name: gpui_kit::assets::IconName) -> Icon {
     Icon::new(name)
 }
 
+/// Wraps a focusable text input so clicking outside its bounds clears focus
+/// (GPUI keeps focus on the last focused handle when clicking non-focusable UI).
+pub fn blur_on_outside_click<T: gpui_kit::Focusable + 'static>(
+    state: &gpui_kit::Entity<T>,
+    el: impl IntoElement,
+    cx: &App,
+) -> Div {
+    let focus = state.read(cx).focus_handle(cx);
+    div()
+        .w_full()
+        .on_mouse_down_out(move |_, window, cx| {
+            if focus.contains_focused(window, cx) {
+                window.blur(cx);
+            }
+        })
+        .child(el)
+}
+
 /// Keeps a search box's hint in the current language.
 pub fn sync_placeholder(
     input: &gpui_kit::Entity<gpui_kit::component::input::InputState>,
@@ -48,20 +66,17 @@ pub fn card(cx: &App) -> Div {
         .bg(surface(cx))
 }
 
-/// Edge colour for cards and the page sheet. On Dark Acrylic/Blur a faint
-/// luminous rim defines elevated glass cards; on Light surfaces a crisp dark
-/// hairline keeps cards sharp without heavy borders.
+/// Edge colour for cards and the page sheet. Harmonious across every theme and
+/// transparency tier: faint luminous rim on dark surfaces, crisp hairline on light.
 pub fn hairline(cx: &App) -> Hsla {
     if cx.theme().is_dark() {
-        if super::layout::is_glass() {
-            gpui_kit::white().opacity(0.095)
+        if super::layout::translucent() {
+            gpui_kit::white().opacity(0.085)
         } else {
-            gpui_kit::black().opacity(0.14)
+            gpui_kit::white().opacity(0.075)
         }
-    } else if super::layout::is_glass() {
-        gpui_kit::black().opacity(0.075)
     } else {
-        gpui_kit::black().opacity(0.06)
+        gpui_kit::black().opacity(0.065)
     }
 }
 
@@ -245,7 +260,7 @@ pub fn segmented<T: Copy + PartialEq + 'static, F: Fn(T, &mut Window, &mut App) 
                         .items_center()
                         .justify_center()
                         .text_sm()
-                        .line_height(relative(1.0))
+                        .line_height(relative(1.35))
                         .cursor_pointer()
                         .when(selected, |d| d.font_weight(FontWeight::MEDIUM).text_color(t.primary_foreground))
                         .when(!selected, |d| {
@@ -289,10 +304,10 @@ pub fn pill(text: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> Div {
         .items_center()
         .justify_center()
         .px_2()
-        .py(dp(2.))
+        .py(dp(1.5))
         .rounded_full()
         .text_xs()
-        .line_height(relative(1.1))
+        .line_height(relative(1.25))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .text_color(fg)
@@ -428,36 +443,14 @@ fn strip_flags(name: &str) -> String {
     if cleaned.is_empty() { name.to_string() } else { cleaned }
 }
 
-/// How switches look here: each platform draws its own.
-#[derive(Clone, Copy, PartialEq)]
-enum ToggleLook {
-    /// Windows 11 toggle: outlined ring when off, accent fill when on.
-    Fluent,
-    /// macOS switch: grey or accent track, white knob.
-    Apple,
-    /// GNOME / KDE switch: like macOS, a little wider.
-    Adwaita,
-}
-
-fn toggle_look() -> ToggleLook {
-    if cfg!(windows) {
-        ToggleLook::Fluent
-    } else if cfg!(target_os = "macos") {
-        ToggleLook::Apple
-    } else {
-        ToggleLook::Adwaita
-    }
-}
-
 fn mix(a: Hsla, b: Hsla, p: f32) -> Hsla {
     let (a, b) = (a.to_rgb(), b.to_rgb());
     let l = |x: f32, y: f32| x + (y - x) * p;
     gpui_kit::Rgba { r: l(a.r, b.r), g: l(a.g, b.g), b: l(a.b, b.b), a: l(a.a, b.a) }.into()
 }
 
-/// A switch in the platform's own style. Focus, Space/Enter and the
-/// accessibility role come from gpui-base's headless switch; only the
-/// drawing is ours, eased between states on a spring.
+/// A soft-filled pill switch with a spring-eased circular knob. Focus,
+/// Space/Enter and the accessibility role come from gpui-base's headless switch.
 #[derive(IntoElement)]
 pub struct Toggle {
     id: ElementId,
@@ -492,56 +485,66 @@ impl RenderOnce for Toggle {
         let t = cx.theme();
         let dark = t.is_dark();
         let (accent, on_accent, ring) = (t.primary, t.primary_foreground, t.ring);
-        let look = toggle_look();
         let checked = self.checked;
         let (white, black, clear) = (gpui_kit::white(), gpui_kit::black(), gpui_kit::transparent_black());
-        // Track size and the knob's diameter off / on, in dp.
-        let (w, h, knob_off, knob_on) = match look {
-            ToggleLook::Fluent => (40.0, 20.0, 12.0, 14.0),
-            ToggleLook::Apple => (38.0, 22.0, 18.0, 18.0),
-            ToggleLook::Adwaita => (42.0, 24.0, 20.0, 20.0),
-        };
-        let (off_fill, off_stroke, off_knob, on_knob) = match look {
-            // Fluent: ControlAltFillSecondary, ControlStrongStroke, TextFillSecondary, TextOnAccent.
-            ToggleLook::Fluent => (
-                if dark { black.opacity(0.1) } else { black.opacity(0.024) },
-                if dark { white.opacity(0.54) } else { black.opacity(0.45) },
-                if dark { white.opacity(0.79) } else { black.opacity(0.61) },
-                on_accent,
-            ),
-            _ => (if dark { white.opacity(0.18) } else { black.opacity(0.12) }, clear, white, white),
-        };
+        // Track and knob dimensions in dp: 2 dp uniform inset on all four sides
+        // (exact integer pixels at 100%, 150%, 200% DPI).
+        let (w, h, size) = (38.0_f32, 22.0_f32, 18.0_f32);
+        let pad = (h - size) / 2.0;
+        let travel = w - size - pad * 2.0;
+        let off_fill = if dark { white.opacity(0.18) } else { black.opacity(0.16) };
+        let off_knob = if dark { white.opacity(0.94) } else { white };
+        // Keep the circular knob crisp white across all coloured accents in both
+        // light and dark mode; only switch to dark on near-white tracks (e.g.
+        // dark-mode Graphite #EDEDED) so the knob stays clearly visible.
+        let rgb = accent.to_rgb();
+        let accent_luma = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
+        let on_knob = if accent_luma > 0.78 { on_accent } else { white };
         let focus = window.use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle()).read(cx).clone();
         let focused = focus.is_focused(window);
         let child_id = |name: &'static str| ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), name.into());
         let on_change = self.on_change.clone();
         let tooltip = self.tooltip.clone();
 
-        let knob = div().absolute().rounded_full().when(look != ToggleLook::Fluent, |d| d.shadow_sm()).with_spring(
+        let knob = div().flex_none().size(dp(size)).rounded_full().shadow_xs().with_spring(
             child_id("knob"),
             SpringAnimation::new(anim::SNAPPY).to(checked),
             move |d, p| {
                 let p = p.0.clamp(0.0, 1.0);
-                let size = knob_off + (knob_on - knob_off) * p;
-                let left = (h - knob_off) / 2.0 + (w - (h - knob_on) / 2.0 - knob_on - (h - knob_off) / 2.0) * p;
-                d.size(dp(size)).left(dp(left - 1.0)).top(dp((h - size) / 2.0 - 1.0)).bg(mix(off_knob, on_knob, p))
+                d.ml(dp(pad + travel * p)).bg(mix(off_knob, on_knob, p))
             },
         );
-        let track = div().relative().flex_none().w(dp(w)).h(dp(h)).rounded_full().border_1().child(knob).with_spring(
-            child_id("track"),
-            SpringAnimation::new(anim::SNAPPY).to(checked),
-            move |d, p| {
-                let p = p.0.clamp(0.0, 1.0);
-                d.bg(mix(off_fill, accent, p)).border_color(if focused { ring } else { mix(off_stroke, accent, p) })
-            },
-        );
+        // Flex vertical centering inside a borderless pill guarantees the knob
+        // stays dead-center at every DPI; focus renders as an outer ring.
+        let track = h_flex()
+            .flex_none()
+            .items_center()
+            .w(dp(w))
+            .h(dp(h))
+            .rounded_full()
+            .child(knob)
+            .with_spring(
+                child_id("track"),
+                SpringAnimation::new(anim::SNAPPY).to(checked),
+                move |d, p| {
+                    let p = p.0.clamp(0.0, 1.0);
+                    d.bg(mix(off_fill, accent, p))
+                },
+            );
+        let framed = div()
+            .flex_none()
+            .p(dp(1.5))
+            .rounded_full()
+            .border_1()
+            .border_color(if focused { ring } else { clear })
+            .child(track);
         gpui_kit::base::Switch::new(self.id.clone())
             .checked(checked)
             .track_focus(&focus)
             .when_some(tooltip.clone(), |s, label| s.accessibility_label(label))
             .when_some(on_change, |s, f| s.on_change(move |next, _, window, cx| f(&next, window, cx)))
             .cursor_pointer()
-            .child(track)
+            .child(framed)
             .when_some(tooltip, |s, text| {
                 s.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx))
             })
@@ -555,20 +558,27 @@ pub fn surface(cx: &App) -> Hsla {
     let dark = cx.theme().is_dark();
     let white = gpui_kit::white();
     if super::layout::is_glass() {
-        let a = super::layout::surface_alpha();
+        let frosted = super::layout::is_frosted();
         if dark {
-            // Subtle luminous glass lift over the smoked Acrylic content pane.
-            white.opacity(0.065 + 0.03 * a)
+            let alpha = if frosted {
+                super::layout::pick_tier([0.075, 0.068, 0.062, 0.054, 0.044])
+            } else {
+                super::layout::pick_tier([0.065, 0.062, 0.058, 0.052, 0.045])
+            };
+            white.opacity(alpha)
+        } else if frosted {
+            // Crisp harmonious porcelain white cards over the compositor tint.
+            white.opacity(super::layout::pick_tier([0.95, 0.84, 0.74, 0.62, 0.48]))
         } else {
-            // Luminous frosted white glass card over the airy light content pane.
-            white.opacity(0.46 + 0.48 * a)
+            white.opacity(super::layout::pick_tier([0.95, 0.82, 0.70, 0.58, 0.44]))
         }
     } else if super::layout::translucent() {
-        let a = super::layout::surface_alpha();
         if dark {
-            gpui_kit::Hsla::from(gpui_kit::rgb(0x2B2B2B)).opacity(a.max(0.28))
+            // Fluent's luminous white lift stays harmonious with Dark Mica at every tier.
+            white.opacity(super::layout::pick_tier([0.055, 0.055, 0.052, 0.048, 0.042]))
         } else {
-            white.opacity(0.58 + 0.38 * a)
+            // Gentle pure-white progression so Light Mica cards never look grey or harsh.
+            white.opacity(super::layout::pick_tier([0.96, 0.86, 0.78, 0.70, 0.58]))
         }
     } else if dark {
         // Fluent's card fill over the solid content layer.
@@ -645,7 +655,7 @@ pub fn bulk_actions(count: usize, all: bool, ops: BulkOps, cx: &App) -> Vec<AnyE
         h_flex()
             .items_center()
             .text_sm()
-            .line_height(relative(1.1))
+            .line_height(relative(1.35))
             .text_color(muted)
             .child(t!("bulk.selected", count))
             .into_any_element(),
@@ -718,7 +728,6 @@ pub fn metric_chip(
         Metric::Ms(ms) => (format!("{ms} ms"), delay_color(Some(ms), cx)),
         Metric::Speed(b) => (fmt_speed(b), t.foreground),
     };
-    let key = SharedString::from(format!("{id}-{text}"));
     div()
         .id(id)
         .flex_none()
@@ -739,14 +748,9 @@ pub fn metric_chip(
             h_flex()
                 .gap_1()
                 .items_center()
-                .line_height(relative(1.1))
+                .line_height(relative(1.3))
                 .child(div().flex().items_center().text_color(t.muted_foreground).child(extra_icon(icon).xsmall()))
-                // A new result remounts the value, which fades in.
-                .child(
-                    div()
-                        .with_spring(key, SpringAnimation::new(anim::SNAPPY).to(1.0f32).from(0.0), |d, p| d.opacity(p.clamp(0.0, 1.0)))
-                        .child(text),
-                ),
+                .child(text),
         )
 }
 

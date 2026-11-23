@@ -585,8 +585,8 @@ impl Render for DashboardPage {
         let count = |v: f32| format!("{}", v.round() as u64);
 
         page(t!("nav.dashboard"), None, vec![], cx)
-            .child(anim::enter(div().child(self.hero(cx)), "dash-hero", 0.0))
-            .child(anim::enter(
+            .child(self.hero(cx))
+            .child(
                 h_flex()
                     .gap_4()
                     .flex_wrap()
@@ -612,11 +612,9 @@ impl Render for DashboardPage {
                         c_nodes,
                         cx,
                     )),
-                "dash-stats",
-                anim::stagger(1),
-            ))
-            .child(anim::enter(div().child(self.chart(cx)), "dash-chart", anim::stagger(2)))
-            .child(anim::enter(
+            )
+            .child(self.chart(cx))
+            .child(
                 // Columns share the row height, so neither leaves a hole.
                 h_flex()
                     .gap_4()
@@ -631,8 +629,6 @@ impl Render for DashboardPage {
                             .child(self.now_using(cx))
                             .child(self.subscriptions(cx)),
                     ),
-                "dash-bottom",
-                anim::stagger(3),
-            ))
+            )
     }
 }

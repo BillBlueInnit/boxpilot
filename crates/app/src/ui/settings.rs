@@ -9,7 +9,6 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, Focusable as _, FontWeight, SharedString, Subscription, Window, div};
 
-use super::anim;
 use super::widgets::*;
 use crate::state::AppState;
 use crate::t;
@@ -20,6 +19,7 @@ type Setter = fn(&mut Settings, &str) -> Result<(), &'static str>;
 
 struct Field {
     input: Entity<InputState>,
+    focus: gpui_kit::FocusHandle,
     get: Getter,
     set: Setter,
 }
@@ -73,7 +73,7 @@ fn required(v: &str) -> Result<String, &'static str> {
 fn spec(f: F) -> (Getter, Setter, String) {
     match f {
         F::CorePath => (|s| s.core_path.clone(), |s, v| { s.core_path = v.trim().trim_matches('"').into(); Ok(()) }, t!("set.core_path_ph").into()),
-        F::Mirror => (|s| s.github_mirror.clone(), |s, v| { s.github_mirror = v.trim().into(); Ok(()) }, "https://ghfast.top/".into()),
+        F::Mirror => (|s| s.github_mirror.clone(), |s, v| { s.github_mirror = v.trim().into(); Ok(()) }, t!("set.mirror_ph").into()),
         F::MixedPort => (|s| s.mixed_port.to_string(), |s, v| {
             let p = parse_port(v)?;
             if p == s.clash_api_port { return Err(t!("err.port_api")); }
@@ -130,12 +130,13 @@ impl SettingsPage {
             let (get, set, placeholder) = spec(f);
             let value = get(&settings);
             let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value));
+            let focus = input.read(cx).focus_handle(cx);
             subs.push(cx.subscribe_in(&input, window, move |this: &mut Self, _, e: &InputEvent, window, cx| {
                 if matches!(e, InputEvent::Blur | InputEvent::PressEnter { .. }) {
                     this.commit(f, window, cx);
                 }
             }));
-            fields.push((f, Field { input, get, set }));
+            fields.push((f, Field { input, focus, get, set }));
         }
         Self { state, fields, input_w: 300.0, _subs: subs }
     }
@@ -181,7 +182,16 @@ impl SettingsPage {
     }
 
     fn input(&self, f: F) -> impl IntoElement {
-        div().w(dp(self.input_w)).child(Input::new(&self.field(f).input).small())
+        let field = self.field(f);
+        let focus = field.focus.clone();
+        div()
+            .w(dp(self.input_w))
+            .on_mouse_down_out(move |_, window, cx| {
+                if focus.contains_focused(window, cx) {
+                    window.blur(cx);
+                }
+            })
+            .child(Input::new(&field.input).small())
     }
 
     fn core_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -262,6 +272,7 @@ impl SettingsPage {
                             .child(
                                 Button::new("check-core")
                                     .small()
+                                    .icon(IconName::RefreshCw)
                                     .label(t!("btn.check_updates"))
                                     .disabled(busy)
                                     .on_click(move |_, _, _| e1.check_core_update()),
@@ -513,12 +524,19 @@ impl SettingsPage {
                             Backdrop::Mica => t!("backdrop.mica"),
                             Backdrop::MicaAlt => t!("backdrop.mica_alt"),
                             Backdrop::Acrylic => t!("backdrop.acrylic"),
+                            Backdrop::Frosted => t!("backdrop.frosted"),
                         };
                         (SharedString::from(label), *b)
                     })
                     .collect();
-                let levels: Vec<(SharedString, u32)> =
-                    [0u32, 20, 40, 60, 80].iter().map(|v| (SharedString::from(format!("{v}%")), *v)).collect();
+                let levels: Vec<(SharedString, u32)> = vec![
+                    (t!("trans.solid").into(), 0),
+                    (t!("trans.subtle").into(), 20),
+                    (t!("trans.balanced").into(), 40),
+                    (t!("trans.clear").into(), 60),
+                    (t!("trans.ultra").into(), 80),
+                ];
+                let current_trans = (super::layout::transparency_tier_for(s.transparency) as u32) * 20;
                 // Only Windows has several materials; elsewhere it is the system blur.
                 let materials = crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials;
                 d.child(switch_row("mica", t!("set.mica"), t!("set.mica_desc"), s.mica, &e_mica, |s, v| s.mica = v, cx))
@@ -534,7 +552,7 @@ impl SettingsPage {
                         d.child(setting_row(
                             t!("set.transparency"),
                             Some(t!("set.transparency_desc")),
-                            choice("transparency", s.transparency, levels, move |v, _, _| {
+                            choice("transparency", current_trans, levels, move |v, _, _| {
                                 e_glass.update_settings(|s| s.transparency = v)
                             }),
                             cx,
@@ -836,11 +854,6 @@ impl Render for SettingsPage {
                 .into_any_element(),
         ];
 
-        let sections: Vec<gpui_kit::AnyElement> = sections
-            .into_iter()
-            .enumerate()
-            .map(|(i, el)| anim::enter(div().child(el), ("settings-section", i), anim::stagger(i) * 0.6).into_any_element())
-            .collect();
         // Wide windows get two columns instead of a narrow strip with empty space beside it.
         let body = if m.content >= 1180.0 {
             let (mut left, mut right) = (Vec::new(), Vec::new());

@@ -372,46 +372,40 @@ pub fn set_frame_theme(window: &Window, dark: bool, follow_system: bool) {
 /// Colours the 1 px window border Windows draws. Left alone it follows the
 /// system theme, so a light window on a dark system got a dark outline; it
 /// takes Fluent's surface stroke instead. DWM only draws it in one solid
-/// colour, which can't match Acrylic (that shows whatever is behind the
-/// window, so the line stands out), so Acrylic has none: the material and the
-/// shadow make the edge. Accent-coloured borders, if the user wants those, win.
-pub fn set_window_border(window: &Window, dark: bool, acrylic: bool) {
+/// Applies native Windows 11 rounded corners (`DWMWCP_ROUND`) and a harmonious
+/// 1 px frame border on every window mode (Opaque, Mica, Acrylic, Frosted).
+/// Never sets `DWMWA_BORDER_COLOR = NONE`, because on borderless (`!WS_CAPTION`)
+/// windows `NONE` drops DWM's rounded-corner mask back to sharp 90° corners.
+pub fn set_window_border(window: &Window, dark: bool) {
     #[cfg(windows)]
     if let Some(h) = hwnd(window) {
-        use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DwmSetWindowAttribute};
-        // COLORREF 0x00BBGGRR.
-        const DEFAULT: u32 = 0xFFFF_FFFF;
-        const NONE: u32 = 0xFFFF_FFFE;
-        let border = if accent_on_borders() {
-            DEFAULT
-        } else if acrylic {
-            NONE
-        } else if dark {
-            0x0042_4242
-        } else {
-            0x00C1_C1C1
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
         };
+        // Enforce Windows 11's native 8 px rounded corners consistently across all modes.
+        let round: u32 = 2; // DWMWCP_ROUND
+        unsafe {
+            DwmSetWindowAttribute(
+                h,
+                DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                &round as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+        // Let Windows 11 DWM choose its native subtle frame border (follows
+        // light/dark mode and user accent-on-borders) while preserving 8 px
+        // rounded corners — avoids chalky hardcoded borders over dark windows.
+        const DEFAULT: u32 = 0xFFFF_FFFF;
         unsafe {
             DwmSetWindowAttribute(
                 h,
                 DWMWA_BORDER_COLOR as u32,
-                &border as *const u32 as *const _,
+                &DEFAULT as *const u32 as *const _,
                 std::mem::size_of::<u32>() as u32,
             );
         }
     }
-    let _ = (window, dark, acrylic);
-}
-
-/// "Show accent colour on title bars and window borders".
-#[cfg(windows)]
-fn accent_on_borders() -> bool {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_CURRENT_USER;
-    RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey("Software\\Microsoft\\Windows\\DWM")
-        .and_then(|k| k.get_value::<u32, _>("ColorPrevalence"))
-        .is_ok_and(|v| v == 1)
+    let _ = (window, dark);
 }
 
 /// Sets the NSWindow's appearance (`None`: follow the system).
@@ -461,8 +455,8 @@ pub fn set_mica_frame(window: &Window, on: bool) {
     let _ = (window, on);
 }
 
-/// Picks the DWM system backdrop: 2 Mica, 3 Acrylic, 4 Mica Alt. Windows
-/// tints it for light or dark mode itself, following the dark-frame flag.
+/// Picks the DWM system backdrop: 0 Auto, 1 None, 2 Mica, 3 Acrylic, 4 Mica Alt.
+/// Windows tints 2/3/4 for light or dark mode itself, following the dark-frame flag.
 pub fn set_system_backdrop(window: &Window, kind: u32) {
     #[cfg(windows)]
     if let Some(h) = hwnd(window) {
@@ -477,6 +471,45 @@ pub fn set_system_backdrop(window: &Window, kind: u32) {
         }
     }
     let _ = (window, kind);
+}
+
+/// Enables or disables the custom `Windows.UI.Composition` macOS-style GPU
+/// vibrancy layer directly underneath GPUI's swapchain.
+pub fn set_frosted_compositor(window: &Window, active: bool, dark: bool, tier: usize) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+        // DWMWA_USE_HOSTBACKDROPBRUSH = 17: required for DWM to populate
+        // `Compositor::CreateHostBackdropBrush()` on a Win32 HWND (without it,
+        // DWM returns solid black behind the window).
+        const DWMWA_USE_HOSTBACKDROPBRUSH: u32 = 17;
+        if let Some(h) = hwnd(window) {
+            let flag: u32 = u32::from(active);
+            let hr = unsafe {
+                DwmSetWindowAttribute(
+                    h,
+                    DWMWA_USE_HOSTBACKDROPBRUSH,
+                    &flag as *const u32 as *const _,
+                    std::mem::size_of::<u32>() as u32,
+                )
+            };
+            if active && hr != 0 {
+                log::warn!("DWMWA_USE_HOSTBACKDROPBRUSH failed: 0x{:08x}", hr as u32);
+            }
+            if !active {
+                crate::frosted::clear();
+                return false;
+            }
+            return crate::frosted::apply(h, dark, tier);
+        }
+        crate::frosted::clear();
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, active, dark, tier);
+        false
+    }
 }
 
 /// Whether the backdrop should stay as it is on an inactive window.
@@ -494,13 +527,17 @@ pub fn keep_backdrop_live(window: &Window, on: bool) {
     if let Some(h) = hwnd(window) {
         use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
         use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_NCACTIVATE, WM_SHOWWINDOW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            PostMessageW, SIZE_MAXIMIZED, SIZE_RESTORED, WM_NCACTIVATE, WM_SHOWWINDOW, WM_SIZE,
+        };
         unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
             if KEEP_BACKDROP.load(std::sync::atomic::Ordering::Relaxed) {
                 if msg == WM_NCACTIVATE {
                     return unsafe { DefSubclassProc(hwnd, msg, 1, lparam) };
                 }
-                if msg == WM_SHOWWINDOW && wparam != 0 {
+                if (msg == WM_SHOWWINDOW && wparam != 0)
+                    || (msg == WM_SIZE && (wparam == SIZE_RESTORED as usize || wparam == SIZE_MAXIMIZED as usize))
+                {
                     let res = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
                     unsafe { PostMessageW(hwnd, WM_NCACTIVATE, 1, 0) };
                     return res;

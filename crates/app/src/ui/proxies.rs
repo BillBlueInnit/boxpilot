@@ -52,7 +52,7 @@ impl ProxiesPage {
                 .flex()
                 .items_center()
                 .text_sm()
-                .line_height(gpui_kit::relative(1.15))
+                .line_height(gpui_kit::relative(1.4))
                 .max_w(dp(260.))
                 .when(selected, |d| d.text_color(t.foreground).font_weight(FontWeight::MEDIUM))
                 .when(!selected, |d| d.text_color(t.muted_foreground).hover(|d| d.bg(muted_bg)))
@@ -70,7 +70,7 @@ impl ProxiesPage {
                             div()
                                 .flex_none()
                                 .text_xs()
-                                .line_height(gpui_kit::relative(1.0))
+                                .line_height(gpui_kit::relative(1.2))
                                 .text_color(t.muted_foreground)
                                 .child(g.members.len().to_string()),
                         ),
@@ -382,7 +382,7 @@ impl Render for ProxiesPage {
         let t = cx.theme();
 
         let actions = vec![
-            div().w(dp(220.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
+            div().w(dp(220.)).child(blur_on_outside_click(&self.search, Input::new(&self.search).small().cleanable(true), cx)).into_any_element(),
             Button::new("test-latency")
                 .small()
                 .icon(extra_icon(Lucide::Zap))
@@ -512,14 +512,7 @@ impl Render for ProxiesPage {
             div().grid().grid_cols(cols).gap_3().children(
                 members
                     .iter()
-                    .enumerate()
-                    .map(|(pos, (i, m))| {
-                        anim::enter(
-                            div().min_w_0().h_full().child(self.node_card(&group, *i, m, &groups, cx)),
-                            SharedString::from(format!("enter-{}-{}", group.name, m.name)),
-                            anim::stagger(pos.min(12)) * 0.5,
-                        )
-                    }),
+                    .map(|(i, m)| div().min_w_0().h_full().child(self.node_card(&group, *i, m, &groups, cx))),
             ),
         )
         .into_any_element()

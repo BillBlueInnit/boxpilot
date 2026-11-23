@@ -34,14 +34,63 @@ const MAX_WIDTH: f32 = 1600.;
 const PAD: f32 = 12.;
 const GAP: f32 = 12.;
 const CLOSE: f32 = 24.;
+const FIXED_CHROME: f32 = PAD * 2.0 + GAP * COLUMNS as f32 + CLOSE;
 
 /// What the pointer is dragging on the page.
 #[derive(Clone, Copy)]
 enum Drag {
-    /// A column's right edge.
-    Column { index: usize, start_x: f32, start_width: f32 },
+    /// Divider between column `index` and `index + 1`.
+    Column { index: usize, start_x: f32, start_widths: [f32; COLUMNS], viewport: f32 },
     /// The horizontal scrollbar's thumb; `ratio` is content px per thumb px.
     Bar { start_x: f32, start_offset: f32, ratio: f32 },
+}
+
+fn laid_out_widths(mut widths: [f32; COLUMNS], viewport: f32) -> ([f32; COLUMNS], f32) {
+    let total = FIXED_CHROME + widths.iter().sum::<f32>();
+    if total < viewport {
+        widths[0] += viewport - total;
+    }
+    (widths, total.max(viewport))
+}
+
+/// Resizes column `index` by `dx` (in `dp`) starting from materialized
+/// `start` widths (`total >= viewport`). Columns to the left of `index` never
+/// move: shrinking past `viewport` gives the freed room to the right neighbor
+/// instead of letting `laid_out_widths` push `Host` rightward; widening takes
+/// slack from the right neighbor down to `MIN_WIDTH` before expanding into
+/// horizontal scroll.
+fn resize_columns(start: [f32; COLUMNS], index: usize, dx: f32, viewport: f32) -> [f32; COLUMNS] {
+    let mut widths = start;
+    if index + 1 >= COLUMNS {
+        return widths;
+    }
+    let next = index + 1;
+    let new_left = (start[index] + dx).clamp(MIN_WIDTH, MAX_WIDTH);
+    let actual_dx = new_left - start[index];
+    widths[index] = new_left;
+
+    if actual_dx < 0.0 {
+        let total = FIXED_CHROME + widths.iter().sum::<f32>();
+        if total < viewport {
+            let mut deficit = viewport - total;
+            for col in &mut widths[next..] {
+                let room = (MAX_WIDTH - *col).max(0.0);
+                let take = deficit.min(room);
+                *col += take;
+                deficit -= take;
+                if deficit <= 0.0 {
+                    break;
+                }
+            }
+            if deficit > 0.0 {
+                widths[index] += deficit;
+            }
+        }
+    } else if actual_dx > 0.0 {
+        let shrink = actual_dx.min((start[next] - MIN_WIDTH).max(0.0));
+        widths[next] = start[next] - shrink;
+    }
+    widths
 }
 
 #[derive(Clone)]
@@ -174,12 +223,7 @@ impl ConnectionsPage {
     /// The widths to draw at, and the width of a whole row: spare room goes to
     /// the host, so the columns always fill the card.
     fn laid_out(&self, viewport: f32) -> ([f32; COLUMNS], f32) {
-        let mut widths = self.widths;
-        let total = PAD * 2.0 + widths.iter().sum::<f32>() + GAP * COLUMNS as f32 + CLOSE;
-        if total < viewport {
-            widths[0] += viewport - total;
-        }
-        (widths, total.max(viewport))
+        laid_out_widths(self.widths, viewport)
     }
 
     fn save_widths(&self, cx: &App) {
@@ -188,10 +232,12 @@ impl ConnectionsPage {
     }
 
     /// Double-clicking a column's edge fits it to what it shows now.
-    fn fit_column(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn fit_column(&mut self, index: usize, viewport: f32, cx: &mut Context<Self>) {
         let label = text_width(column_title(index));
         let widest = self.rows.iter().map(|r| text_width(&cell_text(r, index))).fold(label, f32::max);
-        self.widths[index] = (widest.ceil() + 6.0).clamp(MIN_WIDTH, MAX_WIDTH);
+        let target = (widest.ceil() + 6.0).clamp(MIN_WIDTH, MAX_WIDTH);
+        let (start, _) = self.laid_out(viewport);
+        self.widths = resize_columns(start, index, target - start[index], viewport);
         self.save_widths(cx);
         cx.notify();
     }
@@ -325,7 +371,7 @@ impl Render for ConnectionsPage {
         let total = self.snapshot.connections.as_ref().map_or(0, Vec::len);
         let e_all = engine.clone();
         let actions = vec![
-            div().w(dp(240.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
+            div().w(dp(240.)).child(blur_on_outside_click(&self.search, Input::new(&self.search).small().cleanable(true), cx)).into_any_element(),
             Button::new("close-all")
                 .small()
                 .icon(extra_icon(Lucide::Unplug))
@@ -366,8 +412,8 @@ impl Render for ConnectionsPage {
         let offset = self.h_offset;
 
         let rows = self.rows.clone();
-        let (fg, muted, border, hover, danger, edge, primary) =
-            (t.foreground, t.muted_foreground, t.border, t.muted, t.danger, hairline(cx), t.primary);
+        let (fg, muted, border, hover, danger, primary) =
+            (t.foreground, t.muted_foreground, t.border, t.muted, t.danger, t.primary);
         let row_count = rows.len();
         let base = self.scroll.0.borrow().base_handle.clone();
         let list = uniform_list("conn-list", row_count, move |range, _, _| {
@@ -432,11 +478,16 @@ impl Render for ConnectionsPage {
         .flex_1()
         .min_h_0();
 
-        // Column titles, each with a draggable edge in the gap after it.
+        // Column titles, with a draggable divider between each pair of columns.
         let this = cx.entity().downgrade();
+        let dragging_col = match self.drag {
+            Some(Drag::Column { index, .. }) => Some(index),
+            _ => None,
+        };
         let title = |index: usize| {
             let this = this.clone();
-            let start_width = self.widths[index];
+            let active = dragging_col == Some(index);
+            let group = SharedString::from(format!("col-edge-{index}"));
             div()
                 .relative()
                 .w(dp(widths[index]))
@@ -453,31 +504,47 @@ impl Render for ConnectionsPage {
                         .text_color(muted)
                         .child(column_title(index)),
                 )
-                .child(
-                    div()
-                        .id(("col-edge", index))
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .right(dp(-(GAP / 2.0 + 5.0)))
-                        .w(dp(10.))
-                        .flex()
-                        .justify_center()
-                        .cursor(CursorStyle::ResizeColumn)
-                        .on_mouse_down(MouseButton::Left, move |e, _, cx| {
-                            cx.stop_propagation();
-                            let (count, x) = (e.click_count, f32::from(e.position.x));
-                            let _ = this.update(cx, |page, cx| {
-                                if count >= 2 {
-                                    page.fit_column(index, cx);
-                                } else {
-                                    page.drag = Some(Drag::Column { index, start_x: x, start_width });
-                                    cx.notify();
-                                }
-                            });
-                        })
-                        .child(div().id(("col-line", index)).w(dp(1.)).h_full().my_2().bg(edge).hover(move |d| d.bg(primary))),
-                )
+                .when(index + 1 < COLUMNS, |d| {
+                    d.child(
+                        div()
+                            .id(("col-edge", index))
+                            .group(group.clone())
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(dp(-(GAP / 2.0 + 5.0)))
+                            .w(dp(10.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor(CursorStyle::ResizeColumn)
+                            .on_mouse_down(MouseButton::Left, move |e, _, cx| {
+                                cx.stop_propagation();
+                                let (count, x) = (e.click_count, f32::from(e.position.x));
+                                let _ = this.update(cx, |page, cx| {
+                                    if count >= 2 {
+                                        page.fit_column(index, viewport, cx);
+                                    } else {
+                                        page.drag = Some(Drag::Column {
+                                            index,
+                                            start_x: x,
+                                            start_widths: widths,
+                                            viewport,
+                                        });
+                                        cx.notify();
+                                    }
+                                });
+                            })
+                            .child(
+                                div()
+                                    .w(dp(if active { 2. } else { 1. }))
+                                    .h(dp(14.))
+                                    .rounded_full()
+                                    .bg(if active { primary } else { border })
+                                    .group_hover(group, move |d| d.bg(primary)),
+                            ),
+                    )
+                })
         };
         let header_row = h_flex()
             .w(dp(total))
@@ -564,11 +631,13 @@ impl Render for ConnectionsPage {
                                 page.save_widths(cx);
                             }
                             Some(_) if !held => page.drag = None,
-                            Some(Drag::Column { index, start_x, start_width }) => {
-                                page.widths[index] = (start_width + x - start_x).clamp(MIN_WIDTH, MAX_WIDTH);
+                            Some(Drag::Column { index, start_x, start_widths, viewport }) => {
+                                let dx = (x - start_x) / super::layout::scale();
+                                page.widths = resize_columns(start_widths, index, dx, viewport);
                             }
                             Some(Drag::Bar { start_x, start_offset, ratio }) => {
-                                page.h_offset = (start_offset + (x - start_x) * ratio).clamp(0.0, max_offset);
+                                let dx = (x - start_x) / super::layout::scale();
+                                page.h_offset = (start_offset + dx * ratio).clamp(0.0, max_offset);
                             }
                             None => {}
                         }
@@ -631,5 +700,65 @@ impl Render for ConnectionsPage {
                     .child(events),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragging_middle_divider_left_never_moves_columns_to_its_left() {
+        let viewport = 1000.0;
+        let (start, _) = laid_out_widths(DEFAULT_WIDTHS, viewport);
+
+        // Drag divider between Rule (2) and Outbound (3) left by 40 dp.
+        let resized = resize_columns(start, 2, -40.0, viewport);
+        let (drawn, total) = laid_out_widths(resized, viewport);
+
+        assert_eq!(drawn[0], start[0]);
+        assert_eq!(drawn[1], start[1]);
+        assert_eq!(drawn[2], start[2] - 40.0);
+        assert_eq!(drawn[3], start[3] + 40.0);
+        assert!((total - viewport).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dragging_left_past_overflow_consumes_scroll_then_grows_right_neighbor() {
+        let viewport = 900.0;
+        let mut start = DEFAULT_WIDTHS;
+        start[2] = 200.0; // Total > viewport (horizontal overflow)
+        let (start, start_total) = laid_out_widths(start, viewport);
+        let overflow = start_total - viewport;
+        assert!(overflow > 0.0);
+
+        // Dragging Rule (2) left past the overflow by an extra 30 dp.
+        let dx = -(overflow + 30.0);
+        let resized = resize_columns(start, 2, dx, viewport);
+        let (drawn, total) = laid_out_widths(resized, viewport);
+
+        assert_eq!(drawn[0], start[0]);
+        assert_eq!(drawn[1], start[1]);
+        assert!((drawn[2] - (start[2] + dx)).abs() < 1e-3);
+        assert!((drawn[3] - (start[3] + 30.0)).abs() < 1e-3);
+        assert!((total - viewport).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dragging_host_divider_left_and_right_tracks_without_dead_zone() {
+        let viewport = 1000.0;
+        let (start, _) = laid_out_widths(DEFAULT_WIDTHS, viewport);
+
+        let left = resize_columns(start, 0, -50.0, viewport);
+        let (drawn_left, _) = laid_out_widths(left, viewport);
+        assert_eq!(drawn_left[0], start[0] - 50.0);
+        assert_eq!(drawn_left[1], start[1] + 50.0);
+
+        // Dragging right shrinks Process down to MIN_WIDTH, then overflows smoothly.
+        let right = resize_columns(start, 0, 120.0, viewport);
+        let (drawn_right, total_right) = laid_out_widths(right, viewport);
+        assert_eq!(drawn_right[0], start[0] + 120.0);
+        assert_eq!(drawn_right[1], MIN_WIDTH);
+        assert!(total_right > viewport);
     }
 }

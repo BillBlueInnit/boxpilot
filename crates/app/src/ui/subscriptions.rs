@@ -423,11 +423,9 @@ impl Render for SubscriptionsPage {
                 )))
             })
             .child(v_flex().gap_3().children(subs.iter().enumerate().map(|(i, s)| {
-                anim::enter(div().child(self.sub_card(s, i, this.clone(), cx)), SharedString::from(format!("sub-{}", s.id)), anim::stagger(i))
+                self.sub_card(s, i, this.clone(), cx)
             })))
-            .when_some(local, |d, local| {
-                d.child(anim::enter(div().child(local), "local-nodes", anim::stagger(subs.len())))
-            })
+            .when_some(local, |d, local| d.child(local))
     }
 }
 

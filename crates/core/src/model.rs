@@ -156,10 +156,12 @@ pub enum Backdrop {
     MicaAlt,
     /// Blurs whatever is behind the window.
     Acrylic,
+    /// macOS-style smooth frosted glass (Windows 11 only).
+    Frosted,
 }
 
 impl Backdrop {
-    pub const ALL: [Backdrop; 3] = [Self::Mica, Self::MicaAlt, Self::Acrylic];
+    pub const ALL: [Backdrop; 4] = [Self::Mica, Self::MicaAlt, Self::Acrylic, Self::Frosted];
 }
 
 /// Primary UI typeface preference (applied live without restart).
@@ -397,7 +399,7 @@ impl Default for Settings {
             accent: Accent::System,
             mica: true,
             backdrop: Backdrop::MicaAlt,
-            transparency: 80,
+            transparency: 40,
             ui_font: UiFont::System,
             gpu: GpuPreference::Auto,
             update_mode: UpdateMode::Notify,

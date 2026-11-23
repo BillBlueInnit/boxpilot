@@ -103,7 +103,7 @@ impl Render for LogsPage {
         let recording = engine.settings().record_logs;
         let e_rec = engine.clone();
         let actions = vec![
-            div().w(dp(220.)).child(Input::new(&self.search).small().cleanable(true)).into_any_element(),
+            div().w(dp(220.)).child(blur_on_outside_click(&self.search, Input::new(&self.search).small().cleanable(true), cx)).into_any_element(),
             choice(
                 "log-level",
                 level,
@@ -294,7 +294,6 @@ impl Render for LogsPage {
                 .flex_1()
                 .min_h_0()
                 .overflow_hidden()
-                .border_color(border)
                 .when(count == 0, |d| {
                     d.child(empty_state(extra_icon(Lucide::ScrollText), t!("logs.empty"), t!("logs.empty_hint"), None, cx))
                 })

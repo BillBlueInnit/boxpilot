@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod frosted;
 mod gpu;
 mod i18n;
 mod icon_art;

@@ -16,12 +16,8 @@ pub const BOUNCY: SpringConfig = SpringConfig::new(360.0, 21.0, 1.0);
 pub const SMOOTH: SpringConfig = SpringConfig::new(220.0, 29.66, 1.0);
 /// ζ ≈ 0.85, heavier mass: soft entrances.
 pub const GENTLE: SpringConfig = SpringConfig::new(180.0, 25.0, 1.1);
-/// Softer spring used for the trailing edge of the navigation indicator.
-pub const TRAILING: SpringConfig = SpringConfig::new(200.0, 24.0, 1.0);
 
-/// Fades and lifts an element into place when it is mounted. `delay` staggers
-/// lists without timers: the spring simply starts further away (`from < 0`),
-/// so later items arrive later while obeying the same physics.
+/// Fades and lifts a transient banner/prompt into place when it appears.
 pub fn enter(el: Div, id: impl Into<ElementId>, delay: f32) -> impl IntoElement {
     el.relative().with_spring(
         id,
@@ -31,9 +27,4 @@ pub fn enter(el: Div, id: impl Into<ElementId>, delay: f32) -> impl IntoElement 
             el.opacity(shown).top(px((1.0 - shown) * 14.0))
         },
     )
-}
-
-/// Stagger offset for the `i`-th list item.
-pub fn stagger(i: usize) -> f32 {
-    (i.min(10) as f32) * 0.12
 }

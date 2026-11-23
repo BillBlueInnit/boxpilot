@@ -87,6 +87,23 @@ raw-window-handle = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+windows-core = "0.58"
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Numerics",
+    "Graphics_Effects",
+    "System",
+    "UI",
+    "UI_Composition",
+    "UI_Composition_Desktop",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Composition",
+    "Win32_System_WinRT_Graphics_Direct2D",
+    "implement",
+] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",

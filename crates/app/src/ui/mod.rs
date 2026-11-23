@@ -96,9 +96,11 @@ fn backdrop(settings: &Settings) -> WindowBackgroundAppearance {
     match settings.backdrop {
         Backdrop::Mica => WindowBackgroundAppearance::MicaBackdrop,
         Backdrop::MicaAlt => WindowBackgroundAppearance::MicaAltBackdrop,
-        // Switched to Acrylic through DWM right after; GPUI's own blur is an
-        // untinted accent effect that also lingers over later materials.
         Backdrop::Acrylic => WindowBackgroundAppearance::MicaBackdrop,
+        // Frosted attaches our own Windows.UI.Composition HostBackdropBrush
+        // visual underneath GPUI; keep GPUI's swapchain transparent without
+        // activating legacy SetWindowCompositionAttribute blur.
+        Backdrop::Frosted => WindowBackgroundAppearance::MicaBackdrop,
     }
 }
 
@@ -111,6 +113,8 @@ fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
         let system_dark = matches!(window.appearance(), gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark);
         active = system_dark == dark;
     }
+    let win_materials = crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials;
+    let want_frosted = active && win_materials && settings.backdrop == Backdrop::Frosted;
     // Going through Opaque first clears an accent blur left by an earlier
     // material or build; it would sit over the DWM backdrop and hide it.
     window.set_background_appearance(WindowBackgroundAppearance::Opaque);
@@ -120,26 +124,41 @@ fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
     // Windows would swap the backdrop for a flat colour whenever the window
     // is not focused; keep it as it is.
     crate::platform::keep_backdrop_live(window, active);
-    if active && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials {
-        // Every material is a DWM system backdrop, tinted by Windows to match
-        // light or dark mode (the dark-frame flag), so switching is clean.
-        let kind = match settings.backdrop {
-            Backdrop::Mica => 2,
-            Backdrop::Acrylic => 3,
-            Backdrop::MicaAlt => 4,
-        };
-        crate::platform::set_system_backdrop(window, kind);
+
+    let mut frosted = false;
+    let tier = layout::transparency_tier_for(settings.transparency);
+    if active && win_materials {
+        if want_frosted {
+            // DWMSBT_AUTO (0) lets our custom HostBackdropBrush composite live
+            // behind-window pixels (DWMSBT_NONE suppresses backdrop on Win11).
+            crate::platform::set_system_backdrop(window, 0);
+            frosted = crate::platform::set_frosted_compositor(window, true, dark, tier);
+            if !frosted {
+                // Graceful fallback if HostBackdropBrush is unavailable.
+                crate::platform::set_system_backdrop(window, 3);
+            }
+        } else {
+            crate::platform::set_frosted_compositor(window, false, dark, tier);
+            // Every DWM material is tinted by Windows to match light or dark mode
+            // (the dark-frame flag), so switching is clean and rounded corners stay native.
+            let kind = match settings.backdrop {
+                Backdrop::Mica => 2,
+                Backdrop::Acrylic => 3,
+                Backdrop::MicaAlt => 4,
+                Backdrop::Frosted => 0,
+            };
+            crate::platform::set_system_backdrop(window, kind);
+        }
         // Kick DWM so the live material paints even before the window receives focus.
         crate::platform::refresh_backdrop_active(window);
+    } else {
+        crate::platform::set_frosted_compositor(window, false, dark, tier);
     }
-    let acrylic = active
-        && settings.backdrop == Backdrop::Acrylic
-        && crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials;
     let glass = active
-        && (settings.backdrop == Backdrop::Acrylic
+        && (matches!(settings.backdrop, Backdrop::Acrylic | Backdrop::Frosted)
             || crate::platform::translucency() == crate::platform::Translucency::Blur);
-    crate::platform::set_window_border(window, dark, acrylic);
-    layout::set_surface_alpha(active, glass, settings.transparency);
+    crate::platform::set_window_border(window, dark);
+    layout::set_surface_alpha(active, glass, frosted, settings.transparency);
 }
 
 pub fn open_main_window(cx: &mut App, show: bool) {
@@ -460,8 +479,6 @@ pub struct MainView {
     last_accent: boxpilot_core::model::Accent,
     /// Translucency, material and transparency last applied to the window.
     last_look: (bool, Backdrop, u32),
-    last_page: Page,
-    moving_down: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -519,8 +536,6 @@ impl MainView {
             last_theme: settings.theme,
             last_accent: settings.accent,
             last_look: (mica_active(&settings), settings.backdrop, settings.transparency),
-            last_page: Page::Dashboard,
-            moving_down: true,
             _subscriptions: subs,
         }
     }
@@ -572,35 +587,17 @@ impl MainView {
             .count();
         let rule_count = engine.rule_providers().iter().filter(|p| p.enabled).count() + custom_count;
 
-        // The selection indicator is a box whose top and bottom edges are two
-        // springs. The leading edge is stiffer than the trailing one, so the box
-        // stretches in the direction of travel and relaxes as it settles.
-        let n = Page::ALL.len();
+        // The selection indicator and its left accent bar travel together as
+        // one unit on a single spring so they stay aligned at every frame.
         let idx = page.index();
         let step = NAV_ITEM_H + NAV_GAP;
         let top = idx as f32 * step;
-        let bottom = (n - 1 - idx) as f32 * step;
-        let (top_cfg, bottom_cfg) = if self.moving_down {
-            (anim::TRAILING, anim::SNAPPY)
-        } else {
-            (anim::SNAPPY, anim::TRAILING)
-        };
         let dark = t.is_dark();
-        let a = layout::surface_alpha();
-        // Sibling frosted rail for Acrylic / OS blur: clearer than the content
-        // pane so the sidebar reads as a luminous glass strip with clear depth.
-        let sidebar_glass_fill = if dark {
-            let floor = if cfg!(windows) { 0.24 } else { 0.58 };
-            gpui_kit::Hsla::from(gpui_kit::rgb(0x16171B)).opacity(floor + (0.86 - floor) * a)
-        } else {
-            let floor = if cfg!(windows) { 0.26 } else { 0.62 };
-            gpui_kit::Hsla::from(gpui_kit::rgb(0xF6F8FC)).opacity(floor + (0.86 - floor) * a)
-        };
         let accent = if glass {
             if dark {
                 gpui_kit::white().opacity(0.11)
             } else {
-                gpui_kit::white().opacity(0.56)
+                gpui_kit::black().opacity(0.065)
             }
         } else if mica {
             t.sidebar_accent.opacity(0.85)
@@ -611,33 +608,21 @@ impl MainView {
             if dark {
                 gpui_kit::white().opacity(0.07)
             } else {
-                gpui_kit::white().opacity(0.42)
+                gpui_kit::black().opacity(0.045)
             }
         } else {
             accent.opacity(0.5)
         };
-        let indicator = div()
+        let indicator = h_flex()
             .absolute()
             .left_0()
             .right_0()
+            .h(dp(NAV_ITEM_H))
+            .items_center()
             .rounded(t.radius)
             .bg(accent)
-            .with_spring("nav-top", SpringAnimation::new(top_cfg).to(dp(top)), |d, v| d.top(v))
-            .with_spring("nav-bottom", SpringAnimation::new(bottom_cfg).to(dp(bottom)), |e, v| {
-                e.map_element(|d| d.bottom(v))
-            });
-        let bar = div()
-            .absolute()
-            .left_0()
-            .w(dp(3.))
-            .h(dp(16.))
-            .rounded_full()
-            .bg(t.primary)
-            .with_spring(
-                "nav-bar",
-                SpringAnimation::new(anim::BOUNCY).to(dp(top + (NAV_ITEM_H - 16.0) / 2.0)),
-                |d, v| d.top(v),
-            );
+            .child(div().w(dp(3.)).h(dp(16.)).rounded_full().bg(t.primary))
+            .with_spring("nav-indicator", SpringAnimation::new(anim::SNAPPY).to(dp(top)), |d, v| d.top(v));
 
         let items = Page::ALL.map(|p| {
             let active = p == page;
@@ -669,14 +654,14 @@ impl MainView {
                 .on_click(move |_, _, cx| state.update(cx, |s, cx| s.set_page(p, cx)))
                 .child(Self::page_icon(p).size(dp(16.)))
                 .when(!compact, |d| {
-                    d.child(div().flex_1().min_w_0().line_height(gpui_kit::relative(1.15)).truncate().child(title))
+                    d.child(div().flex_1().min_w_0().line_height(gpui_kit::relative(1.4)).truncate().child(title))
                 })
                 .when_some(badge.filter(|_| !compact), |d, n| {
                     d.child(
                         div()
                             .flex_none()
                             .text_xs()
-                            .line_height(gpui_kit::relative(1.0))
+                            .line_height(gpui_kit::relative(1.2))
                             .text_color(t.muted_foreground)
                             .child(n.to_string()),
                     )
@@ -704,7 +689,6 @@ impl MainView {
             .h_full()
             .flex_none()
             .when(!mica, |d| d.bg(t.sidebar))
-            .when(glass, |d| d.bg(sidebar_glass_fill))
             .when_some(left_controls, |d, controls| {
                 d.child(
                     h_flex()
@@ -741,7 +725,6 @@ impl MainView {
                         .relative()
                         .gap(dp(NAV_GAP))
                         .child(indicator)
-                        .child(bar)
                         .children(items),
                 ),
             )
@@ -769,7 +752,7 @@ impl MainView {
                         d.child(
                             div()
                                 .text_sm()
-                                .line_height(gpui_kit::relative(1.15))
+                                .line_height(gpui_kit::relative(1.4))
                                 .min_w_0()
                                 .truncate()
                                 .child(status_text(&status)),
@@ -782,10 +765,6 @@ impl MainView {
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.state.read(cx).page;
-        if page != self.last_page {
-            self.moving_down = page.index() > self.last_page.index();
-            self.last_page = page;
-        }
         // What was applied (macOS may fall back to opaque), not just the setting.
         let mica = layout::translucent();
         let t = cx.theme();
@@ -799,40 +778,62 @@ impl Render for MainView {
             Page::Settings => self.settings.clone().into(),
         };
         let full_height = matches!(page, Page::Connections | Page::Logs);
-        let (fg, sidebar_bg) = (t.foreground, t.sidebar);
+        let (fg, sidebar_bg, sheet_radius) = (t.foreground, t.sidebar, t.radius_lg);
         let dark = t.is_dark();
         let sheet_edge = hairline(cx);
         let layer_fill = layer(cx);
-        // Acrylic (and the macOS / KDE blur) uses two non-overlapping sibling
-        // frosted layers: a clearer glass sidebar rail and a luminous frosted
-        // content pane separated by a crisp hairline (never stacked translucent
-        // fills, so Light Acrylic stays bright porcelain white instead of grey).
+        // All translucent materials (Mica, Mica Alt, Acrylic, Frosted, OS blur)
+        // share one seamless window-wide glass sheet with no vertical divider
+        // line between the sidebar and content, matching macOS vibrancy.
+        //
+        // Important GPUI compositing rule: never stack a translucent light fill
+        // on the root underneath translucent white cards (GPUI's DirectX blend
+        // turns stacked translucent whites grey). For Windows Frosted, the tint
+        // is painted on the GPU compositor layer underneath GPUI instead; for
+        // Light Mica / Acrylic, only the Solid tier (alpha = 1.0) fills the base.
         let glass = layout::is_glass();
-        let a = layout::surface_alpha();
-        let content_glass_fill = if dark {
-            let floor = if cfg!(windows) { 0.34 } else { 0.68 };
-            gpui_kit::Hsla::from(gpui_kit::rgb(0x1E1F25)).opacity(floor + (0.90 - floor) * a)
+        let frosted = layout::is_frosted();
+        let window_veil = if !mica || frosted {
+            None
+        } else if glass {
+            if dark {
+                let alpha = if cfg!(windows) {
+                    layout::pick_tier([0.96, 0.68, 0.42, 0.20, 0.04])
+                } else {
+                    layout::pick_tier([0.96, 0.82, 0.68, 0.54, 0.38])
+                };
+                Some(gpui_kit::Hsla::from(gpui_kit::rgb(0x1C1E24)).opacity(alpha))
+            } else if cfg!(windows) {
+                let alpha = layout::pick_tier([1.0, 0.0, 0.0, 0.0, 0.0]);
+                (alpha > 0.0).then(|| t.background.opacity(alpha))
+            } else {
+                let alpha = layout::pick_tier([0.97, 0.84, 0.70, 0.56, 0.40]);
+                Some(gpui_kit::Hsla::from(gpui_kit::rgb(0xF7F8FA)).opacity(alpha))
+            }
+        } else if dark {
+            let alpha = layout::pick_tier([0.96, 0.42, 0.16, 0.00, 0.00]);
+            (alpha > 0.0).then(|| t.background.opacity(alpha))
         } else {
-            let floor = if cfg!(windows) { 0.38 } else { 0.72 };
-            gpui_kit::Hsla::from(gpui_kit::rgb(0xFCFDFE)).opacity(floor + (0.92 - floor) * a)
-        };
-        let glass_divider = if dark {
-            gpui_kit::white().opacity(0.09)
-        } else {
-            gpui_kit::black().opacity(0.075)
+            // Light Mica: keep base pure (0% veil) on Subtle..Ultra so white
+            // cards never double-blend grey; Solid fills with opaque base.
+            let alpha = layout::pick_tier([1.0, 0.0, 0.0, 0.0, 0.0]);
+            (alpha > 0.0).then(|| t.background.opacity(alpha))
         };
 
         let m = layout::metrics(window);
         let top_pad = 20.0;
-        // Each page mounts under its own id, so switching pages replays the
-        // entrance spring; the scroll position of each page is kept.
+        // Render the active page immediately at full opacity so switching pages
+        // never flashes blank; each scrollable page keeps its own scroll offset.
         let body = if full_height {
-            anim::enter(
-                v_flex().flex_1().min_h_0().w_full().px(dp(m.inset)).pb_5().pt(dp(top_pad)).child(content),
-                ("page", page.index()),
-                0.0,
-            )
-            .into_any_element()
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .px(dp(m.inset))
+                .pb_5()
+                .pt(dp(top_pad))
+                .child(content)
+                .into_any_element()
         } else {
             let handle = self.scroll[page.index()].clone();
             smooth_scroll::with_scrollbar(
@@ -846,11 +847,7 @@ impl Render for MainView {
                         .size_full()
                         .overflow_y_scroll()
                         .track_scroll(&handle)
-                        .child(anim::enter(
-                            div().w_full().px(dp(m.inset)).pb_5().pt(dp(top_pad)).child(content),
-                            ("page", page.index()),
-                            0.0,
-                        )),
+                        .child(div().w_full().px(dp(m.inset)).pb_5().pt(dp(top_pad)).child(content)),
                 ),
             )
             .size_full()
@@ -869,32 +866,27 @@ impl Render for MainView {
                 })
                 .text_color(fg)
                 .when(!mica, |d| d.bg(sidebar_bg))
+                .when_some(window_veil, |d, fill| d.bg(fill))
                 .child(self.render_sidebar(page, mica, glass, m, window, cx))
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .when(glass, |d| {
-                            d.bg(content_glass_fill)
-                                .border_l_1()
-                                .border_color(glass_divider)
-                        })
                         .child(caption)
                         .child(
                             v_flex()
                                 .flex_1()
                                 .min_h_0()
-                                // An opaque window puts the content on a raised layer, as
-                                // in Windows 11 apps. Mica sits straight on the backdrop;
-                                // Acrylic/Blur already carries its luminous frosted pane
-                                // on the sibling right column above.
+                                // An opaque window puts the content on a raised sheet, as
+                                // in Windows 11 apps; all translucent materials flow
+                                // seamlessly across sidebar and content.
                                 .when(!mica, |d| {
                                     d.bg(layer_fill)
                                         .border_l_1()
                                         .border_t_1()
                                         .border_color(sheet_edge)
-                                        .rounded_tl(dp(8.))
+                                        .rounded_tl(sheet_radius)
                                 })
                                 .child(body),
                         ),
