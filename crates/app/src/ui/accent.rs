@@ -98,9 +98,26 @@ pub fn apply(settings: &Settings, cx: &mut App) {
     } else {
         (rgb(0xFFFFFF).into(), rgb(0xF6F7F9).into(), rgb(0xEDEFF2).into())
     };
+    // Keep controls crisp without muddy shadow smudges under thin rounded borders
+    // (popovers apply their own dedicated `popover_shadow` directly).
+    theme.shadow = false;
     let subtle = if dark { white.opacity(0.068) } else { black.opacity(0.05) };
-    // Menus, dialogs and tooltips stay solid so they read over anything.
-    let flyout: Hsla = rgb(if dark { 0x2C2C2C } else { 0xF9F9F9 }).into();
+    // Match dropdown menus and popovers to the app's active material and palette:
+    // high-opacity frosted glass when translucent (opaque enough that GPUI's drop
+    // shadow never muddies the panel), crisp solid tone when opaque.
+    let translucent = super::layout::translucent();
+    let frosted = super::layout::is_frosted();
+    let flyout: Hsla = if translucent {
+        if dark {
+            let base_hex = if frosted { 0x1E2028 } else { 0x24262D };
+            Hsla::from(rgb(base_hex)).opacity(if frosted { 0.86 } else { 0.90 })
+        } else {
+            let base_hex = if frosted { 0xFCFDFF } else { 0xFAFBFE };
+            Hsla::from(rgb(base_hex)).opacity(if frosted { 0.90 } else { 0.93 })
+        }
+    } else {
+        rgb(if dark { 0x26282E } else { 0xFCFCFD }).into()
+    };
     set!(
         background = base,
         foreground = text,

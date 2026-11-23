@@ -117,8 +117,8 @@ pub fn apply_scale(settings: &Settings, cx: &mut App) -> bool {
     theme.font_size = px(BASE_FONT * s);
     theme.mono_font_size = px(13.0 * s);
     // Align internal corner radii to the host platform's native window & control HIG:
-    // Windows 11 Fluent 2 (8 px cards / 6 px controls), macOS & Linux (10 px cards / 6 px controls).
-    let (r_ctrl, r_card) = if cfg!(windows) { (6.0, 8.0) } else { (6.0, 10.0) };
+    // Windows 11 Fluent 2 (8 px cards / 4 px controls), macOS & Linux (10 px cards / 5 px controls).
+    let (r_ctrl, r_card) = if cfg!(windows) { (4.0, 8.0) } else { (5.0, 10.0) };
     theme.radius = px(r_ctrl * s);
     theme.radius_lg = px(r_card * s);
     let font_changed = apply_fonts(settings, cx);
