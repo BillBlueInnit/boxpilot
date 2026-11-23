@@ -7,7 +7,6 @@ use boxpilot_core::Engine;
 use boxpilot_core::clash_api::{Connection, ConnectionsSnapshot};
 use boxpilot_core::rules::base_domain;
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -179,6 +178,12 @@ impl ConnectionsPage {
         }
     }
 
+    /// Resets vertical and horizontal scroll to the top-left when entering the page.
+    pub fn scroll_to_top(&mut self) {
+        self.h_offset = 0.0;
+        self.scroll.scroll_to_item(0, gpui_kit::ScrollStrategy::Top);
+    }
+
     fn rebuild_rows(&mut self, snap: Option<ConnectionsSnapshot>) {
         let fresh = snap.is_some();
         if let Some(s) = snap {
@@ -309,10 +314,11 @@ fn connection_menu(
         matches.push((t!("conn.match_process", process), format!("PROCESS-NAME,{process}")));
     }
     let matches = Rc::new(matches);
-    let mut menu = menu.label(c.target());
+    let mut menu = compact_menu(menu).label(c.target());
     for (label, target) in [(t!("conn.always_direct"), "direct"), (t!("conn.always_proxy"), "proxy"), (t!("conn.always_block"), "reject")] {
         let (matches, engine) = (matches.clone(), engine.clone());
-        menu = menu.submenu(label, window, cx, move |mut sub, _, _| {
+        menu = menu.submenu(label, window, cx, move |sub, _, _| {
+            let mut sub = compact_menu(sub);
             for (label, key) in matches.iter() {
                 let (rule, engine) = (format!("{key},{target}"), engine.clone());
                 sub = sub.item(
@@ -331,10 +337,12 @@ fn connection_menu(
         .collect();
     if !extra_groups.is_empty() && !matches.is_empty() {
         let (matches, engine) = (matches.clone(), engine.clone());
-        menu = menu.submenu(t!("conn.route_to_group"), window, cx, move |mut sub, window, cx| {
+        menu = menu.submenu(t!("conn.route_to_group"), window, cx, move |sub, window, cx| {
+            let mut sub = compact_menu(sub);
             for group_name in &extra_groups {
                 let (matches, engine, target) = (matches.clone(), engine.clone(), group_name.clone());
-                sub = sub.submenu(outbound_label(group_name), window, cx, move |mut leaf, _, _| {
+                sub = sub.submenu(outbound_label(group_name), window, cx, move |leaf, _, _| {
+                    let mut leaf = compact_menu(leaf);
                     for (label, key) in matches.iter() {
                         let (rule, engine) = (format!("{key},{target}"), engine.clone());
                         leaf = leaf.item(
@@ -372,7 +380,7 @@ impl Render for ConnectionsPage {
         let e_all = engine.clone();
         let actions = vec![
             div().w(dp(240.)).child(blur_on_outside_click(&self.search, Input::new(&self.search).small().cleanable(true), cx)).into_any_element(),
-            Button::new("close-all")
+            btn("close-all")
                 .small()
                 .icon(extra_icon(Lucide::Unplug))
                 .label(t!("btn.close_all"))
@@ -606,8 +614,14 @@ impl Render for ConnectionsPage {
                         return;
                     }
                     let _ = this.update(cx, |page, cx| {
-                        page.h_offset = (page.h_offset - sideways).clamp(0.0, max_offset);
-                        cx.notify();
+                        let next = (page.h_offset - sideways).clamp(0.0, max_offset);
+                        if (next - page.h_offset).abs() > f32::EPSILON {
+                            page.h_offset = next;
+                            if gpui_kit::base::GlobalState::is_in_deferred_context(cx) {
+                                window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
+                            }
+                            cx.notify();
+                        }
                     });
                     if e.modifiers.shift {
                         cx.stop_propagation();

@@ -6,17 +6,33 @@ use boxpilot_core::geo::{Country, Origin};
 use gpui_kit::assets::IconName as Lucide;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Div, ElementId, FontWeight, Hsla, SharedString, SpringAnimation, Window, div, relative,
+    Anchor, AnyElement, App, Div, ElementId, FontWeight, Hsla, SharedString, SpringAnimation, Window, div, px,
+    relative, rems,
 };
 
 use super::anim;
 use crate::t;
 use super::layout::dp;
+
+/// Creates a button whose line-height is an exact `1.0 rem` so labels stay
+/// optically and geometrically centered inside `Size::Small` (`1.5 rem`) and
+/// `Size::Medium` (`2.0 rem`) buttons at every DPI / UI scale without the
+/// `.25 px` vertical rounding drift of `line_height(relative(1.25))`.
+pub fn btn(id: impl Into<ElementId>) -> Button {
+    Button::new(id).line_height(rems(1.0))
+}
+
+/// Removes `gpui-component`'s hardcoded `min_w(8 rem)` so popup menus hug
+/// their actual content with symmetrical left/right padding and no trailing
+/// blank void on the right.
+pub fn compact_menu(menu: PopupMenu) -> PopupMenu {
+    menu.min_w(px(0.))
+}
 
 pub fn extra_icon(name: gpui_kit::assets::IconName) -> Icon {
     Icon::new(name)
@@ -172,6 +188,27 @@ pub fn choice<T: Copy + PartialEq + 'static>(
     options: Vec<(SharedString, T)>,
     on_select: impl Fn(T, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    choice_anchored(id, Anchor::TopLeft, current, options, on_select)
+}
+
+/// Same as [`choice`], right-aligned to its trigger so menus on the right edge
+/// of rows and toolbars never overhang into the window margin.
+pub fn choice_right<T: Copy + PartialEq + 'static>(
+    id: impl Into<SharedString>,
+    current: T,
+    options: Vec<(SharedString, T)>,
+    on_select: impl Fn(T, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    choice_anchored(id, Anchor::TopRight, current, options, on_select)
+}
+
+fn choice_anchored<T: Copy + PartialEq + 'static>(
+    id: impl Into<SharedString>,
+    anchor: Anchor,
+    current: T,
+    options: Vec<(SharedString, T)>,
+    on_select: impl Fn(T, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let id: SharedString = id.into();
     let label = options
         .iter()
@@ -179,12 +216,15 @@ pub fn choice<T: Copy + PartialEq + 'static>(
         .map(|(l, _)| l.clone())
         .unwrap_or_default();
     let on_select = Rc::new(on_select);
-    Button::new(id)
+    btn(id)
         .outline()
         .small()
+        .pl_2()
+        .pr_1p5()
         .label(label)
         .dropdown_caret(true)
-        .dropdown_menu(move |mut menu, _, _| {
+        .dropdown_menu_with_anchor(anchor, move |menu, _, _| {
+            let mut menu = compact_menu(menu);
             for (label, value) in options.iter().cloned() {
                 let on_select = on_select.clone();
                 menu = menu.item(
@@ -659,32 +699,32 @@ pub fn bulk_actions(count: usize, all: bool, ops: BulkOps, cx: &App) -> Vec<AnyE
             .text_color(muted)
             .child(t!("bulk.selected", count))
             .into_any_element(),
-        Button::new("bulk-all")
+        btn("bulk-all")
             .small()
             .ghost()
             .label(if all { t!("btn.select_none") } else { t!("btn.select_all") })
             .on_click(move |_, window, cx| select_all(!all, window, cx))
             .into_any_element(),
-        Button::new("bulk-enable")
+        btn("bulk-enable")
             .small()
             .label(t!("btn.enable"))
             .disabled(count == 0)
             .on_click(move |_, window, cx| enable(true, window, cx))
             .into_any_element(),
-        Button::new("bulk-disable")
+        btn("bulk-disable")
             .small()
             .label(t!("btn.disable"))
             .disabled(count == 0)
             .on_click(move |_, window, cx| disable(false, window, cx))
             .into_any_element(),
-        Button::new("bulk-update")
+        btn("bulk-update")
             .small()
             .icon(gpui_kit::component::IconName::RefreshCw)
             .label(t!("btn.update"))
             .disabled(count == 0)
             .on_click(move |_, window, cx| update(window, cx))
             .into_any_element(),
-        Button::new("bulk-delete")
+        btn("bulk-delete")
             .small()
             .danger()
             .icon(extra_icon(gpui_kit::assets::IconName::Trash))
@@ -692,7 +732,7 @@ pub fn bulk_actions(count: usize, all: bool, ops: BulkOps, cx: &App) -> Vec<AnyE
             .disabled(count == 0)
             .on_click(move |_, window, cx| delete(window, cx))
             .into_any_element(),
-        Button::new("bulk-done")
+        btn("bulk-done")
             .small()
             .primary()
             .label(t!("btn.done"))

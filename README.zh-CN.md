@@ -71,20 +71,14 @@ cargo run --release -p boxpilot
   带宽优先（定期对最快的几个节点测速），每种方式都可以限定在一个地区。
 - **测速**：对单个节点或当前显示的全部节点测试下载速度和真实延迟（经节点发起一次全新的 HTTPS 请求），
   通过独立的本地探针进行，不会改变你的节点选择。
-- **规则**：从链接或本地文件导入规则集，包括 sing-box `.srs` / `.json`、Clash 规则提供者（`payload:`
-  YAML，domain / ipcidr / classical）以及 ACL4SSR `.list` 文件，并转换为 sing-box 规则集。每个规则集
-  可以发往代理、直连、拒绝或任意分组，按你排列的顺序生效，并按各自的间隔更新。**导入 ACL4SSR**
-  会读取 subconverter `.ini`（例如 ACL4SSR_Online_Full），为每条 `ruleset=` 建立规则集并设置正确的
-  处理方式；导入后默认关闭，由你挑选启用（可一键全部启用 / 全部停用）。规则集可以在代理页拥有
-  **独立的节点组**：手动选择，或用与自动组相同的方式和地区筛选自动选择；规则集文件可以用系统默认
-  文本编辑器打开，保存后自动生效。另有内置的绕过中国大陆与广告拦截，以及自定义规则（`类型,值,目标`）：
-  保存在 `CustomRule.list` 中，可用任何编辑器修改，也可以在连接页右键添加。
+- **规则**：页面从上到下严格按真实匹配优先级组织（**自定义规则 → 分流规则集 → 默认兜底**），内置一键分流预设方案（**日常推荐**、**极简绕过大陆**、**流媒体与游戏**、**直连优先**）、**规则匹配测试器**以及**常用服务库**（AI、YouTube、Netflix、Disney+、Telegram、GitHub、Steam、哔哩哔哩等）。支持创建**自定义规则分组**、拖放调整归属并为分组开启**独立节点组**（与 `CustomRule.list` 的 `#!group` 分段双向同步，也可在连接页右键直接添加）。同时支持从链接或本地文件导入 sing-box `.srs` / `.json`、Clash 规则提供者（`payload:` YAML）与 ACL4SSR `.list` / `.ini`（如 ACL4SSR_Online_Full）规则集，每个规则集均可设为代理、直连、拒绝或独立节点组，支持外部编辑器修改并自动热重载。
 - **DNS**：DoH / DoT / DoQ / UDP、FakeIP、IPv6。规则集由应用缓存并以本地文件交给 sing-box，因此
   GitHub 被墙或节点失效都不会导致内核无法启动。
 - **应用**：English、简体中文、繁體中文和 Русский（跟随系统语言，可实时切换）；以管理员身份运行
   （开机启动通过最高权限计划任务，不弹 UAC）；托盘图标可切换模式、系统代理和 TUN；关闭到托盘、单实例、
-  开机启动（可最小化）、实时流量图、可调列宽的连接列表、日志查看、浅色 / 深色主题、主题色，以及半透明窗口
-  （Windows 11 上为 Mica、Mica Alt 或 Acrylic，macOS 和 KDE Plasma 上为系统模糊）。
+  开机启动（可最小化）、实时流量图、可调列宽的连接列表、日志查看、浅色 / 深色主题、主题色、可选界面字体
+  （**跟随系统**、内置 **Google Sans** 或本机已安装的**思源黑体**），以及一体化无分割线半透明窗口
+  （Windows 11 支持 **Mica**、**Mica Alt**、**Acrylic** 与自研 GPU **雾透**材质及 5 档语义透明度：实底 / 微透 / 适中 / 通透 / 极透；macOS 和 KDE Plasma 使用系统模糊）。
 - **代理页**：每个节点都显示国家 / 地区代码：先从节点名称（旗帜、地名、代码）识别，其次对服务器做
   GeoIP 查询，若为任播 / CDN 或内网地址，则经该节点检测出口 IP。轻量模式会在应用驻留托盘时卸载界面。
 - **应用更新**：每天检查一次 GitHub Releases；可自动安装、仅提醒或从不通知（设置 → 更新）。更新会
@@ -100,7 +94,7 @@ Wayland），功能一致。各系统不同之处，分别采用其原生机制�
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | 安装 | zip | 含 BoxPilot.app 的 `.dmg`（程序坞、启动台） | `.deb`、`.rpm`、发布中 pacman 仓库的 Arch 包，或 tar.gz |
-| 窗口 | 无边框、原生边框、最大化按钮的贴靠布局、可选 Mica | 原生红绿灯按钮 | 客户端装饰（或窗口管理器自带）；平铺式合成器（niri、sway、Hyprland、river、i3）由合成器绘制边框和阴影 |
+| 窗口 | 无边框、原生圆角边框、最大化贴靠布局，支持 Mica / Mica Alt / Acrylic / 雾透 | 原生红绿灯按钮 | 客户端装饰（或窗口管理器自带）；平铺式合成器（niri、sway、Hyprland、river、i3）由合成器绘制边框和阴影 |
 | 标题栏按钮 | Segoe Fluent / MDL2 图标、WinUI 配色 | AppKit 红绿灯 | Adwaita（GNOME）或 Breeze（KDE）风格，遵循 `button-layout` 顺序与位置 |
 | 系统代理 | WinINet（注册表） | `networksetup`，覆盖每个网络服务 | 同时设置 KDE `kioslaverc` 和 GNOME `gsettings`（KDE、GTK 应用与 Firefox 都能读到） |
 | TUN 权限 | 以管理员身份运行 BoxPilot（开机启动通过计划任务，不弹 UAC） | 一次管理员授权后内核设为 setuid root；运行期间 DNS 指向 TUN | 通过 `pkexec setcap` 为内核授予 `CAP_NET_ADMIN`（未安装 `setcap` 时改为 setuid 内核）；没有 polkit 认证代理时由 BoxPilot 询问密码并通过 `sudo` 执行 |

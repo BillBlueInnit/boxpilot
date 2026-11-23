@@ -2,7 +2,7 @@ use boxpilot_core::engine::TUN_NEEDS_ADMIN;
 use boxpilot_core::model::ProxyMode;
 use boxpilot_core::{CoreDownloadState, CoreStatus};
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
@@ -83,7 +83,7 @@ impl DashboardPage {
                     | CoreDownloadState::Available(_)
             );
             let engine = engine.clone();
-            Button::new("hero-download")
+            btn("hero-download")
                 .primary()
                 .large()
                 .icon(extra_icon(Lucide::Download))
@@ -93,7 +93,7 @@ impl DashboardPage {
                 .into_any_element()
         } else if nodes == 0 {
             let state = self.state.clone();
-            Button::new("hero-add")
+            btn("hero-add")
                 .primary()
                 .large()
                 .icon(IconName::Plus)
@@ -104,7 +104,7 @@ impl DashboardPage {
             let running = status.is_running();
             let engine_restart = engine.clone();
             let engine = engine.clone();
-            let mut b = Button::new("hero-toggle")
+            let mut b = btn("hero-toggle")
                 .large()
                 .icon(extra_icon(Lucide::Power))
                 .label(if running { t!("btn.disconnect") } else { t!("btn.connect") })
@@ -123,7 +123,7 @@ impl DashboardPage {
                 h_flex()
                     .gap_2()
                     .child(
-                        Button::new("hero-restart")
+                        btn("hero-restart")
                             .large()
                             .outline()
                             .icon(IconName::RefreshCw)
@@ -189,7 +189,7 @@ impl DashboardPage {
                     .child(div().flex_1().min_w_0().text_sm().text_color(t.foreground).child(core_error_text(msg)))
                     .when(needs_admin, |d| {
                         d.child(
-                            Button::new("admin")
+                            btn("admin")
                                 .small()
                                 .primary()
                                 .label(if cfg!(windows) { t!("btn.restart_admin_short") } else { t!("btn.grant_tun") })
@@ -328,7 +328,7 @@ impl DashboardPage {
                     .child(section_title(t!("quick.title"), cx))
                     .when_some(rule_summary, |d, summary| {
                         d.child(
-                            Button::new("dash-goto-rules")
+                            btn("dash-goto-rules")
                                 .ghost()
                                 .xsmall()
                                 .label(t!("dash.manage_rules", summary))
@@ -409,7 +409,7 @@ impl DashboardPage {
             .gap_2()
             .child(section_title(t!("dash.now_using"), cx))
             .child(
-                Button::new("dash-change-node")
+                btn("dash-change-node")
                     .small()
                     .ghost()
                     .icon(extra_icon(Lucide::Earth))
@@ -483,7 +483,7 @@ impl DashboardPage {
                     .gap_2()
                     .child(section_title(t!("nav.subscriptions"), cx))
                     .child(
-                        Button::new("dash-update-all")
+                        btn("dash-update-all")
                             .small()
                             .ghost()
                             .icon(IconName::RefreshCw)
@@ -551,7 +551,7 @@ impl DashboardPage {
             }))
             .when(subs.len() > 5, |d| {
                 d.child(
-                    Button::new("dash-more")
+                    btn("dash-more")
                         .small()
                         .ghost()
                         .label(t!("btn.view_all", subs.len()))

@@ -12,7 +12,7 @@ use boxpilot_core::rules::{
     SERVICE_PRESETS, ServiceCategory, ServicePreset,
 };
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -343,7 +343,7 @@ impl RulesPage {
                     .gap_2()
                     .items_center()
                     .child(
-                        Button::new("new-custom-group")
+                        btn("new-custom-group")
                             .small()
                             .icon(IconName::Plus)
                             .label(t!("rules.new_group"))
@@ -365,7 +365,7 @@ impl RulesPage {
                         cx,
                     ))
                     .child(
-                        Button::new("edit-custom-file")
+                        btn("edit-custom-file")
                             .ghost()
                             .small()
                             .icon(extra_icon(Lucide::FilePen))
@@ -389,7 +389,7 @@ impl RulesPage {
                         .items_center()
                         .child(div().flex_1().min_w_0().text_xs().text_color(t.muted_foreground).child(t!("rules.custom_file")))
                         .child(
-                            Button::new("apply-rules")
+                            btn("apply-rules")
                                 .small()
                                 .primary()
                                 .label(t!("btn.apply_rules"))
@@ -449,7 +449,7 @@ impl RulesPage {
             .child(div().flex_1().min_w(dp(190.)).child(blur_on_outside_click(&self.quick_value, Input::new(&self.quick_value).small(), cx)))
             .when(show_pick_app, |d| {
                 d.child(
-                    Button::new("quick-pick-app")
+                    btn("quick-pick-app")
                         .small()
                         .icon(extra_icon(Lucide::FolderOpen))
                         .label(t!("rules.pick_app"))
@@ -484,7 +484,7 @@ impl RulesPage {
                 d.child(pill(format!("→ {}", target_label(g.display_target())), fg, bg))
             })
             .child(
-                Button::new("quick-add-rule")
+                btn("quick-add-rule")
                     .small()
                     .primary()
                     .icon(IconName::Plus)
@@ -755,7 +755,7 @@ impl RulesPage {
                                 v_flex()
                                     .flex_none()
                                     .child(
-                                        Button::new(("cg-up", gidx))
+                                        btn(("cg-up", gidx))
                                             .ghost()
                                             .xsmall()
                                             .icon(IconName::ChevronUp)
@@ -764,7 +764,7 @@ impl RulesPage {
                                             .on_click(move |_, _, _| e_up.move_custom_rule_group(&id_up, -1)),
                                     )
                                     .child(
-                                        Button::new(("cg-dn", gidx))
+                                        btn(("cg-dn", gidx))
                                             .ghost()
                                             .xsmall()
                                             .icon(IconName::ChevronDown)
@@ -774,7 +774,7 @@ impl RulesPage {
                                     ),
                             )
                             .child(
-                                Button::new(("cg-fold", gidx))
+                                btn(("cg-fold", gidx))
                                     .ghost()
                                     .xsmall()
                                     .icon(if collapsed { IconName::ChevronRight } else { IconName::ChevronDown })
@@ -802,7 +802,7 @@ impl RulesPage {
                             .flex_none()
                             .gap_1p5()
                             .items_center()
-                            .child(choice(
+                            .child(choice_right(
                                 SharedString::from(format!("cg-tgt-{}", g.id)),
                                 current_target_idx,
                                 target_opts,
@@ -817,7 +817,7 @@ impl RulesPage {
                             ))
                             .when_some(group_tag.filter(|_| g.enabled), |d, gtag| {
                                 d.child(
-                                    Button::new(("cg-jump", gidx))
+                                    btn(("cg-jump", gidx))
                                         .ghost()
                                         .xsmall()
                                         .label(t!("rules.goto_proxies"))
@@ -833,7 +833,7 @@ impl RulesPage {
                                     .on_change(move |v, _, _| e_en.set_custom_rule_group_enabled(&id_en, *v)),
                             )
                             .child(
-                                Button::new(("cg-edit", gidx))
+                                btn(("cg-edit", gidx))
                                     .ghost()
                                     .small()
                                     .icon(extra_icon(Lucide::Pencil))
@@ -843,7 +843,7 @@ impl RulesPage {
                                     }),
                             )
                             .child(
-                                Button::new(("cg-del", gidx))
+                                btn(("cg-del", gidx))
                                     .ghost()
                                     .small()
                                     .icon(extra_icon(Lucide::Trash))
@@ -965,7 +965,7 @@ impl RulesPage {
                         v_flex()
                             .flex_none()
                             .child(
-                                Button::new(("cr-up", line))
+                                btn(("cr-up", line))
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::ChevronUp)
@@ -976,7 +976,7 @@ impl RulesPage {
                                     }),
                             )
                             .child(
-                                Button::new(("cr-dn", line))
+                                btn(("cr-dn", line))
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::ChevronDown)
@@ -1000,7 +1000,7 @@ impl RulesPage {
                     )
                     .when(!in_group && r.kind.is_some(), |d| {
                         let row_targets = row_targets.clone();
-                        d.child(choice(
+                        d.child(choice_right(
                             SharedString::from(format!("cr-tgt-{line}")),
                             target_idx,
                             target_opts,
@@ -1024,7 +1024,7 @@ impl RulesPage {
                             }),
                     )
                     .child(
-                        Button::new(("cr-edit", line))
+                        btn(("cr-edit", line))
                             .ghost()
                             .small()
                             .icon(extra_icon(Lucide::Pencil))
@@ -1032,7 +1032,7 @@ impl RulesPage {
                             .on_click(move |_, window, cx| open_custom_rule_editor(rule_clone.clone(), window, cx)),
                     )
                     .child(
-                        Button::new(("cr-del", line))
+                        btn(("cr-del", line))
                             .ghost()
                             .small()
                             .icon(extra_icon(Lucide::Trash))
@@ -1192,7 +1192,7 @@ impl RulesPage {
                             v_flex()
                                 .flex_none()
                                 .child(
-                                    Button::new(("up", idx))
+                                    btn(("up", idx))
                                         .ghost()
                                         .xsmall()
                                         .icon(IconName::ChevronUp)
@@ -1201,7 +1201,7 @@ impl RulesPage {
                                         .on_click(move |_, _, _| e1.move_rule_provider(&id1, -1)),
                                 )
                                 .child(
-                                    Button::new(("down", idx))
+                                    btn(("down", idx))
                                         .ghost()
                                         .xsmall()
                                         .icon(IconName::ChevronDown)
@@ -1235,7 +1235,7 @@ impl RulesPage {
                                 .flex_none()
                                 .gap_1p5()
                                 .items_center()
-                                .child(choice(
+                                .child(choice_right(
                                     SharedString::from(format!("rp-tgt-{}", p.id)),
                                     current_target_idx,
                                     target_opts,
@@ -1250,7 +1250,7 @@ impl RulesPage {
                                 ))
                                 .when_some(group_tag.filter(|_| p.enabled), |d, gtag| {
                                     d.child(
-                                        Button::new(("rp-jump", idx))
+                                        btn(("rp-jump", idx))
                                             .ghost()
                                             .xsmall()
                                             .label(t!("rules.goto_proxies"))
@@ -1266,7 +1266,7 @@ impl RulesPage {
                                         .on_change(move |v, _, _| e3.set_rule_provider_enabled(&id3, *v)),
                                 )
                                 .child(
-                                    Button::new(("rp-upd", idx))
+                                    btn(("rp-upd", idx))
                                         .ghost()
                                         .small()
                                         .icon(IconName::RefreshCw)
@@ -1275,7 +1275,7 @@ impl RulesPage {
                                         .on_click(move |_, _, _| e4.update_rule_provider(&id4)),
                                 )
                                 .child(
-                                    Button::new(("rp-file", idx))
+                                    btn(("rp-file", idx))
                                         .ghost()
                                         .small()
                                         .icon(extra_icon(Lucide::FilePen))
@@ -1298,7 +1298,7 @@ impl RulesPage {
                                         }),
                                 )
                                 .child(
-                                    Button::new(("rp-edit", idx))
+                                    btn(("rp-edit", idx))
                                         .ghost()
                                         .small()
                                         .icon(extra_icon(Lucide::Pencil))
@@ -1306,7 +1306,7 @@ impl RulesPage {
                                         .on_click(move |_, window, cx| open_rule_editor(Some(edit.clone()), window, cx)),
                                 )
                                 .child(
-                                    Button::new(("rp-del", idx))
+                                    btn(("rp-del", idx))
                                         .ghost()
                                         .small()
                                         .icon(extra_icon(Lucide::Trash))
@@ -1407,25 +1407,25 @@ impl Render for RulesPage {
         let this = cx.entity().downgrade();
 
         let actions = vec![
-            Button::new("open-tester")
+            btn("open-tester")
                 .small()
                 .icon(IconName::Search)
                 .label(t!("btn.test_rules"))
                 .on_click(|_, window, cx| open_rule_tester(window, cx))
                 .into_any_element(),
-            Button::new("open-library")
+            btn("open-library")
                 .small()
                 .icon(IconName::Star)
                 .label(t!("btn.service_library"))
                 .on_click(|_, window, cx| open_service_library(window, cx))
                 .into_any_element(),
-            Button::new("import-acl")
+            btn("import-acl")
                 .small()
                 .icon(extra_icon(Lucide::Download))
                 .label(t!("btn.import_acl"))
                 .on_click(|_, window, cx| open_acl_import(window, cx))
                 .into_any_element(),
-            Button::new("add-ruleset")
+            btn("add-ruleset")
                 .small()
                 .primary()
                 .icon(IconName::Plus)
@@ -1506,7 +1506,7 @@ impl Render for RulesPage {
                                 .flex_none()
                                 .when(!providers.is_empty(), |d| {
                                     d.child(
-                                        Button::new("rules-enable-all")
+                                        btn("rules-enable-all")
                                             .ghost()
                                             .small()
                                             .label(t!("btn.enable_all"))
@@ -1514,7 +1514,7 @@ impl Render for RulesPage {
                                             .on_click(move |_, _, _| e_on.set_rule_providers_enabled(&ids_on, true)),
                                     )
                                     .child(
-                                        Button::new("rules-disable-all")
+                                        btn("rules-disable-all")
                                             .ghost()
                                             .small()
                                             .label(t!("btn.disable_all"))
@@ -1522,7 +1522,7 @@ impl Render for RulesPage {
                                             .on_click(move |_, _, _| e_off.set_rule_providers_enabled(&ids_off, false)),
                                     )
                                     .child(
-                                        Button::new("rules-update-all")
+                                        btn("rules-update-all")
                                             .ghost()
                                             .small()
                                             .icon(IconName::RefreshCw)
@@ -1531,7 +1531,7 @@ impl Render for RulesPage {
                                             .on_click(move |_, _, _| e_all.update_all_rule_providers()),
                                     )
                                     .child(
-                                        Button::new("select-rules")
+                                        btn("select-rules")
                                             .ghost()
                                             .small()
                                             .icon(extra_icon(Lucide::ListChecks))
@@ -1548,7 +1548,7 @@ impl Render for RulesPage {
                     }),
             )
             .when(providers.is_empty(), |d| {
-                let cta = Button::new("empty-open-lib")
+                let cta = btn("empty-open-lib")
                     .small()
                     .primary()
                     .icon(IconName::Star)
@@ -1593,7 +1593,7 @@ impl Render for RulesPage {
             .child(setting_row(
                 t!("rules.final_outbound"),
                 Some(t!("rules.final_outbound_desc")),
-                choice(
+                choice_right(
                     "final-outbound",
                     s.final_direct,
                     vec![
@@ -1691,7 +1691,7 @@ fn confirm_apply_profile(
             .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("rules.profile_confirm_body")))
             .footer(
                 DialogFooter::new().child(super::cancel_button()).child(
-                    Button::new("apply-profile-ok")
+                    btn("apply-profile-ok")
                         .primary()
                         .label(t!("btn.apply_rules"))
                         .on_click(move |_, window, cx| {
@@ -1800,7 +1800,7 @@ pub fn open_rule_tester(window: &mut Window, cx: &mut App) {
             .child(view.clone())
             .footer(
                 DialogFooter::new().child(
-                    Button::new("tester-done")
+                    btn("tester-done")
                         .primary()
                         .label(t!("btn.done"))
                         .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -1866,7 +1866,7 @@ impl Render for ServiceLibraryView {
                                 .child(div().text_xs().text_color(t.muted_foreground).truncate().child(desc)),
                         )
                         .child(if added {
-                            Button::new(SharedString::from(format!("svc-rm-{id}")))
+                            btn(SharedString::from(format!("svc-rm-{id}")))
                                 .small()
                                 .icon(IconName::Check)
                                 .label(t!("rules.added_tag"))
@@ -1875,7 +1875,7 @@ impl Render for ServiceLibraryView {
                                     window.refresh();
                                 })
                         } else {
-                            Button::new(SharedString::from(format!("svc-add-{id}")))
+                            btn(SharedString::from(format!("svc-add-{id}")))
                                 .small()
                                 .primary()
                                 .icon(IconName::Plus)
@@ -1933,7 +1933,7 @@ pub fn open_service_library(window: &mut Window, cx: &mut App) {
             .child(view.clone())
             .footer(
                 DialogFooter::new().child(
-                    Button::new("lib-done")
+                    btn("lib-done")
                         .primary()
                         .label(t!("btn.done"))
                         .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -2083,7 +2083,7 @@ fn open_custom_group_editor(existing: Option<CustomRuleGroup>, window: &mut Wind
             .child(editor.clone())
             .footer(
                 DialogFooter::new().child(super::cancel_button()).child(
-                    Button::new("save-custom-group")
+                    btn("save-custom-group")
                         .primary()
                         .label(if renaming { t!("btn.save") } else { t!("btn.add") })
                         .on_click(move |_, window, cx| {
@@ -2239,7 +2239,7 @@ impl Render for CustomRuleEditor {
                     .child(div().flex_1().min_w_0().child(Input::new(&self.value)))
                     .when(show_pick, |d| {
                         d.child(
-                            Button::new("cr-edit-pick")
+                            btn("cr-edit-pick")
                                 .icon(extra_icon(Lucide::FolderOpen))
                                 .label(t!("rules.pick_app"))
                                 .on_click(move |_, window, cx| {
@@ -2281,7 +2281,7 @@ fn open_custom_rule_editor(rule: CustomRule, window: &mut Window, cx: &mut App) 
             .child(editor.clone())
             .footer(
                 DialogFooter::new().child(super::cancel_button()).child(
-                    Button::new("save-custom-rule")
+                    btn("save-custom-rule")
                         .primary()
                         .label(t!("btn.save"))
                         .on_click(move |_, window, cx| {
@@ -2431,7 +2431,7 @@ impl Render for RuleEditor {
                 h_flex()
                     .gap_2()
                     .child(div().flex_1().min_w_0().child(Input::new(&self.source)))
-                    .child(Button::new("browse").label(t!("btn.browse")).on_click(move |_, window, cx| {
+                    .child(btn("browse").label(t!("btn.browse")).on_click(move |_, window, cx| {
                         let _ = w1.update(cx, |e, cx| e.browse(window, cx));
                     })),
                 cx,
@@ -2516,7 +2516,7 @@ pub fn open_rule_editor(original: Option<RuleProvider>, window: &mut Window, cx:
             .child(editor.clone())
             .footer(
                 DialogFooter::new().child(super::cancel_button()).child(
-                    Button::new("save-rule")
+                    btn("save-rule")
                         .primary()
                         .label(if editing { t!("btn.save") } else { t!("btn.add") })
                         .on_click(move |_, window, cx| {
@@ -2546,7 +2546,7 @@ fn open_acl_import(window: &mut Window, cx: &mut App) {
                     .child(Input::new(&input))
                     .child(
                         h_flex().child(
-                            Button::new("acl-preset")
+                            btn("acl-preset")
                                 .small()
                                 .ghost()
                                 .icon(IconName::Star)
@@ -2559,7 +2559,7 @@ fn open_acl_import(window: &mut Window, cx: &mut App) {
             )
             .footer(
                 DialogFooter::new().child(super::cancel_button()).child(
-                    Button::new("acl-import")
+                    btn("acl-import")
                         .primary()
                         .label(t!("btn.import"))
                         .loading(busy.get())

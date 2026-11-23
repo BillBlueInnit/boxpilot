@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use boxpilot_core::process::{LogLevel, LogLine};
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::component::Selectable as _;
@@ -104,7 +104,7 @@ impl Render for LogsPage {
         let e_rec = engine.clone();
         let actions = vec![
             div().w(dp(220.)).child(blur_on_outside_click(&self.search, Input::new(&self.search).small().cleanable(true), cx)).into_any_element(),
-            choice(
+            choice_right(
                 "log-level",
                 level,
                 LogLevel::ALL.iter().map(|l| (SharedString::from(format!("≥ {}", l.label())), *l)).collect(),
@@ -116,7 +116,7 @@ impl Render for LogsPage {
                 },
             )
             .into_any_element(),
-            Button::new("follow")
+            btn("follow")
                 .small()
                 .icon(IconName::ArrowDown)
                 .label(t!("btn.follow"))
@@ -129,14 +129,14 @@ impl Render for LogsPage {
                 })
                 .into_any_element(),
             // Stopping also freezes the list, which makes long output readable.
-            Button::new("record")
+            btn("record")
                 .small()
                 .icon(extra_icon(if recording { Lucide::CircleStop } else { Lucide::CirclePlay }))
                 .label(if recording { t!("btn.record_stop") } else { t!("btn.record_start") })
                 .tooltip(t!("tip.record"))
                 .on_click(move |_, _, _| e_rec.update_settings(move |s| s.record_logs = !recording))
                 .into_any_element(),
-            Button::new("clear-logs")
+            btn("clear-logs")
                 .small()
                 .ghost()
                 .icon(extra_icon(Lucide::Trash))
@@ -149,7 +149,7 @@ impl Render for LogsPage {
                     });
                 })
                 .into_any_element(),
-            Button::new("open-logs")
+            btn("open-logs")
                 .small()
                 .ghost()
                 .icon(extra_icon(Lucide::FolderOpen))
@@ -241,7 +241,7 @@ impl Render for LogsPage {
                         .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c).child(l.level.label()))
                         .child(div().flex_1())
                         .child(
-                            Button::new("log-copy")
+                            btn("log-copy")
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Copy)
@@ -249,7 +249,7 @@ impl Render for LogsPage {
                                 .on_click(move |_, window, cx| copy_line(&copy, window, cx)),
                         )
                         .child(
-                            Button::new("log-close")
+                            btn("log-close")
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Close)

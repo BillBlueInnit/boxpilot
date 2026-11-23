@@ -1,7 +1,7 @@
 use boxpilot_core::model::AutoStrategy;
 use boxpilot_core::{ProxyGroup, ProxyMember};
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::AnimationExt as _;
@@ -316,7 +316,7 @@ impl Render for ProxiesPage {
         if !status.is_running() {
             let e = engine.clone();
             let action = (engine.total_nodes() > 0 && engine.core_installed()).then(|| {
-                Button::new("proxies-connect")
+                btn("proxies-connect")
                     .primary()
                     .icon(extra_icon(Lucide::Power))
                     .label(t!("btn.connect"))
@@ -383,7 +383,7 @@ impl Render for ProxiesPage {
 
         let actions = vec![
             div().w(dp(220.)).child(blur_on_outside_click(&self.search, Input::new(&self.search).small().cleanable(true), cx)).into_any_element(),
-            Button::new("test-latency")
+            btn("test-latency")
                 .small()
                 .icon(extra_icon(Lucide::Zap))
                 .label(t!("btn.test_latency"))
@@ -392,7 +392,7 @@ impl Render for ProxiesPage {
                 .disabled(testable.is_empty())
                 .on_click(move |_, _, _| e.test_delays(testable.clone()))
                 .into_any_element(),
-            Button::new("real-latency")
+            btn("real-latency")
                 .small()
                 .icon(extra_icon(Lucide::Activity))
                 .label(t!("btn.real_latency"))
@@ -406,7 +406,7 @@ impl Render for ProxiesPage {
                 .into_any_element(),
             if speed_testing {
                 let e_stop = engine.clone();
-                Button::new("speed-stop")
+                btn("speed-stop")
                     .small()
                     .danger()
                     .icon(IconName::Close)
@@ -414,7 +414,7 @@ impl Render for ProxiesPage {
                     .on_click(move |_, _, _| e_stop.cancel_speed_test())
                     .into_any_element()
             } else {
-                Button::new("speed-test")
+                btn("speed-test")
                     .small()
                     .icon(extra_icon(Lucide::Gauge))
                     .label(t!("btn.speed_test"))
@@ -459,7 +459,7 @@ impl Render for ProxiesPage {
                         .items_center()
                         .child(pill(t!("proxies.from_rule"), t.primary, t.primary.opacity(0.1)))
                         .child(
-                            Button::new("goto-rules")
+                            btn("goto-rules")
                                 .ghost()
                                 .xsmall()
                                 .label(t!("proxies.edit_in_rules"))
@@ -486,7 +486,7 @@ impl Render for ProxiesPage {
                         .items_center()
                         .child(pill(t!("proxies.from_custom_group"), t.primary, t.primary.opacity(0.1)))
                         .child(
-                            Button::new("goto-custom-rules")
+                            btn("goto-custom-rules")
                                 .ghost()
                                 .xsmall()
                                 .label(t!("proxies.edit_in_rules"))

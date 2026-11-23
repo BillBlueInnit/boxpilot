@@ -336,7 +336,7 @@ fn confirm_elevation(body: &'static str, apply: fn(&mut Settings), cx: &mut App)
                 .child(div().text_sm().text_color(muted).child(body))
                 .footer(
                     DialogFooter::new().child(cancel_button()).child(
-                        Button::new("restart-admin")
+                        btn("restart-admin")
                             .primary()
                             .label(t!("btn.restart_admin"))
                             .on_click(move |_, window, cx| {
@@ -456,7 +456,7 @@ fn restart_elevated(apply: fn(&mut Settings), cx: &mut App) {
 
 /// Footer button that closes the active dialog.
 pub(crate) fn cancel_button() -> Button {
-    Button::new("dialog-cancel")
+    btn("dialog-cancel")
         .label(t!("btn.cancel"))
         .on_click(|_, window, cx| window.close_dialog(cx))
 }
@@ -473,8 +473,9 @@ pub struct MainView {
     connections: Entity<connections::ConnectionsPage>,
     logs: Entity<logs::LogsPage>,
     settings: Entity<settings::SettingsPage>,
-    /// One scroll position per page, kept while switching pages.
+    /// Scroll handles per page (reset to top on page switch).
     scroll: Vec<ScrollHandle>,
+    last_page: Page,
     last_theme: ThemePref,
     last_accent: boxpilot_core::model::Accent,
     /// Translucency, material and transparency last applied to the window.
@@ -532,6 +533,7 @@ impl MainView {
             logs: cx.new(|cx| logs::LogsPage::new(window, cx)),
             settings: cx.new(|cx| settings::SettingsPage::new(window, cx)),
             scroll: Page::ALL.iter().map(|_| ScrollHandle::new()).collect(),
+            last_page: Page::Dashboard,
             state,
             last_theme: settings.theme,
             last_accent: settings.accent,
@@ -765,6 +767,13 @@ impl MainView {
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.state.read(cx).page;
+        if page != self.last_page {
+            self.last_page = page;
+            self.scroll[page.index()].set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+            if page == Page::Connections {
+                self.connections.update(cx, |c, _| c.scroll_to_top());
+            }
+        }
         // What was applied (macOS may fall back to opaque), not just the setting.
         let mica = layout::translucent();
         let t = cx.theme();

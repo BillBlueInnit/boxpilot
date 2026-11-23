@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use boxpilot_core::model::{Subscription, UpdateVia, now_unix};
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -146,7 +146,7 @@ impl SubscriptionsPage {
                             )
                             .when(remote, |d| {
                                 d.child(
-                                    Button::new(SharedString::from(format!("copy-{idx}")))
+                                    btn(SharedString::from(format!("copy-{idx}")))
                                         .ghost()
                                         .small()
                                         .icon(IconName::Copy)
@@ -157,7 +157,7 @@ impl SubscriptionsPage {
                                         }),
                                 )
                                 .child(
-                                    Button::new(SharedString::from(format!("upd-{idx}")))
+                                    btn(SharedString::from(format!("upd-{idx}")))
                                         .ghost()
                                         .small()
                                         .icon(IconName::RefreshCw)
@@ -167,7 +167,7 @@ impl SubscriptionsPage {
                                 )
                             })
                             .child(
-                                Button::new(SharedString::from(format!("links-{idx}")))
+                                btn(SharedString::from(format!("links-{idx}")))
                                     .ghost()
                                     .small()
                                     .icon(extra_icon(Lucide::Share2))
@@ -179,7 +179,7 @@ impl SubscriptionsPage {
                                     }),
                             )
                             .child(
-                                Button::new(SharedString::from(format!("edit-{idx}")))
+                                btn(SharedString::from(format!("edit-{idx}")))
                                     .ghost()
                                     .small()
                                     .icon(extra_icon(Lucide::Pencil))
@@ -187,7 +187,7 @@ impl SubscriptionsPage {
                                     .on_click(move |_, window, cx| open_editor(Some(edit_sub.clone()), None, window, cx)),
                             )
                             .child(
-                                Button::new(SharedString::from(format!("del-{idx}")))
+                                btn(SharedString::from(format!("del-{idx}")))
                                     .ghost()
                                     .small()
                                     .icon(extra_icon(Lucide::Trash))
@@ -256,7 +256,7 @@ pub fn confirm_delete(
                 DialogFooter::new()
                     .child(super::cancel_button())
                     .child(
-                        Button::new("confirm-delete")
+                        btn("confirm-delete")
                             .danger()
                             .label(t!("btn.delete"))
                             .on_click(move |_, window, cx| {
@@ -328,7 +328,7 @@ impl Render for SubscriptionsPage {
         } else {
             let this_sel = this.clone();
             vec![
-            Button::new("select-subs")
+            btn("select-subs")
                 .small()
                 .ghost()
                 .icon(extra_icon(Lucide::ListChecks))
@@ -341,7 +341,7 @@ impl Render for SubscriptionsPage {
                     });
                 })
                 .into_any_element(),
-            Button::new("paste-sub")
+            btn("paste-sub")
                 .small()
                 .icon(extra_icon(Lucide::ClipboardPaste))
                 .label(t!("btn.paste"))
@@ -363,7 +363,7 @@ impl Render for SubscriptionsPage {
                     }
                 })
                 .into_any_element(),
-            Button::new("update-all")
+            btn("update-all")
                 .small()
                 .icon(IconName::RefreshCw)
                 .label(t!("btn.update_all"))
@@ -371,23 +371,32 @@ impl Render for SubscriptionsPage {
                 .disabled(remote == 0)
                 .on_click(move |_, _, _| e.update_all())
                 .into_any_element(),
-            Button::new("add-sub")
+            btn("add-sub")
                 .small()
                 .primary()
-                .icon(IconName::Plus)
-                .label(t!("btn.add"))
-                .dropdown_caret(true)
-                .dropdown_menu(|menu, _, _| {
-                    menu.item(
-                        PopupMenuItem::new(t!("btn.add_subscription"))
-                            .icon(extra_icon(Lucide::Rss))
-                            .on_click(|_, window, cx| open_editor(None, None, window, cx)),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("btn.add_node"))
-                            .icon(extra_icon(Lucide::ServerPlus))
-                            .on_click(|_, window, cx| super::local_nodes::open_add_node(None, window, cx)),
-                    )
+                .accessibility_label(t!("btn.add"))
+                .pl_2()
+                .pr(dp(7.))
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .child(gpui_kit::component::Icon::new(IconName::Plus).small())
+                        .child(t!("btn.add"))
+                        .child(gpui_kit::component::Icon::new(IconName::ChevronDown).xsmall().opacity(0.8)),
+                )
+                .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, |menu, _, _| {
+                    compact_menu(menu)
+                        .item(
+                            PopupMenuItem::new(t!("btn.add_subscription"))
+                                .icon(extra_icon(Lucide::Rss))
+                                .on_click(|_, window, cx| open_editor(None, None, window, cx)),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("btn.add_node"))
+                                .icon(extra_icon(Lucide::ServerPlus))
+                                .on_click(|_, window, cx| super::local_nodes::open_add_node(None, window, cx)),
+                        )
                 })
                 .into_any_element(),
             ]
@@ -405,14 +414,14 @@ impl Render for SubscriptionsPage {
                         h_flex()
                             .gap_2()
                             .child(
-                                Button::new("empty-add")
+                                btn("empty-add")
                                     .primary()
                                     .icon(IconName::Plus)
                                     .label(t!("btn.add_subscription"))
                                     .on_click(|_, window, cx| open_editor(None, None, window, cx)),
                             )
                             .child(
-                                Button::new("empty-add-node")
+                                btn("empty-add-node")
                                     .icon(extra_icon(Lucide::ServerPlus))
                                     .label(t!("btn.add_node"))
                                     .on_click(|_, window, cx| super::local_nodes::open_add_node(None, window, cx)),
@@ -709,7 +718,7 @@ pub fn open_editor(original: Option<Subscription>, prefill: Option<Prefill>, win
                 DialogFooter::new()
                     .child(super::cancel_button())
                     .child(
-                        Button::new("save-sub")
+                        btn("save-sub")
                             .primary()
                             .label(if editing { t!("btn.save") } else { t!("btn.add") })
                             .on_click(move |_, window, cx| {

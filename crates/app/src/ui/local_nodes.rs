@@ -7,7 +7,7 @@ use std::rc::Rc;
 use boxpilot_core::convert::{parse_uri, share_link, share_links};
 use boxpilot_core::model::Node;
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
@@ -89,7 +89,7 @@ pub fn card_view(cx: &App) -> Option<impl IntoElement> {
                     .child(format!("{}:{}", node.server, node.port)),
             )
             .child(
-                Button::new(SharedString::from(format!("local-share-{i}")))
+                btn(SharedString::from(format!("local-share-{i}")))
                     .ghost()
                     .small()
                     .icon(extra_icon(Lucide::Share2))
@@ -97,7 +97,7 @@ pub fn card_view(cx: &App) -> Option<impl IntoElement> {
                     .on_click(move |_, window, cx| copy_link(share_link(&shared), window, cx)),
             )
             .child(
-                Button::new(SharedString::from(format!("local-del-{i}")))
+                btn(SharedString::from(format!("local-del-{i}")))
                     .ghost()
                     .small()
                     .icon(extra_icon(Lucide::Trash))
@@ -156,7 +156,7 @@ pub fn card_view(cx: &App) -> Option<impl IntoElement> {
                                     .on_change(move |v, _, _| e_toggle.set_subscription_enabled(&id, *v)),
                             )
                             .child(
-                                Button::new("local-share-all")
+                                btn("local-share-all")
                                     .ghost()
                                     .small()
                                     .icon(IconName::Copy)
@@ -164,7 +164,7 @@ pub fn card_view(cx: &App) -> Option<impl IntoElement> {
                                     .on_click(move |_, window, cx| copy_links(&all, window, cx)),
                             )
                             .child(
-                                Button::new("local-add")
+                                btn("local-add")
                                     .ghost()
                                     .small()
                                     .icon(IconName::Plus)
@@ -269,7 +269,7 @@ pub fn open_add_node(prefill: Option<String>, window: &mut Window, cx: &mut App)
             .footer(
                 DialogFooter::new()
                     .child(super::cancel_button())
-                    .child(Button::new("save-node").primary().label(t!("btn.add")).on_click(move |_, window, cx| {
+                    .child(btn("save-node").primary().label(t!("btn.add")).on_click(move |_, window, cx| {
                         if form_ok.update(cx, |f, cx| f.save(window, cx)) {
                             window.close_dialog(cx);
                         }

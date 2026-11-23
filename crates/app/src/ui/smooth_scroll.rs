@@ -119,7 +119,7 @@ impl Element for SmoothScroll {
     ) -> Self::PrepaintState {
         let handle = self.handle.clone();
         let reduce_motion = cx.reduce_motion();
-        let flags = window.with_element_state(id.unwrap(), |state: Option<State>, window| {
+        let (flags, scrolled) = window.with_element_state(id.unwrap(), |state: Option<State>, window| {
             let now = Instant::now();
             let actual = handle.offset();
             let max = handle.max_offset();
@@ -132,11 +132,12 @@ impl Element for SmoothScroll {
                 dragging: Rc::default(),
             });
             let jump = actual - state.written;
+            let scrolled = jump != Point::default();
             let dt = now.duration_since(state.updated).as_secs_f32().min(1.0 / 20.0);
             let settled_x = step(&mut state.x, jump.x.as_f32(), -max.x.as_f32(), dt);
             let settled_y = step(&mut state.y, jump.y.as_f32(), -max.y.as_f32(), dt);
             let direct = state.precise.get() || state.dragging.get();
-            if reduce_motion || (direct && jump != Point::default()) {
+            if reduce_motion || (direct && scrolled) {
                 state.x.spring = SpringState { position: state.x.target, velocity: 0.0 };
                 state.y.spring = SpringState { position: state.y.target, velocity: 0.0 };
             } else if !(settled_x && settled_y) {
@@ -147,8 +148,15 @@ impl Element for SmoothScroll {
             state.written = visual;
             state.updated = now;
             let flags = (state.precise.clone(), state.dragging.clone());
-            (flags, state)
+            ((flags, scrolled), state)
         });
+        // Dismiss any open dropdown/popover as soon as its underlying scroll
+        // container moves so menus never float orphaned away from their trigger.
+        if scrolled && gpui_kit::base::GlobalState::is_in_deferred_context(cx) {
+            window.defer(cx, |window, cx| {
+                window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
+            });
+        }
         child.prepaint(window, cx);
         flags
     }

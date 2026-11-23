@@ -6,7 +6,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use boxpilot_core::model::Settings;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
+use super::widgets::btn;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
@@ -120,7 +121,7 @@ impl Render for SudoPrompt {
                                     .child(hint.clone()),
                             )
                             .child(
-                                Button::new("sudo-copy")
+                                btn("sudo-copy")
                                     .ghost()
                                     .small()
                                     .icon(IconName::Copy)
@@ -164,7 +165,7 @@ pub fn open(apply: Option<fn(&mut Settings)>, cx: &mut App) {
                 .child(form.clone())
                 .footer(
                     DialogFooter::new().child(super::cancel_button()).child(
-                        Button::new("sudo-grant")
+                        btn("sudo-grant")
                             .primary()
                             .label(t!("btn.grant"))
                             .loading(busy)

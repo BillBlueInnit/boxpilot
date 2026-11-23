@@ -1,7 +1,7 @@
 use boxpilot_core::CoreDownloadState;
 use boxpilot_core::model::{Accent, Backdrop, GpuPreference, Language, Settings, ThemePref, TunStack, UiFont, UpdateMode};
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -270,7 +270,7 @@ impl SettingsPage {
                             .flex_none()
                             .gap_2()
                             .child(
-                                Button::new("check-core")
+                                btn("check-core")
                                     .small()
                                     .icon(IconName::RefreshCw)
                                     .label(t!("btn.check_updates"))
@@ -278,7 +278,7 @@ impl SettingsPage {
                                     .on_click(move |_, _, _| e1.check_core_update()),
                             )
                             .child(
-                                Button::new("install-core")
+                                btn("install-core")
                                     .small()
                                     .icon(extra_icon(Lucide::Download))
                                     .label(install_label)
@@ -307,7 +307,7 @@ impl SettingsPage {
             .child(setting_row(
                 t!("set.core_folder"),
                 None,
-                Button::new("open-core")
+                btn("open-core")
                     .small()
                     .icon(extra_icon(Lucide::FolderOpen))
                     .label(t!("btn.open"))
@@ -356,7 +356,7 @@ impl SettingsPage {
         let mut actions = h_flex().gap_2().flex_wrap().justify_end();
         if info.installed.is_some() {
             actions = actions.child(
-                Button::new("upd-restart")
+                btn("upd-restart")
                     .small()
                     .label(t!("btn.restart_apply"))
                     .on_click(|_, _, cx| super::restart_app(cx)),
@@ -364,7 +364,7 @@ impl SettingsPage {
         } else if let Some(r) = info.latest.clone() {
             let page = r.page.clone();
             actions = actions.child(
-                Button::new("upd-notes")
+                btn("upd-notes")
                     .small()
                     .label(t!("btn.release_notes"))
                     .on_click(move |_, _, cx| cx.open_url(&page)),
@@ -372,7 +372,7 @@ impl SettingsPage {
             if r.asset.is_some() {
                 let e = engine.clone();
                 actions = actions.child(
-                    Button::new("upd-install")
+                    btn("upd-install")
                         .small()
                         .icon(extra_icon(Lucide::Download))
                         .label(t!("btn.update_now"))
@@ -383,7 +383,7 @@ impl SettingsPage {
         } else {
             let e = engine.clone();
             actions = actions.child(
-                Button::new("upd-check")
+                btn("upd-check")
                     .small()
                     .icon(IconName::RefreshCw)
                     .label(t!("btn.check_now"))
@@ -407,7 +407,7 @@ impl SettingsPage {
             .child(setting_row(
                 t!("set.update_mode"),
                 Some(t!("set.update_mode_desc")),
-                choice("update-mode", s.update_mode, modes, move |v, _, _| e_mode.update_settings(|s| s.update_mode = v)),
+                choice_right("update-mode", s.update_mode, modes, move |v, _, _| e_mode.update_settings(|s| s.update_mode = v)),
                 cx,
             ))
             .child(div().text_xs().text_color(muted).child(format!("github.com/{}", boxpilot_core::update::REPO)))
@@ -435,12 +435,15 @@ impl SettingsPage {
         };
         let current_font = s.ui_font;
         let current_lang = s.language;
-        let font_picker = Button::new("ui-font")
+        let font_picker = btn("ui-font")
             .outline()
             .small()
+            .pl_2()
+            .pr_1p5()
             .label(font_label(current_font))
             .dropdown_caret(true)
-            .dropdown_menu(move |mut menu, _, cx| {
+            .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, cx| {
+                let mut menu = compact_menu(menu);
                 let fallbacks = super::layout::font_fallbacks(current_lang, cx);
                 for f in UiFont::ALL {
                     let label = font_label(f);
@@ -480,7 +483,7 @@ impl SettingsPage {
             .child(setting_row(
                 t!("set.scale"),
                 Some(t!("set.scale_desc")),
-                choice("ui-scale", s.ui_scale, scale_options, move |v, _, _| e_scale.update_settings(|s| s.ui_scale = v)),
+                choice_right("ui-scale", s.ui_scale, scale_options, move |v, _, _| e_scale.update_settings(|s| s.ui_scale = v)),
                 cx,
             ))
             .child(setting_row(
@@ -496,7 +499,7 @@ impl SettingsPage {
                 d.child(setting_row(
                     t!("set.gpu"),
                     Some(t!("set.gpu_desc")),
-                    choice("gpu", s.gpu, gpu_options, move |v, _, _| e_gpu.update_settings(|s| s.gpu = v)),
+                    choice_right("gpu", s.gpu, gpu_options, move |v, _, _| e_gpu.update_settings(|s| s.gpu = v)),
                     cx,
                 ))
             })
@@ -508,7 +511,7 @@ impl SettingsPage {
             .when(gpu_needs_restart, |d| {
                 d.child(
                     h_flex().justify_end().child(
-                        Button::new("restart-gpu")
+                        btn("restart-gpu")
                             .small()
                             .label(t!("btn.restart_apply"))
                             .on_click(|_, _, cx| super::restart_app(cx)),
@@ -544,7 +547,7 @@ impl SettingsPage {
                         d.child(setting_row(
                             t!("set.backdrop"),
                             Some(t!("set.backdrop_desc")),
-                            choice("backdrop", s.backdrop, kinds, move |v, _, _| e_kind.update_settings(|s| s.backdrop = v)),
+                            choice_right("backdrop", s.backdrop, kinds, move |v, _, _| e_kind.update_settings(|s| s.backdrop = v)),
                             cx,
                         ))
                     })
@@ -552,7 +555,7 @@ impl SettingsPage {
                         d.child(setting_row(
                             t!("set.transparency"),
                             Some(t!("set.transparency_desc")),
-                            choice("transparency", current_trans, levels, move |v, _, _| {
+                            choice_right("transparency", current_trans, levels, move |v, _, _| {
                                 e_glass.update_settings(|s| s.transparency = v)
                             }),
                             cx,
@@ -601,7 +604,7 @@ fn open_reset_dialog(window: &mut Window, cx: &mut App) {
             )
             .footer(
                 DialogFooter::new().child(super::cancel_button()).child(
-                    Button::new("confirm-reset")
+                    btn("confirm-reset")
                         .danger()
                         .label(t!("btn.reset_restart"))
                         .disabled(current.is_empty())
@@ -722,13 +725,13 @@ impl Render for SettingsPage {
                 .child(setting_row(
                     t!("set.language"),
                     None,
-                    choice("language", s.language, language_options, move |v, _, _| elang.update_settings(|s| s.language = v)),
+                    choice_right("language", s.language, language_options, move |v, _, _| elang.update_settings(|s| s.language = v)),
                     cx,
                 ))
                 .child(setting_row(
                     t!("set.theme"),
                     None,
-                    choice("theme", s.theme, theme_options, move |v, _, _| et.update_settings(|s| s.theme = v)),
+                    choice_right("theme", s.theme, theme_options, move |v, _, _| et.update_settings(|s| s.theme = v)),
                     cx,
                 ))
                 .child(setting_row(t!("set.accent"), Some(t!("set.accent_desc")), accent_swatches(s.accent, e, cx), cx))
@@ -774,7 +777,7 @@ impl Render for SettingsPage {
                 .child(setting_row(
                     t!("set.stack"),
                     Some(t!("set.stack_desc")),
-                    choice(
+                    choice_right(
                         "stack",
                         s.tun_stack,
                         TunStack::ALL.iter().map(|v| (SharedString::from(v.as_str()), *v)).collect(),
@@ -807,7 +810,7 @@ impl Render for SettingsPage {
                 .child(setting_row(
                     t!("set.log_level"),
                     None,
-                    choice("loglevel", current_level, levels, move |v, _, _| el.update_settings(|s| s.log_level = v.to_string())),
+                    choice_right("loglevel", current_level, levels, move |v, _, _| el.update_settings(|s| s.log_level = v.to_string())),
                     cx,
                 ))
                 .child(setting_row(t!("set.api_port"), Some(t!("set.api_port_desc")), self.input(F::ApiPort), cx))
@@ -817,7 +820,7 @@ impl Render for SettingsPage {
                 .child(setting_row(
                     t!("set.export"),
                     Some(t!("set.export_desc")),
-                    Button::new("export")
+                    btn("export")
                         .small()
                         .icon(IconName::Copy)
                         .label(t!("btn.copy_json"))
@@ -831,7 +834,7 @@ impl Render for SettingsPage {
                 .child(setting_row(
                     t!("set.reset"),
                     Some(t!("set.reset_desc")),
-                    Button::new("reset-app")
+                    btn("reset-app")
                         .small()
                         .icon(extra_icon(Lucide::Trash))
                         .label(t!("btn.reset"))
@@ -841,7 +844,7 @@ impl Render for SettingsPage {
                 .child(setting_row(
                     t!("set.data_folder"),
                     Some(&data_dir.display().to_string()),
-                    Button::new("open-data")
+                    btn("open-data")
                         .small()
                         .icon(extra_icon(Lucide::FolderOpen))
                         .label(t!("btn.open"))

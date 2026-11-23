@@ -78,24 +78,17 @@ The step-by-step guide is in [docs/usage.md](docs/usage.md). Data lives in the f
   quickest nodes) — each optionally limited to one region.
 - **Speed test**: download speed and real latency (a fresh HTTPS request through the node) per node
   or for all shown nodes, through a separate local probe so your selection is untouched.
-- **Rules**: import rule-sets from a URL or a local file — sing-box `.srs` / `.json`, Clash rule
-  providers (`payload:` YAML, domain / ipcidr / classical) and ACL4SSR `.list` files, which are
-  converted to sing-box rule-sets. Each set routes to Proxy, Direct, Reject or any group, in the
-  order you arrange, and refreshes on its own interval. **Import ACL4SSR** reads a subconverter
-  `.ini` (e.g. ACL4SSR_Online_Full) and creates every `ruleset=` entry with the right action,
-  switched off until you pick the ones you want (Enable all / Disable all). A rule-set can get a
-  **node group of its own** on the Proxies page — chosen by hand or picked automatically with the
-  same modes and region filter as Auto — and its file can be opened in your text editor; saves
-  apply by themselves. Built-in China bypass and ad blocking, plus custom rules (`TYPE,VALUE,TARGET`)
-  kept in `CustomRule.list`, which you can edit anywhere or add to by right-clicking a connection.
+- **Rules**: laid out from top to bottom in exact matching order (**Custom rules → Routing rule-sets → Default fallback**), with one-click preset profiles (**Recommended Daily**, **Minimal Bypass CN**, **Streaming & Gaming**, **Direct First**), an inline **Rule match tester**, and a built-in **Service library** (AI, YouTube, Netflix, Disney+, Telegram, GitHub, Steam, Bilibili…). Create named **custom rule groups** with drag-and-drop organization and optional **own node groups** on the Proxies page — kept in sync with `CustomRule.list` (`#!group` sections) and addable by right-clicking any connection. Also imports external sing-box `.srs` / `.json`, Clash rule providers (`payload:` YAML, domain / ipcidr / classical) and ACL4SSR `.list` / `.ini` (e.g. ACL4SSR_Online_Full) rule-sets, each routable to Proxy, Direct, Reject or its own node group and editable in your text editor with automatic reload on save.
 - **DNS**: DoH/DoT/DoQ/UDP, FakeIP, IPv6. Rule-sets are cached by the app and handed to sing-box as
   local files, so a blocked GitHub or a dead node never stops the core from starting.
 - **App**: English, 简体中文, 繁體中文 and Русский (follows the system language, switchable
   live); run as administrator (login start through a highest-privilege scheduled task, so no UAC
   prompt); tray icon with mode/system-proxy/TUN toggles, close to tray, single instance, launch at
-  login (optionally minimized), live traffic chart, connections view with resizable columns, log viewer, light/dark themes,
-  a theme colour, and a translucent window (Mica, Mica Alt or Acrylic on Windows 11, the system blur
-  on macOS and KDE Plasma).
+  login (optionally minimized), live traffic chart, connections view with resizable columns, log viewer,
+  light/dark themes, theme colour, selectable UI font (**System**, bundled **Google Sans**, or installed
+  **Source Han Sans**), and a seamless translucent window (Windows 11 **Mica**, **Mica Alt**, **Acrylic**,
+  or custom GPU **Frosted** vibrancy with 5 transparency tiers from Solid to Ultra; system blur on macOS
+  and KDE Plasma).
 - **Proxies page**: a country code on every node — from the node name (flag, place, code), else a
   GeoIP lookup of the server, else (anycast/CDN or private addresses) the exit IP checked through
   that node. Lightweight mode unloads the UI while the app sits in the tray.
@@ -113,7 +106,7 @@ one gets its native mechanism:
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | Install | zip | `.dmg` with BoxPilot.app (Dock, Launchpad) | `.deb`, `.rpm`, Arch package from the release's pacman repository, or tar.gz |
-| Window | borderless, native frame, snap layouts on Maximize, optional Mica | native traffic lights | client-side decorations (or the WM's own); tiling compositors (niri, sway, Hyprland, river, i3) draw the border and shadow |
+| Window | borderless, native rounded frame, snap layouts on Maximize, Mica / Mica Alt / Acrylic / Frosted | native traffic lights | client-side decorations (or the WM's own); tiling compositors (niri, sway, Hyprland, river, i3) draw the border and shadow |
 | Caption buttons | Segoe Fluent / MDL2 glyphs, WinUI colours | AppKit traffic lights | Adwaita (GNOME) or Breeze (KDE) style, `button-layout` order and side |
 | System proxy | WinINet (registry) | `networksetup`, every network service | KDE `kioslaverc` and GNOME `gsettings` (both, for KDE, GTK and Firefox) |
 | TUN permission | run BoxPilot as administrator (login via scheduled task, no UAC prompt) | core made setuid root after one admin prompt; DNS points at TUN while it runs | `CAP_NET_ADMIN` on the core via `pkexec setcap` (or a setuid core where `setcap` isn't installed); without a polkit agent BoxPilot asks for the password and runs it through `sudo` |

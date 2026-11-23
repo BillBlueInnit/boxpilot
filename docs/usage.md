@@ -168,11 +168,13 @@ matching order (**① Custom rules → ② Routing rule-sets → ③ Default fal
 
 - **General**: language, theme, **Theme colour**, launch at login, close to tray and
   **Lightweight mode** (closing the window frees the UI; the proxy keeps running in the tray).
-- **Graphics**: **Enhanced font rendering** (built-in pure-Rust analytical vector text engine, on by
-  default on Windows and off on macOS/Linux), **Translucent window** with **Material** (Mica, Mica
-  Alt, Acrylic on Windows 11) and **Transparency**. macOS and KDE Plasma use the system blur.
+- **Graphics**: **Interface size** (follows OS text scale or custom percentage), **Interface font**
+  (**System**, bundled **Google Sans**, or **Source Han Sans** if installed — previewed live in the
+  picker with aligned vertical metrics), **GPU**, **Translucent window** with **Material** (Windows 11:
+  **Mica**, **Mica Alt** default, **Acrylic**, or custom GPU **Frosted** vibrancy; macOS and KDE Plasma
+  use the system blur), and 5 **Transparency** tiers (**Solid / Subtle / Balanced / Clear / Ultra**).
 - **Proxy / TUN / DNS**: ports, LAN access, UDP and QUIC handling, TUN stack, DNS servers, FakeIP.
-- **Updates**: how BoxPilot handles new versions, and **Check now**.
+- **Updates**: how BoxPilot handles new versions, and **Check for updates** (matching the core section).
 - **Advanced → Reset BoxPilot**: clear settings, subscriptions, rule-sets or caches.
 
 ## 8. Troubleshooting
