@@ -57,6 +57,8 @@ pub struct ConnMetadata {
     pub inbound: String,
     #[serde(default, rename = "sourceIP")]
     pub source_ip: String,
+    #[serde(default)]
+    pub source_port: String,
     #[serde(default, rename = "destinationIP")]
     pub destination_ip: String,
     #[serde(default)]
@@ -65,6 +67,8 @@ pub struct ConnMetadata {
     pub host: String,
     #[serde(default)]
     pub process_path: String,
+    #[serde(default)]
+    pub process: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,8 +106,27 @@ impl Connection {
     }
 
     pub fn process(&self) -> &str {
-        let p = &self.metadata.process_path;
-        p.rsplit(['\\', '/']).next().unwrap_or(p)
+        let raw = if !self.metadata.process_path.is_empty() {
+            self.metadata.process_path.as_str()
+        } else {
+            self.metadata.process.as_str()
+        };
+        let base = raw.rsplit(['\\', '/']).next().unwrap_or(raw).trim();
+        // sing-box's Clash API appends `" (username)"` or `" (uid)"` on Unix;
+        // strip that tag so both the Process column and right-click PROCESS-NAME
+        // rules get the clean executable name (while preserving macOS helper
+        // suffixes like `"Google Chrome Helper (Renderer)"`).
+        if let Some((head, tail)) = base.rsplit_once(" (") {
+            if let Some(tag) = tail.strip_suffix(')') {
+                let is_uid = !tag.is_empty() && tag.bytes().all(|b| b.is_ascii_digit());
+                let is_unix_user = !tag.is_empty()
+                    && tag.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'.'));
+                if (is_uid || is_unix_user) && !head.is_empty() {
+                    return head;
+                }
+            }
+        }
+        base
     }
 
     /// Outbound actually used (last element of the chain).
@@ -207,13 +230,21 @@ impl ClashApi {
     }
 
     pub async fn connections(&self) -> Result<ConnectionsSnapshot> {
-        Ok(self
+        #[allow(unused_mut)]
+        let mut snap: ConnectionsSnapshot = self
             .req(reqwest::Method::GET, "/connections")
             .send()
             .await?
             .error_for_status()?
             .json()
-            .await?)
+            .await?;
+        #[cfg(target_os = "macos")]
+        if let Some(conns) = snap.connections.as_mut() {
+            if conns.iter().any(|c| c.process().is_empty() && !c.metadata.source_port.is_empty()) {
+                crate::sys::fill_macos_connection_processes(conns);
+            }
+        }
+        Ok(snap)
     }
 
     pub async fn close_connection(&self, id: &str) -> Result<()> {
@@ -295,4 +326,39 @@ pub struct LogEntry {
 
 fn enc(s: &str) -> String {
     percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn conn_with(process_path: &str, process: &str) -> Connection {
+        Connection {
+            id: "1".into(),
+            metadata: ConnMetadata {
+                process_path: process_path.into(),
+                process: process.into(),
+                ..Default::default()
+            },
+            upload: 0,
+            download: 0,
+            start: String::new(),
+            chains: vec![],
+            rule: String::new(),
+            rule_payload: String::new(),
+        }
+    }
+
+    #[test]
+    fn extracts_clean_process_name_across_platforms() {
+        assert_eq!(conn_with(r"C:\Program Files\Chrome\chrome.exe", "").process(), "chrome.exe");
+        assert_eq!(conn_with("/Applications/Safari.app/Contents/MacOS/Safari (billb)", "").process(), "Safari");
+        assert_eq!(conn_with("/Applications/Safari.app/Contents/MacOS/Safari (501)", "").process(), "Safari");
+        assert_eq!(
+            conn_with("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome Helper (Renderer) (billb)", "").process(),
+            "Google Chrome Helper (Renderer)"
+        );
+        assert_eq!(conn_with("", "curl").process(), "curl");
+        assert_eq!(conn_with("", "").process(), "");
+    }
 }

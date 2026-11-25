@@ -40,15 +40,18 @@ use windows::Win32::System::WinRT::{
 use windows_core::{GUID, HSTRING, Interface, PCWSTR, Result, implement};
 
 /// macOS-matched Gaussian blur standard deviation (px) and vibrancy saturation.
-const BLUR_STD_DEV: f32 = 28.0;
-const LIGHT_SATURATION: f32 = 1.45;
-const DARK_SATURATION: f32 = 1.35;
+/// `30 px` matches macOS `NSVisualEffectView` softness — grain-free while
+/// letting wallpaper gradients and silhouettes glow clearly at Clear / Ultra.
+const BLUR_STD_DEV: f32 = 30.0;
+const LIGHT_SATURATION: f32 = 1.60;
+const DARK_SATURATION: f32 = 1.60;
 
 /// Per-tier compositor tint alpha `[Solid, Subtle, Balanced, Clear, Ultra]`.
-/// Light mode uses a higher bright-white luminosity floor so frosted windows
-/// stay luminous and porcelain-clean even when sitting over dark desktop apps.
-const LIGHT_TINT_ALPHA: [f32; 5] = [0.97, 0.84, 0.72, 0.58, 0.42];
-const DARK_TINT_ALPHA: [f32; 5] = [0.96, 0.74, 0.50, 0.30, 0.12];
+/// Light and Dark share the same perceived transparency curve (Light sits
+/// 0.02 lower so that once the subtle white card lift is added on top, Light
+/// and Dark feel optically identical at every tier, matching macOS).
+const LIGHT_TINT_ALPHA: [f32; 5] = [0.95, 0.70, 0.48, 0.28, 0.12];
+const DARK_TINT_ALPHA: [f32; 5] = [0.95, 0.72, 0.50, 0.30, 0.14];
 
 #[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
 struct SaturationEffect {
@@ -203,7 +206,7 @@ fn ensure_state(slot: &mut Option<FrostedState>) -> Result<&mut FrostedState> {
     Ok(slot.as_mut().unwrap())
 }
 
-fn build_vibrancy_brush(compositor: &Compositor, dark: bool) -> Result<CompositionBrush> {
+fn build_vibrancy_brush(compositor: &Compositor, dark: bool, blur_std_dev: f32) -> Result<CompositionBrush> {
     let source_name = HSTRING::from("backdrop");
     let source_param: IGraphicsEffectSource = CompositionEffectSourceParameter::Create(&source_name)?.cast()?;
 
@@ -216,7 +219,7 @@ fn build_vibrancy_brush(compositor: &Compositor, dark: bool) -> Result<Compositi
 
     let blur: IGraphicsEffect = GaussianBlurEffect {
         name: Mutex::new(HSTRING::from("Blur")),
-        std_dev: BLUR_STD_DEV,
+        std_dev: blur_std_dev,
         source: saturation,
     }
     .into();
@@ -233,51 +236,59 @@ fn tint_color(dark: bool, tier: usize) -> Color {
     let alpha = if dark { DARK_TINT_ALPHA[idx] } else { LIGHT_TINT_ALPHA[idx] };
     let a = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
     if dark {
-        Color { A: a, R: 0x18, G: 0x1A, B: 0x20 }
+        // Neutral macOS smoked charcoal (lets warm/cool desktop light breathe through).
+        Color { A: a, R: 0x24, G: 0x25, B: 0x29 }
     } else {
-        Color { A: a, R: 0xFC, G: 0xFD, B: 0xFF }
+        // Soft neutral porcelain frost matching macOS Light vibrancy.
+        Color { A: a, R: 0xF4, G: 0xF5, B: 0xF7 }
     }
+}
+
+fn ensure_target(st: &mut FrostedState, raw_hwnd: *mut std::ffi::c_void) -> Result<()> {
+    let hwnd_key = raw_hwnd as isize;
+    let hwnd = HWND(raw_hwnd);
+    if st.target_hwnd != hwnd_key || st.target.is_none() || st.blur_visual.is_none() || st.tint_visual.is_none() {
+        if let Some(old) = st.target.take() {
+            let _ = old.SetRoot(None);
+        }
+        let interop: ICompositorDesktopInterop = st.compositor.cast()?;
+        // isTopmost = false places our visuals directly behind GPUI's
+        // topmost = true swapchain on the exact same HWND.
+        let target = unsafe { interop.CreateDesktopWindowTarget(hwnd, false) }?;
+        let root = st.compositor.CreateContainerVisual()?;
+        root.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
+
+        let blur_visual = st.compositor.CreateSpriteVisual()?;
+        blur_visual.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
+
+        let tint_visual = st.compositor.CreateSpriteVisual()?;
+        tint_visual.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
+
+        let children = root.Children()?;
+        children.InsertAtTop(&blur_visual)?;
+        children.InsertAtTop(&tint_visual)?;
+        target.SetRoot(&root)?;
+
+        st.target_hwnd = hwnd_key;
+        st.target = Some(target);
+        st._root = Some(root);
+        st.blur_visual = Some(blur_visual);
+        st.tint_visual = Some(tint_visual);
+    }
+    Ok(())
 }
 
 /// Activates or updates the GPU compositor vibrancy layer underneath `hwnd`.
 /// Returns `true` if the compositor layer is active, `false` on unsupported setups.
 pub fn apply(raw_hwnd: *mut std::ffi::c_void, dark: bool, tier: usize) -> bool {
-    let hwnd_key = raw_hwnd as isize;
-    let hwnd = HWND(raw_hwnd);
     STATE.with(|cell| {
         let mut slot = cell.borrow_mut();
         let res: Result<()> = (|| {
             let st = ensure_state(&mut slot)?;
-            if st.target_hwnd != hwnd_key || st.target.is_none() || st.blur_visual.is_none() || st.tint_visual.is_none() {
-                if let Some(old) = st.target.take() {
-                    let _ = old.SetRoot(None);
-                }
-                let interop: ICompositorDesktopInterop = st.compositor.cast()?;
-                // isTopmost = false places our blur+tint visuals directly behind
-                // GPUI's topmost = true swapchain on the exact same HWND.
-                let target = unsafe { interop.CreateDesktopWindowTarget(hwnd, false) }?;
-                let root = st.compositor.CreateContainerVisual()?;
-                root.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
-
-                let blur_visual = st.compositor.CreateSpriteVisual()?;
-                blur_visual.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
-
-                let tint_visual = st.compositor.CreateSpriteVisual()?;
-                tint_visual.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
-
-                let children = root.Children()?;
-                children.InsertAtTop(&blur_visual)?;
-                children.InsertAtTop(&tint_visual)?;
-                target.SetRoot(&root)?;
-
-                st.target_hwnd = hwnd_key;
-                st.target = Some(target);
-                st._root = Some(root);
-                st.blur_visual = Some(blur_visual);
-                st.tint_visual = Some(tint_visual);
-            }
-            let blur_brush = build_vibrancy_brush(&st.compositor, dark)?;
+            ensure_target(st, raw_hwnd)?;
+            let blur_brush = build_vibrancy_brush(&st.compositor, dark, BLUR_STD_DEV)?;
             if let Some(blur_visual) = &st.blur_visual {
+                blur_visual.SetIsVisible(true)?;
                 blur_visual.SetBrush(&blur_brush)?;
             }
             let tint_brush = st.compositor.CreateColorBrushWithColor(tint_color(dark, tier))?;

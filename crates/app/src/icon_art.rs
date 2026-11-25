@@ -54,6 +54,69 @@ pub fn render_icon(size: u32, active: bool) -> Vec<u8> {
     out
 }
 
+/// Renders a macOS menu-bar template icon (monochrome alpha mask, pure black
+/// RGB so AppKit tints it natively for macOS 26/27 Liquid Glass menu bars).
+///
+/// Mirrors SF Symbols `paperplane.fill` when `active` (core running) and a
+/// crisp hollow outlined `paperplane` when inactive (core stopped), sized to
+/// Apple's ~15.5 pt optical footprint inside a 22 pt Retina (`44×44` px) box.
+#[allow(dead_code)]
+pub fn render_macos_tray_icon(size: u32, active: bool) -> Vec<u8> {
+    const SS: u32 = 8;
+    // Signature BoxPilot dart silhouette, optically centered inside the 22pt bar.
+    let plane: [(f32, f32); 4] = [(0.13, 0.49), (0.86, 0.16), (0.59, 0.86), (0.46, 0.56)];
+    let stroke_half_w = 0.036_f32;
+    let total = (SS * SS) as f32;
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let mut cov = 0u32;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let u = (x as f32 + (sx as f32 + 0.5) / SS as f32) / size as f32;
+                    let v = (y as f32 + (sy as f32 + 0.5) / SS as f32) / size as f32;
+                    let hit = if active {
+                        in_polygon(u, v, &plane)
+                    } else {
+                        near_polygon_edge(u, v, &plane, stroke_half_w)
+                    };
+                    if hit {
+                        cov += 1;
+                    }
+                }
+            }
+            let i = ((y * size + x) * 4) as usize;
+            // Template images use only the alpha channel; RGB stays 0.
+            out[i + 3] = (cov as f32 / total * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
+#[allow(dead_code)]
+fn near_polygon_edge(x: f32, y: f32, pts: &[(f32, f32)], half_w: f32) -> bool {
+    let r2 = half_w * half_w;
+    let mut j = pts.len() - 1;
+    for i in 0..pts.len() {
+        let (ax, ay) = pts[j];
+        let (bx, by) = pts[i];
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((x - ax) * dx + (y - ay) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (px, py) = (ax + dx * t, ay + dy * t);
+        let d2 = (x - px).powi(2) + (y - py).powi(2);
+        if d2 <= r2 {
+            return true;
+        }
+        j = i;
+    }
+    false
+}
+
 fn in_rounded_rect(u: f32, v: f32, inset: f32, radius: f32) -> bool {
     let (lo, hi) = (inset, 1.0 - inset);
     if u < lo || u > hi || v < lo || v > hi {

@@ -57,6 +57,7 @@ pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
             let dark = cx.theme().is_dark();
             crate::platform::set_frame_theme(window, dark, pref == ThemePref::System);
             apply_backdrop(&AppState::engine(cx).settings(), dark, window);
+            window.refresh();
         }
         None => match pref {
             ThemePref::System => Theme::sync_system_appearance(None, cx),
@@ -106,19 +107,20 @@ fn backdrop(settings: &Settings) -> WindowBackgroundAppearance {
 
 /// Applies the backdrop material, the frame it needs and surface opacity.
 fn apply_backdrop(settings: &Settings, dark: bool, window: &mut Window) {
-    let mut active = mica_active(settings);
-    if active && cfg!(target_os = "macos") {
-        // Vibrancy always follows the system appearance; under a forced theme
-        // of the other kind it would clash with the content, so stay opaque.
-        let system_dark = matches!(window.appearance(), gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark);
-        active = system_dark == dark;
-    }
+    let active = mica_active(settings);
     let win_materials = crate::platform::translucency() == crate::platform::Translucency::WindowsMaterials;
     let want_frosted = active && win_materials && settings.backdrop == Backdrop::Frosted;
-    // Going through Opaque first clears an accent blur left by an earlier
-    // material or build; it would sit over the DWM backdrop and hide it.
-    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
-    window.set_background_appearance(if active { backdrop(settings) } else { WindowBackgroundAppearance::Opaque });
+    let target = if active { backdrop(settings) } else { WindowBackgroundAppearance::Opaque };
+    if win_materials {
+        // Going through Opaque first clears an accent blur left by an earlier
+        // material or build; it would sit over the DWM backdrop and hide it.
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+    }
+    // On macOS, gpui's `BlurredView` strips NSVisualEffectView's own tint and
+    // keeps neutral behind-window blur, while BoxPilot paints the theme-matched
+    // veil on top — so switching Light / Dark / System never needs to tear down
+    // the blur view or drop translucency.
+    window.set_background_appearance(target);
     // DWM paints its backdrops only in the frame; extend it over the window.
     crate::platform::set_mica_frame(window, active);
     // Windows would swap the backdrop for a flat colour whenever the window
@@ -795,26 +797,24 @@ impl Render for MainView {
         // share one seamless window-wide glass sheet with no vertical divider
         // line between the sidebar and content, matching macOS vibrancy.
         //
-        // Important GPUI compositing rule: never stack a translucent light fill
-        // on the root underneath translucent white cards (GPUI's DirectX blend
-        // turns stacked translucent whites grey). For Windows Frosted, the tint
-        // is painted on the GPU compositor layer underneath GPUI instead; for
-        // Light Mica / Acrylic, only the Solid tier (alpha = 1.0) fills the base.
+        // Important GPUI compositing rule: never stack a translucent fill on
+        // the root underneath translucent cards on Windows (GPUI's DirectX
+        // premultiplied blend turns stacked translucent layers flat opaque grey).
+        // For Windows Frosted, the tint lives on the GPU compositor layer under
+        // GPUI; for Windows Mica / Mica Alt / Acrylic, only the Solid tier
+        // (alpha = 1.0, fully opaque) paints the base while Subtle..Ultra leave
+        // the root clear so native DWM material shines cleanly through cards.
         let glass = layout::is_glass();
         let frosted = layout::is_frosted();
         let window_veil = if !mica || frosted {
             None
+        } else if cfg!(windows) {
+            let alpha = layout::pick_tier([1.0, 0.0, 0.0, 0.0, 0.0]);
+            (alpha > 0.0).then(|| t.background.opacity(alpha))
         } else if glass {
             if dark {
-                let alpha = if cfg!(windows) {
-                    layout::pick_tier([0.96, 0.68, 0.42, 0.20, 0.04])
-                } else {
-                    layout::pick_tier([0.96, 0.82, 0.68, 0.54, 0.38])
-                };
+                let alpha = layout::pick_tier([0.96, 0.82, 0.68, 0.54, 0.38]);
                 Some(gpui_kit::Hsla::from(gpui_kit::rgb(0x1C1E24)).opacity(alpha))
-            } else if cfg!(windows) {
-                let alpha = layout::pick_tier([1.0, 0.0, 0.0, 0.0, 0.0]);
-                (alpha > 0.0).then(|| t.background.opacity(alpha))
             } else {
                 let alpha = layout::pick_tier([0.97, 0.84, 0.70, 0.56, 0.40]);
                 Some(gpui_kit::Hsla::from(gpui_kit::rgb(0xF7F8FA)).opacity(alpha))
@@ -823,8 +823,6 @@ impl Render for MainView {
             let alpha = layout::pick_tier([0.96, 0.42, 0.16, 0.00, 0.00]);
             (alpha > 0.0).then(|| t.background.opacity(alpha))
         } else {
-            // Light Mica: keep base pure (0% veil) on Subtle..Ultra so white
-            // cards never double-blend grey; Solid fills with opaque base.
             let alpha = layout::pick_tier([1.0, 0.0, 0.0, 0.0, 0.0]);
             (alpha > 0.0).then(|| t.background.opacity(alpha))
         };

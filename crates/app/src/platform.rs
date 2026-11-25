@@ -431,6 +431,8 @@ fn set_ns_appearance(window: &Window, dark: Option<bool>) {
             }
         };
         let _: () = msg_send![ns_window, setAppearance: appearance];
+        // Prompt AppKit to refresh the window's backing blur view immediately.
+        let _: () = msg_send![view, setNeedsDisplay: objc2::runtime::Bool::YES];
     }
 }
 

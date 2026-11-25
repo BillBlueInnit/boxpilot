@@ -601,24 +601,25 @@ pub fn surface(cx: &App) -> Hsla {
         let frosted = super::layout::is_frosted();
         if dark {
             let alpha = if frosted {
-                super::layout::pick_tier([0.075, 0.068, 0.062, 0.054, 0.044])
+                super::layout::pick_tier([0.070, 0.064, 0.058, 0.050, 0.042])
             } else {
-                super::layout::pick_tier([0.065, 0.062, 0.058, 0.052, 0.045])
+                super::layout::pick_tier([0.065, 0.068, 0.054, 0.040, 0.028])
             };
             white.opacity(alpha)
         } else if frosted {
-            // Crisp harmonious porcelain white cards over the compositor tint.
-            white.opacity(super::layout::pick_tier([0.95, 0.84, 0.74, 0.62, 0.48]))
+            // Subtle white lift so Light Frosted cards match Dark Frosted's
+            // perceived transparency at every tier (no heavy chalky mask).
+            white.opacity(super::layout::pick_tier([0.65, 0.32, 0.24, 0.18, 0.12]))
         } else {
-            white.opacity(super::layout::pick_tier([0.95, 0.82, 0.70, 0.58, 0.44]))
+            white.opacity(super::layout::pick_tier([0.92, 0.64, 0.46, 0.32, 0.20]))
         }
     } else if super::layout::translucent() {
         if dark {
-            // Fluent's luminous white lift stays harmonious with Dark Mica at every tier.
-            white.opacity(super::layout::pick_tier([0.055, 0.055, 0.052, 0.048, 0.042]))
+            // Smooth luminous white lift across Dark Mica / Mica Alt tiers.
+            white.opacity(super::layout::pick_tier([0.055, 0.068, 0.052, 0.038, 0.026]))
         } else {
-            // Gentle pure-white progression so Light Mica cards never look grey or harsh.
-            white.opacity(super::layout::pick_tier([0.96, 0.86, 0.78, 0.70, 0.58]))
+            // Balanced pure-white progression so Light Mica cards stay airy and crisp.
+            white.opacity(super::layout::pick_tier([0.95, 0.72, 0.52, 0.36, 0.22]))
         }
     } else if dark {
         // Fluent's card fill over the solid content layer.

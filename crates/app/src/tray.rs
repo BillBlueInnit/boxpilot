@@ -4,7 +4,10 @@ use boxpilot_core::model::ProxyMode;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+#[cfg(not(target_os = "macos"))]
 use crate::icon_art::render_icon;
+#[cfg(target_os = "macos")]
+use crate::icon_art::render_macos_tray_icon;
 use crate::t;
 use crate::ui::widgets::mode_label;
 
@@ -34,7 +37,15 @@ pub struct Tray {
 }
 
 fn icon(active: bool) -> Option<Icon> {
-    Icon::from_rgba(render_icon(32, active), 32, 32).ok()
+    #[cfg(target_os = "macos")]
+    {
+        // 44×44 px renders at crisp 2× Retina inside macOS's 22 pt menu bar.
+        Icon::from_rgba(render_macos_tray_icon(44, active), 44, 44).ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Icon::from_rgba(render_icon(32, active), 32, 32).ok()
+    }
 }
 
 impl Tray {
@@ -80,12 +91,16 @@ impl Tray {
             ids.push((item.id().clone(), TrayAction::Mode(*m)));
         }
 
-        let icon = TrayIconBuilder::new()
+        let initial_icon = icon(false).ok_or_else(|| anyhow::anyhow!("tray icon"))?;
+        let builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .with_tooltip("BoxPilot")
-            .with_icon(icon(false).ok_or_else(|| anyhow::anyhow!("tray icon"))?)
-            .build()?;
+            .with_tooltip("BoxPilot");
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_templated(initial_icon);
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(initial_icon);
+        let icon = builder.build()?;
 
         let on_action = std::sync::Arc::new(on_action);
         let menu_action = on_action.clone();
@@ -150,6 +165,9 @@ impl Tray {
         let _ = self.icon.set_tooltip(Some(tooltip));
         if self.active != Some(running) {
             self.active = Some(running);
+            #[cfg(target_os = "macos")]
+            let _ = self.icon.set_icon_templated(icon(running));
+            #[cfg(not(target_os = "macos"))]
             let _ = self.icon.set_icon(icon(running));
         }
     }
@@ -218,5 +236,28 @@ impl TrayHandle {
         self.tray.sync(running, busy, mode, system_proxy, tun, tooltip);
         #[cfg(target_os = "linux")]
         let _ = self.tx.send(TrayMsg::Sync(running, busy, mode, system_proxy, tun, tooltip.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::icon_art::render_macos_tray_icon;
+
+    #[test]
+    fn macos_tray_template_icon_has_clean_margins_and_distinct_active_state() {
+        let active = render_macos_tray_icon(44, true);
+        let inactive = render_macos_tray_icon(44, false);
+        assert_eq!(active.len(), 44 * 44 * 4);
+        assert_eq!(inactive.len(), 44 * 44 * 4);
+        // Corners stay completely transparent (no rounded-square tile).
+        assert_eq!(active[3], 0);
+        assert_eq!(inactive[3], 0);
+        // Template icons carry pure-black RGB so AppKit tints strictly via alpha.
+        assert!(active.chunks_exact(4).all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0));
+        assert!(inactive.chunks_exact(4).all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0));
+        let active_alpha: u64 = active.chunks_exact(4).map(|px| px[3] as u64).sum();
+        let inactive_alpha: u64 = inactive.chunks_exact(4).map(|px| px[3] as u64).sum();
+        assert!(inactive_alpha > 15_000, "outlined icon should have visible stroke");
+        assert!(active_alpha > inactive_alpha, "filled active icon should have more solid coverage");
     }
 }

@@ -107,6 +107,9 @@ pub struct ConnectionsPage {
     snapshot: ConnectionsSnapshot,
     rows: Rc<Vec<Row>>,
     prev: HashMap<String, (u64, u64)>,
+    /// Remembers the resolved process path per active connection ID so brief
+    /// socket teardown states (`CLOSE_WAIT` / `TIME_WAIT`) never blank the cell.
+    resolved_procs: HashMap<String, String>,
     scroll: UniformListScrollHandle,
     /// Column widths as dragged; the host column also takes any spare room.
     widths: [f32; COLUMNS],
@@ -133,6 +136,7 @@ impl ConnectionsPage {
                 if !state.read(cx).engine.status().is_running() && !this.rows.is_empty() {
                     this.snapshot = ConnectionsSnapshot::default();
                     this.prev.clear();
+                    this.resolved_procs.clear();
                     this.rows = Rc::new(vec![]);
                     cx.notify();
                 }
@@ -169,6 +173,7 @@ impl ConnectionsPage {
             snapshot: ConnectionsSnapshot::default(),
             rows: Rc::new(vec![]),
             prev: HashMap::new(),
+            resolved_procs: HashMap::new(),
             scroll: UniformListScrollHandle::new(),
             widths,
             h_offset: 0.0,
@@ -186,7 +191,26 @@ impl ConnectionsPage {
 
     fn rebuild_rows(&mut self, snap: Option<ConnectionsSnapshot>) {
         let fresh = snap.is_some();
-        if let Some(s) = snap {
+        if let Some(mut s) = snap {
+            if let Some(conns) = s.connections.as_mut() {
+                let mut next_procs = HashMap::with_capacity(conns.len());
+                for c in conns.iter_mut() {
+                    if !c.process().is_empty() {
+                        let stored = if !c.metadata.process_path.is_empty() {
+                            c.metadata.process_path.clone()
+                        } else {
+                            c.metadata.process.clone()
+                        };
+                        next_procs.insert(c.id.clone(), stored);
+                    } else if let Some(prev) = self.resolved_procs.get(&c.id) {
+                        c.metadata.process_path = prev.clone();
+                        next_procs.insert(c.id.clone(), prev.clone());
+                    }
+                }
+                self.resolved_procs = next_procs;
+            } else {
+                self.resolved_procs.clear();
+            }
             self.snapshot = s;
         }
         let now = chrono::Utc::now();

@@ -618,6 +618,145 @@ mod imp {
         run("osascript", &["-e", &script]).map(|_| ())
     }
 
+    /// Resolves missing `process_path` fields on active macOS connections.
+    ///
+    /// `sing-box`'s Darwin process searcher uses a fixed `pcblist_n` struct stride
+    /// (which drifts on newer XNU kernels such as macOS 27 / Darwin 26) and also
+    /// misses local `mixed` (system proxy) TCP sockets whose remote endpoint is
+    /// `127.0.0.1:<mixed_port>` rather than the final target. We first walk XNU's
+    /// self-describing TLV `pcblist_n` stream (`x_len` / `x_kind`) and match by
+    /// 4-tuple or local `(ip, port)`, then fall back to `lsof -nP -F pcn` if any
+    /// sockets remain unresolved.
+    #[cfg(target_os = "macos")]
+    pub fn fill_macos_connection_processes(conns: &mut [crate::clash_api::Connection]) {
+        use std::collections::HashMap;
+        use std::net::IpAddr;
+
+        let mut pid_paths: HashMap<u32, String> = HashMap::new();
+        let mut resolve_pid = |pid: u32| -> Option<String> {
+            if pid == 0 {
+                return None;
+            }
+            if let Some(cached) = pid_paths.get(&pid) {
+                return (!cached.is_empty()).then(|| cached.clone());
+            }
+            let path = macos_pid_path(pid).unwrap_or_default();
+            pid_paths.insert(pid, path.clone());
+            (!path.is_empty()).then_some(path)
+        };
+
+        // Tier 1: self-describing TLV walk of net.inet.{tcp,udp}.pcblist_n.
+        let need_tcp = conns.iter().any(|c| c.process().is_empty() && c.metadata.network.eq_ignore_ascii_case("tcp"));
+        let need_udp = conns.iter().any(|c| c.process().is_empty() && c.metadata.network.eq_ignore_ascii_case("udp"));
+        let tcp_entries = if need_tcp {
+            sysctl_raw(c"net.inet.tcp.pcblist_n").map(|b| super::darwin_proc::parse_pcblist_tlv(&b)).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let udp_entries = if need_udp {
+            sysctl_raw(c"net.inet.udp.pcblist_n").map(|b| super::darwin_proc::parse_pcblist_tlv(&b)).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let mut unresolved = false;
+        for c in conns.iter_mut() {
+            if !c.process().is_empty() {
+                continue;
+            }
+            let Ok(src_port) = c.metadata.source_port.parse::<u16>() else { continue };
+            let src_ip: Option<IpAddr> = c.metadata.source_ip.parse().ok();
+            let dst_ip: Option<IpAddr> = c.metadata.destination_ip.parse().ok();
+            let dst_port: Option<u16> = c.metadata.destination_port.parse().ok();
+            let entries = if c.metadata.network.eq_ignore_ascii_case("udp") {
+                &udp_entries
+            } else {
+                &tcp_entries
+            };
+            if let Some(entry) = super::darwin_proc::match_entry(entries, src_ip, src_port, dst_ip, dst_port) {
+                let path = (entry.effective_pid != 0 && entry.effective_pid != entry.pid)
+                    .then(|| resolve_pid(entry.effective_pid))
+                    .flatten()
+                    .or_else(|| resolve_pid(entry.pid));
+                if let Some(p) = path {
+                    c.metadata.process_path = p;
+                    continue;
+                }
+            }
+            unresolved = true;
+        }
+
+        // Tier 2: `lsof` fallback (kernel-ABI-independent, covers any XNU layout change).
+        if unresolved {
+            if let Ok(out) = run("/usr/sbin/lsof", &["-nP", "-F", "pcn", "-iTCP", "-iUDP"])
+                .or_else(|_| run("lsof", &["-nP", "-F", "pcn", "-iTCP", "-iUDP"]))
+            {
+                let entries = super::darwin_proc::parse_lsof(&out);
+                for c in conns.iter_mut() {
+                    if !c.process().is_empty() {
+                        continue;
+                    }
+                    let Ok(src_port) = c.metadata.source_port.parse::<u16>() else { continue };
+                    let src_ip: Option<IpAddr> = c.metadata.source_ip.parse().ok();
+                    if let Some((pid, cmd)) = super::darwin_proc::match_lsof(&entries, src_ip, src_port) {
+                        c.metadata.process_path = resolve_pid(pid).unwrap_or_else(|| cmd.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sysctl_raw(name: &std::ffi::CStr) -> Option<Vec<u8>> {
+        let mut len: libc::size_t = 0;
+        let rc = unsafe {
+            libc::sysctlbyname(name.as_ptr(), std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0)
+        };
+        if rc != 0 || len < 24 {
+            return None;
+        }
+        // Leave headroom for sockets opened between the size probe and the read.
+        let mut cap = len.saturating_add(len / 4).max(len + 4096);
+        let mut buf = vec![0u8; cap];
+        let rc = unsafe {
+            libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr().cast(), &mut cap, std::ptr::null_mut(), 0)
+        };
+        if rc != 0 {
+            return None;
+        }
+        buf.truncate(cap);
+        Some(buf)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_pid_path(pid: u32) -> Option<String> {
+        unsafe extern "C" {
+            fn proc_pidpath(pid: libc::c_int, buffer: *mut libc::c_void, buffersize: u32) -> libc::c_int;
+            fn proc_name(pid: libc::c_int, buffer: *mut libc::c_void, buffersize: u32) -> libc::c_int;
+        }
+        let mut buf = [0u8; 4096];
+        let n = unsafe { proc_pidpath(pid as libc::c_int, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        if n > 0 {
+            if let Ok(s) = std::str::from_utf8(&buf[..n as usize]) {
+                let s = s.trim_end_matches('\0');
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+        let mut name_buf = [0u8; 256];
+        let n = unsafe { proc_name(pid as libc::c_int, name_buf.as_mut_ptr().cast(), name_buf.len() as u32) };
+        if n > 0 {
+            if let Ok(s) = std::str::from_utf8(&name_buf[..n as usize]) {
+                let s = s.trim_end_matches('\0');
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+        None
+    }
+
     // ------------------------------------------------------------ Linux
 
     #[cfg(not(target_os = "macos"))]
@@ -1073,6 +1212,338 @@ mod imp {
 }
 
 pub use imp::*;
+
+#[cfg(any(target_os = "macos", test))]
+mod darwin_proc {
+    use std::net::IpAddr;
+
+    const XSO_SOCKET: u32 = 0x001;
+    const XSO_INPCB: u32 = 0x010;
+
+    // Fixed header field offsets within XNU's `#pragma pack(4)` `xinpcb_n` and `xsocket_n`.
+    // Walking records via their self-describing `x_len` / `x_kind` TLV headers makes this
+    // immune to total record size changes (e.g. macOS 27 / Darwin 26).
+    const INPCB_FOREIGN_PORT: usize = 16;
+    const INPCB_LOCAL_PORT: usize = 18;
+    const INPCB_VFLAG: usize = 44;
+    const INPCB_FOREIGN_ADDR: usize = 48;
+    const INPCB_LOCAL_ADDR: usize = 64;
+    const INPCB_IPV4_OFF: usize = 12;
+    const INPCB_MIN_LEN: usize = 80;
+
+    const XSOCKET_LAST_PID: usize = 68;
+    const XSOCKET_EFFECTIVE_PID: usize = 72;
+    const XSOCKET_MIN_LEN: usize = 76;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct PcbEntry {
+        pub local_addr: IpAddr,
+        pub local_port: u16,
+        pub remote_addr: IpAddr,
+        pub remote_port: u16,
+        pub pid: u32,
+        pub effective_pid: u32,
+    }
+
+    fn normalize_ip(ip: IpAddr) -> IpAddr {
+        match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+            v4 => v4,
+        }
+    }
+
+    fn parse_inpcb(rec: &[u8]) -> Option<(IpAddr, u16, IpAddr, u16)> {
+        if rec.len() < INPCB_MIN_LEN {
+            return None;
+        }
+        let remote_port = u16::from_be_bytes([rec[INPCB_FOREIGN_PORT], rec[INPCB_FOREIGN_PORT + 1]]);
+        let local_port = u16::from_be_bytes([rec[INPCB_LOCAL_PORT], rec[INPCB_LOCAL_PORT + 1]]);
+        let vflag = rec[INPCB_VFLAG];
+        if vflag & 0x01 != 0 {
+            let f = INPCB_FOREIGN_ADDR + INPCB_IPV4_OFF;
+            let l = INPCB_LOCAL_ADDR + INPCB_IPV4_OFF;
+            let remote = IpAddr::from([rec[f], rec[f + 1], rec[f + 2], rec[f + 3]]);
+            let local = IpAddr::from([rec[l], rec[l + 1], rec[l + 2], rec[l + 3]]);
+            Some((local, local_port, remote, remote_port))
+        } else if vflag & 0x02 != 0 {
+            let f: [u8; 16] = rec[INPCB_FOREIGN_ADDR..INPCB_FOREIGN_ADDR + 16].try_into().ok()?;
+            let l: [u8; 16] = rec[INPCB_LOCAL_ADDR..INPCB_LOCAL_ADDR + 16].try_into().ok()?;
+            Some((normalize_ip(IpAddr::from(l)), local_port, normalize_ip(IpAddr::from(f)), remote_port))
+        } else {
+            None
+        }
+    }
+
+    pub fn parse_pcblist_tlv(buf: &[u8]) -> Vec<PcbEntry> {
+        if buf.len() < 24 {
+            return Vec::new();
+        }
+        let hdr_len = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        if hdr_len < 16 || hdr_len > buf.len() {
+            return Vec::new();
+        }
+        let mut entries = Vec::new();
+        let mut pending_inpcb: Option<(IpAddr, u16, IpAddr, u16)> = None;
+        let mut pending_pids: Option<(u32, u32)> = None;
+
+        let flush = |entries: &mut Vec<PcbEntry>,
+                     inpcb: &mut Option<(IpAddr, u16, IpAddr, u16)>,
+                     pids: &mut Option<(u32, u32)>| {
+            if let (Some((local_addr, local_port, remote_addr, remote_port)), Some((pid, effective_pid))) =
+                (inpcb.take(), pids.take())
+            {
+                if pid != 0 || effective_pid != 0 {
+                    entries.push(PcbEntry {
+                        local_addr,
+                        local_port,
+                        remote_addr,
+                        remote_port,
+                        pid,
+                        effective_pid,
+                    });
+                }
+            } else {
+                *inpcb = None;
+                *pids = None;
+            }
+        };
+
+        let mut pos = hdr_len;
+        while pos + 8 <= buf.len() {
+            let rec_len = u32::from_ne_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
+            let rec_kind = u32::from_ne_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]]);
+            if rec_len < 8 || pos + rec_len > buf.len() {
+                break;
+            }
+            // Trailing `xinpgen` terminator has the same length as the header and sits at EOF.
+            if rec_len == hdr_len && pos + rec_len == buf.len() {
+                break;
+            }
+            let rec = &buf[pos..pos + rec_len];
+            match rec_kind {
+                XSO_INPCB => {
+                    if pending_inpcb.is_some() {
+                        flush(&mut entries, &mut pending_inpcb, &mut pending_pids);
+                    }
+                    pending_inpcb = parse_inpcb(rec);
+                }
+                XSO_SOCKET => {
+                    if rec.len() >= XSOCKET_MIN_LEN {
+                        let pid = u32::from_ne_bytes([
+                            rec[XSOCKET_LAST_PID],
+                            rec[XSOCKET_LAST_PID + 1],
+                            rec[XSOCKET_LAST_PID + 2],
+                            rec[XSOCKET_LAST_PID + 3],
+                        ]);
+                        let epid = u32::from_ne_bytes([
+                            rec[XSOCKET_EFFECTIVE_PID],
+                            rec[XSOCKET_EFFECTIVE_PID + 1],
+                            rec[XSOCKET_EFFECTIVE_PID + 2],
+                            rec[XSOCKET_EFFECTIVE_PID + 3],
+                        ]);
+                        pending_pids = Some((pid, epid));
+                    }
+                }
+                _ => {}
+            }
+            pos += rec_len;
+        }
+        flush(&mut entries, &mut pending_inpcb, &mut pending_pids);
+        entries
+    }
+
+    pub fn match_entry(
+        entries: &[PcbEntry],
+        src_ip: Option<IpAddr>,
+        src_port: u16,
+        dst_ip: Option<IpAddr>,
+        dst_port: Option<u16>,
+    ) -> Option<&PcbEntry> {
+        let src_ip = src_ip.map(normalize_ip);
+        let dst_ip = dst_ip.map(normalize_ip);
+        let mut local_match: Option<&PcbEntry> = None;
+        let mut port_match: Option<&PcbEntry> = None;
+        for e in entries {
+            if e.local_port != src_port {
+                continue;
+            }
+            if let (Some(si), Some(di), Some(dp)) = (src_ip, dst_ip, dst_port) {
+                if e.local_addr == si && e.remote_addr == di && e.remote_port == dp {
+                    return Some(e);
+                }
+            }
+            if local_match.is_none() && src_ip.is_some_and(|si| e.local_addr == si) {
+                local_match = Some(e);
+            }
+            if port_match.is_none() {
+                port_match = Some(e);
+            }
+        }
+        local_match.or(port_match)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LsofEntry {
+        pub pid: u32,
+        pub cmd: String,
+        pub local_ip: Option<IpAddr>,
+        pub local_port: u16,
+    }
+
+    fn unescape_lsof_cmd(raw: &str) -> String {
+        let bytes = raw.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1] == b'x' {
+                if let Ok(hex) = std::str::from_utf8(&bytes[i + 2..i + 4]) {
+                    if let Ok(val) = u8::from_str_radix(hex, 16) {
+                        out.push(val);
+                        i += 4;
+                        continue;
+                    }
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn parse_lsof_endpoint(endpoint: &str) -> Option<(Option<IpAddr>, u16)> {
+        let local = endpoint.split("->").next()?.trim();
+        let (host, port_s) = local.rsplit_once(':')?;
+        let port = port_s.parse::<u16>().ok()?;
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        let ip = if host == "*" {
+            None
+        } else {
+            host.split('%').next().and_then(|s| s.parse::<IpAddr>().ok()).map(normalize_ip)
+        };
+        Some((ip, port))
+    }
+
+    pub fn parse_lsof(output: &str) -> Vec<LsofEntry> {
+        let mut entries = Vec::new();
+        let mut pid = 0u32;
+        let mut cmd = String::new();
+        for line in output.lines() {
+            let Some(first) = line.as_bytes().first() else { continue };
+            let rest = &line[1..];
+            match first {
+                b'p' => {
+                    pid = rest.parse().unwrap_or(0);
+                    cmd.clear();
+                }
+                b'c' => {
+                    cmd = unescape_lsof_cmd(rest);
+                }
+                b'n' if pid != 0 => {
+                    if let Some((local_ip, local_port)) = parse_lsof_endpoint(rest) {
+                        entries.push(LsofEntry { pid, cmd: cmd.clone(), local_ip, local_port });
+                    }
+                }
+                _ => {}
+            }
+        }
+        entries
+    }
+
+    pub fn match_lsof(entries: &[LsofEntry], src_ip: Option<IpAddr>, src_port: u16) -> Option<(u32, &str)> {
+        let src_ip = src_ip.map(normalize_ip);
+        let mut fallback: Option<(u32, &str)> = None;
+        for e in entries {
+            if e.local_port != src_port {
+                continue;
+            }
+            if src_ip.is_some() && e.local_ip == src_ip {
+                return Some((e.pid, e.cmd.as_str()));
+            }
+            if fallback.is_none() {
+                fallback = Some((e.pid, e.cmd.as_str()));
+            }
+        }
+        fallback
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn push_record(buf: &mut Vec<u8>, kind: u32, len: usize, fill: impl FnOnce(&mut [u8])) {
+            let start = buf.len();
+            buf.resize(start + len, 0);
+            buf[start..start + 4].copy_from_slice(&(len as u32).to_ne_bytes());
+            buf[start + 4..start + 8].copy_from_slice(&kind.to_ne_bytes());
+            fill(&mut buf[start..start + len]);
+        }
+
+        #[test]
+        fn walks_tlv_pcblist_even_when_kernel_struct_sizes_grow() {
+            let mut buf = vec![0u8; 24];
+            buf[0..4].copy_from_slice(&24u32.to_ne_bytes());
+
+            // Simulate a future macOS 27 kernel where xinpcb_n = 120, xsocket_n = 128,
+            // and extra xsockbuf/xtcpcb records total 320 bytes (well beyond sing-box's 408+208).
+            push_record(&mut buf, XSO_INPCB, 120, |r| {
+                r[INPCB_FOREIGN_PORT..INPCB_FOREIGN_PORT + 2].copy_from_slice(&7890u16.to_be_bytes());
+                r[INPCB_LOCAL_PORT..INPCB_LOCAL_PORT + 2].copy_from_slice(&54321u16.to_be_bytes());
+                r[INPCB_VFLAG] = 0x01;
+                r[INPCB_FOREIGN_ADDR + INPCB_IPV4_OFF..INPCB_FOREIGN_ADDR + INPCB_IPV4_OFF + 4]
+                    .copy_from_slice(&[127, 0, 0, 1]);
+                r[INPCB_LOCAL_ADDR + INPCB_IPV4_OFF..INPCB_LOCAL_ADDR + INPCB_IPV4_OFF + 4]
+                    .copy_from_slice(&[127, 0, 0, 1]);
+            });
+            push_record(&mut buf, XSO_SOCKET, 128, |r| {
+                r[XSOCKET_LAST_PID..XSOCKET_LAST_PID + 4].copy_from_slice(&4242u32.to_ne_bytes());
+                r[XSOCKET_EFFECTIVE_PID..XSOCKET_EFFECTIVE_PID + 4].copy_from_slice(&4242u32.to_ne_bytes());
+            });
+            push_record(&mut buf, 0x020, 320, |_| {}); // enlarged XSO_TCPCB
+            // Second IPv6 socket (e.g. TUN connection).
+            push_record(&mut buf, XSO_INPCB, 120, |r| {
+                r[INPCB_FOREIGN_PORT..INPCB_FOREIGN_PORT + 2].copy_from_slice(&443u16.to_be_bytes());
+                r[INPCB_LOCAL_PORT..INPCB_LOCAL_PORT + 2].copy_from_slice(&60000u16.to_be_bytes());
+                r[INPCB_VFLAG] = 0x02;
+                r[INPCB_FOREIGN_ADDR + 15] = 2;
+                r[INPCB_LOCAL_ADDR + 15] = 1;
+            });
+            push_record(&mut buf, XSO_SOCKET, 128, |r| {
+                r[XSOCKET_LAST_PID..XSOCKET_LAST_PID + 4].copy_from_slice(&9001u32.to_ne_bytes());
+            });
+            // Trailing xinpgen terminator.
+            let end = buf.len();
+            buf.resize(end + 24, 0);
+            buf[end..end + 4].copy_from_slice(&24u32.to_ne_bytes());
+
+            let entries = parse_pcblist_tlv(&buf);
+            assert_eq!(entries.len(), 2);
+
+            // System proxy (mixed-in): remote in Clash API is 1.1.1.1:443 while local socket remote is 127.0.0.1:7890.
+            let m = match_entry(
+                &entries,
+                Some("127.0.0.1".parse().unwrap()),
+                54321,
+                Some("1.1.1.1".parse().unwrap()),
+                Some(443),
+            )
+            .expect("should match mixed-in loopback socket by local (ip, port)");
+            assert_eq!(m.pid, 4242);
+
+            let m2 = match_entry(&entries, Some("::1".parse().unwrap()), 60000, Some("::2".parse().unwrap()), Some(443))
+                .expect("should match IPv6 4-tuple");
+            assert_eq!(m2.pid, 9001);
+        }
+
+        #[test]
+        fn parses_lsof_machine_output_and_unescapes_spaces() {
+            let sample = "p1234\ncGoogle\\x20Chrome\nn127.0.0.1:54321->127.0.0.1:7890\np5678\ncSafari\nn[::1]:61234->[::1]:7890\n";
+            let entries = parse_lsof(sample);
+            assert_eq!(entries.len(), 2);
+            assert_eq!(match_lsof(&entries, Some("127.0.0.1".parse().unwrap()), 54321), Some((1234, "Google Chrome")));
+            assert_eq!(match_lsof(&entries, Some("::1".parse().unwrap()), 61234), Some((5678, "Safari")));
+        }
+    }
+}
 
 #[cfg(all(test, unix, not(target_os = "macos")))]
 mod tests {
