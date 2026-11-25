@@ -717,7 +717,7 @@ impl Render for ConnectionsPage {
                             .overflow_hidden()
                             .border_b_1()
                             .border_color(border)
-                            .bg(t.muted.opacity(0.5))
+                            .when(!super::layout::translucent(), |d| d.bg(t.muted.opacity(0.5)))
                             .child(header_row),
                     )
                     .when(row_count == 0, |d| {

@@ -597,18 +597,16 @@ impl MainView {
         let step = NAV_ITEM_H + NAV_GAP;
         let top = idx as f32 * step;
         let dark = t.is_dark();
-        let accent = if glass {
+        let accent = if mica || glass {
             if dark {
                 gpui_kit::white().opacity(0.11)
             } else {
                 gpui_kit::black().opacity(0.065)
             }
-        } else if mica {
-            t.sidebar_accent.opacity(0.85)
         } else {
             t.sidebar_accent
         };
-        let status_bg = if glass {
+        let status_bg = if mica || glass {
             if dark {
                 gpui_kit::white().opacity(0.07)
             } else {

@@ -247,7 +247,15 @@ impl RulesPage {
             let e = engine.clone();
             let has_presets = providers.iter().any(|p| p.preset.is_some());
             let border = if is_active { t.primary } else { hairline(cx) };
-            let bg = if is_active { t.primary.opacity(0.08) } else { surface(cx) };
+            // Avoid stacking a second translucent fill inside the outer `card(cx)`
+            // (GPUI's DirectX blend turns nested translucent layers flat opaque grey).
+            let bg = if is_active {
+                t.primary.opacity(0.08)
+            } else if super::layout::translucent() {
+                gpui_kit::transparent_black()
+            } else {
+                surface(cx)
+            };
             let primary_hover = t.primary.opacity(0.5);
             v_flex()
                 .id(("profile-card", i))
@@ -564,7 +572,7 @@ impl RulesPage {
                     .rounded(t.radius)
                     .border_1()
                     .border_color(hairline(cx))
-                    .bg(t.muted.opacity(0.22))
+                    .when(!super::layout::translucent(), |d| d.bg(t.muted.opacity(0.22)))
                     .drag_over::<DraggedRule>(move |style, _, _, _| {
                         style.border_color(primary).bg(primary.opacity(0.08))
                     })
@@ -722,7 +730,7 @@ impl RulesPage {
             .rounded(t.radius)
             .border_1()
             .border_color(hairline(cx))
-            .bg(t.muted.opacity(0.32))
+            .when(!super::layout::translucent(), |d| d.bg(t.muted.opacity(0.32)))
             .when(!g.enabled, |d| d.opacity(0.58))
             .drag_over::<DraggedRule>(move |style, _, _, _| {
                 style.border_color(primary).bg(primary.opacity(0.08))
