@@ -12,7 +12,7 @@
 [Releases](https://github.com/BillBlueInnit/boxpilot/releases):
 
 - **Windows**: `BoxPilot-<версия>-windows-x64.zip` — распакуйте и запустите `boxpilot.exe`.
-- **macOS**: `BoxPilot-<версия>-macos-arm64.dmg` (Apple silicon) или `-macos-x64.dmg` (Intel) — откройте
+- **macOS**: `BoxPilot-<версия>-macos-arm64.dmg` (Apple silicon) — откройте
   образ и перетащите BoxPilot в «Программы». Приложение не нотаризовано: при первом запуске щёлкните
   по нему правой кнопкой и выберите **Открыть** (или разрешите запуск в «Системные настройки →
   Конфиденциальность и безопасность»).
@@ -104,8 +104,8 @@ cargo run --release -p boxpilot
 
 ## Платформы
 
-BoxPilot работает на всех платформах, которые поддерживает GPUI, — Windows 10/11, macOS (Apple silicon и
-Intel) и Linux (X11 и Wayland) — с одинаковыми возможностями. Там, где системы различаются, используется
+BoxPilot работает на всех платформах, которые поддерживает GPUI, — Windows 10/11, macOS (Apple silicon)
+и Linux (X11 и Wayland) — с одинаковыми возможностями. Там, где системы различаются, используется
 родной механизм каждой:
 
 | | Windows | macOS | Linux |
@@ -130,7 +130,7 @@ pacman) в `dist/`. Пакеты не подписаны: запись репо�
 GitHub. Сценарии для AUR лежат в `packaging/aur` (`packaging/aur/publish.sh boxpilot-bin` отправляет
 релиз туда).
 
-`.github/workflows/ci.yml` собирает и тестирует проект на Windows, macOS (arm64 и x64) и Linux:
+`.github/workflows/ci.yml` собирает и тестирует проект на Windows, macOS (arm64) и Linux:
 модульные тесты, проверка каждого сгенерированного конфига через `sing-box check`, живой тест движка с
 настоящим ядром (запуск, группы, выбор, задержка, смена режима, трафик, перезагрузка, остановка) и
 проверка запуска интерфейса (`boxpilot --smoke-test`).
@@ -143,8 +143,8 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-К выпуску прикладываются `BoxPilot-<версия>-<платформа>.zip|tar.gz` для Windows x64, macOS arm64/x64 и
-Linux x64 — эти имена ищет встроенное обновление, — а также `.dmg` для каждой сборки macOS.
+К выпуску прикладываются `BoxPilot-<версия>-<платформа>.zip|tar.gz` для Windows x64, macOS arm64 и
+Linux x64 — эти имена ищет встроенное обновление, — а также `.dmg` для macOS.
 
 ## Структура
 

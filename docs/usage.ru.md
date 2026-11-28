@@ -13,7 +13,6 @@
 | --- | --- | --- |
 | Windows 10/11 | `BoxPilot-<версия>-windows-x64.zip` | Распакуйте куда угодно и запустите `boxpilot.exe`. |
 | macOS, Apple silicon | `BoxPilot-<версия>-macos-arm64.dmg` | Откройте .dmg и перетащите **BoxPilot** в **Applications** («Программы»). |
-| macOS, Intel | `BoxPilot-<версия>-macos-x64.dmg` | Так же. |
 | Debian, Ubuntu, Mint (x64) | `boxpilot_<версия>-1_amd64.deb` | `sudo apt install ./boxpilot_<версия>-1_amd64.deb` |
 | Fedora, openSUSE (x64) | `boxpilot-<версия>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<версия>-1.x86_64.rpm` (openSUSE: `sudo zypper install …`) |
 | Arch, Manjaro, EndeavourOS | `boxpilot-bin` из репозитория pacman BoxPilot | См. **Arch** ниже. |

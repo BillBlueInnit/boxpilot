@@ -11,7 +11,7 @@
 从 [Releases](https://github.com/BillBlueInnit/boxpilot/releases) 下载对应平台的版本：
 
 - **Windows**：`BoxPilot-<版本>-windows-x64.zip`，解压后运行 `boxpilot.exe`。
-- **macOS**：`BoxPilot-<版本>-macos-arm64.dmg`（Apple 芯片）或 `-macos-x64.dmg`（Intel），打开后把
+- **macOS**：`BoxPilot-<版本>-macos-arm64.dmg`（Apple 芯片），打开后把
   BoxPilot 拖进“应用程序”。应用未经公证：第一次打开时请右键点击它并选择**打开**（或在“系统设置 →
   隐私与安全性”中允许）。
 - **Linux**：
@@ -88,7 +88,7 @@ cargo run --release -p boxpilot
 
 ## 平台
 
-BoxPilot 可在 GPUI 支持的所有平台上运行：Windows 10/11、macOS（Apple 芯片与 Intel）和 Linux（X11 与
+BoxPilot 可在 GPUI 支持的所有平台上运行：Windows 10/11、macOS（Apple 芯片）和 Linux（X11 与
 Wayland），功能一致。各系统不同之处，分别采用其原生机制：
 
 | | Windows | macOS | Linux |
@@ -111,7 +111,7 @@ Linux 上的托盘图标需要支持 AppIndicator 的托盘（GNOME 需安装 Ap
 这些包没有签名：添加的仓库信任本项目 GitHub 发布页提供的文件。AUR 打包脚本位于 `packaging/aur`
 （`packaging/aur/publish.sh boxpilot-bin` 可把发布推送到 AUR）。
 
-`.github/workflows/ci.yml` 在 Windows、macOS（arm64 与 x64）和 Linux 上原生构建并测试：单元测试、
+`.github/workflows/ci.yml` 在 Windows、macOS（arm64）和 Linux 上原生构建并测试：单元测试、
 所有生成的配置通过 `sing-box check`、针对真实内核的引擎实测（启动、分组、选择、延迟、模式切换、
 流量、重载、停止），以及界面启动检查（`boxpilot --smoke-test`）。
 
@@ -122,8 +122,8 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-它会为 Windows x64、macOS arm64/x64 和 Linux x64 附上 `BoxPilot-<版本>-<平台>.zip|tar.gz`（应用内
-更新会查找这些文件名），并为每个 macOS 版本附上 `.dmg`。
+它会为 Windows x64、macOS arm64 和 Linux x64 附上 `BoxPilot-<版本>-<平台>.zip|tar.gz`（应用内
+更新会查找这些文件名），并为 macOS 版本附上 `.dmg`。
 
 ## 目录结构
 

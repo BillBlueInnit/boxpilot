@@ -12,7 +12,6 @@
 | --- | --- | --- |
 | Windows 10/11 | `BoxPilot-<版本>-windows-x64.zip` | 解压到任意位置，运行 `boxpilot.exe`。 |
 | macOS，Apple 芯片 | `BoxPilot-<版本>-macos-arm64.dmg` | 打开 .dmg，把 **BoxPilot** 拖到 **Applications（应用程序）**。 |
-| macOS，Intel | `BoxPilot-<版本>-macos-x64.dmg` | 同上。 |
 | Debian、Ubuntu、Mint（x64） | `boxpilot_<版本>-1_amd64.deb` | `sudo apt install ./boxpilot_<版本>-1_amd64.deb` |
 | Fedora、openSUSE（x64） | `boxpilot-<版本>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<版本>-1.x86_64.rpm`（openSUSE：`sudo zypper install …`） |
 | Arch、Manjaro、EndeavourOS | BoxPilot 的 pacman 仓库中的 `boxpilot-bin` | 见下文 **Arch**。 |

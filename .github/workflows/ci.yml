@@ -31,7 +31,6 @@ jobs:
         include:
           - { name: Windows x64, os: windows-latest, singbox: windows-amd64, ext: zip }
           - { name: macOS arm64, os: macos-15, singbox: darwin-arm64, ext: tar.gz }
-          - { name: macOS x64, os: macos-15-intel, singbox: darwin-amd64, ext: tar.gz }
           - { name: Linux x64, os: ubuntu-24.04, singbox: linux-amd64, ext: tar.gz }
     runs-on: ${{ matrix.os }}
     steps:

@@ -12,7 +12,6 @@ Get the file for your system from [Releases](https://github.com/BillBlueInnit/bo
 | --- | --- | --- |
 | Windows 10/11 | `BoxPilot-<version>-windows-x64.zip` | Unzip anywhere and run `boxpilot.exe`. |
 | macOS, Apple silicon | `BoxPilot-<version>-macos-arm64.dmg` | Open the .dmg, drag **BoxPilot** onto **Applications**. |
-| macOS, Intel | `BoxPilot-<version>-macos-x64.dmg` | Same as above. |
 | Debian, Ubuntu, Mint (x64) | `boxpilot_<version>-1_amd64.deb` | `sudo apt install ./boxpilot_<version>-1_amd64.deb` |
 | Fedora, openSUSE (x64) | `boxpilot-<version>-1.x86_64.rpm` | `sudo dnf install ./boxpilot-<version>-1.x86_64.rpm` (openSUSE: `sudo zypper install …`) |
 | Arch, Manjaro, EndeavourOS | `boxpilot-bin` from BoxPilot's pacman repository | See **Arch** below. |

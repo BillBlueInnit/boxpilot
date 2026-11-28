@@ -12,7 +12,7 @@ Download BoxPilot for your platform from
 [Releases](https://github.com/BillBlueInnit/boxpilot/releases):
 
 - **Windows**: `BoxPilot-<version>-windows-x64.zip` — unzip and run `boxpilot.exe`.
-- **macOS**: `BoxPilot-<version>-macos-arm64.dmg` (Apple silicon) or `-macos-x64.dmg` (Intel) — open it
+- **macOS**: `BoxPilot-<version>-macos-arm64.dmg` (Apple silicon) — open it
   and drag BoxPilot into Applications. The app is not notarized: the first time, right-click it and
   choose **Open** (or allow it under System Settings → Privacy & Security).
 - **Linux**:
@@ -99,7 +99,7 @@ The step-by-step guide is in [docs/usage.md](docs/usage.md). Data lives in the f
 
 ## Platforms
 
-BoxPilot runs on every platform GPUI supports — Windows 10/11, macOS (Apple silicon and Intel)
+BoxPilot runs on every platform GPUI supports — Windows 10/11, macOS (Apple silicon)
 and Linux (X11 and Wayland) — with the same features. Where the operating systems differ, each
 one gets its native mechanism:
 
@@ -125,7 +125,7 @@ package with its pacman database to `dist/`. The packages are not signed: the re
 trusts what this project's GitHub releases serve. Recipes for the AUR are in `packaging/aur`
 (`packaging/aur/publish.sh boxpilot-bin` pushes a release there).
 
-`.github/workflows/ci.yml` builds and tests natively on Windows, macOS (arm64 and x64) and Linux:
+`.github/workflows/ci.yml` builds and tests natively on Windows, macOS (arm64) and Linux:
 unit tests, every generated config through `sing-box check`, a live engine test against the real
 core (start, groups, selection, latency, mode switch, traffic, reload, stop) and a GUI start-up
 check (`boxpilot --smoke-test`).
@@ -138,8 +138,8 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-It attaches `BoxPilot-<version>-<platform>.zip|tar.gz` for Windows x64, macOS arm64/x64 and
-Linux x64 — the names the in-app updater looks for — plus a `.dmg` for each macOS build.
+It attaches `BoxPilot-<version>-<platform>.zip|tar.gz` for Windows x64, macOS arm64 and
+Linux x64 — the names the in-app updater looks for — plus a `.dmg` for macOS.
 
 ## Layout
 
