@@ -6,7 +6,6 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -371,34 +370,46 @@ impl Render for SubscriptionsPage {
                 .disabled(remote == 0)
                 .on_click(move |_, _, _| e.update_all())
                 .into_any_element(),
-            btn("add-sub")
-                .small()
-                .primary()
-                .accessibility_label(t!("btn.add"))
-                .pl_2()
-                .pr(dp(7.))
-                .child(
-                    h_flex()
-                        .items_center()
-                        .gap_1()
-                        .child(gpui_kit::component::Icon::new(IconName::Plus).small())
-                        .child(t!("btn.add"))
-                        .child(gpui_kit::component::Icon::new(IconName::ChevronDown).xsmall().opacity(0.8)),
-                )
-                .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, |menu, _, _| {
-                    compact_menu(menu)
-                        .item(
-                            PopupMenuItem::new(t!("btn.add_subscription"))
-                                .icon(extra_icon(Lucide::Rss))
-                                .on_click(|_, window, cx| open_editor(None, None, window, cx)),
-                        )
-                        .item(
-                            PopupMenuItem::new(t!("btn.add_node"))
-                                .icon(extra_icon(Lucide::ServerPlus))
-                                .on_click(|_, window, cx| super::local_nodes::open_add_node(None, window, cx)),
-                        )
-                })
-                .into_any_element(),
+            dropdown_popover(
+                "add-sub",
+                gpui_kit::Anchor::TopRight,
+                btn("add-sub")
+                    .small()
+                    .primary()
+                    .accessibility_label(t!("btn.add"))
+                    .pl_2()
+                    .pr(dp(7.))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(gpui_kit::component::Icon::new(IconName::Plus).small())
+                            .child(t!("btn.add"))
+                            .child(gpui_kit::component::Icon::new(IconName::ChevronDown).xsmall().opacity(0.8)),
+                    ),
+                |popover, _, cx| {
+                    let fg = cx.theme().muted_foreground;
+                    vec![
+                        dropdown_item(
+                            "add-sub-item",
+                            Some(div().text_color(fg).flex().items_center().child(extra_icon(Lucide::Rss).small()).into_any_element()),
+                            div().whitespace_nowrap().child(t!("btn.add_subscription")).into_any_element(),
+                            popover.clone(),
+                            |window, cx| open_editor(None, None, window, cx),
+                            cx,
+                        ),
+                        dropdown_item(
+                            "add-node-item",
+                            Some(div().text_color(fg).flex().items_center().child(extra_icon(Lucide::ServerPlus).small()).into_any_element()),
+                            div().whitespace_nowrap().child(t!("btn.add_node")).into_any_element(),
+                            popover.clone(),
+                            |window, cx| super::local_nodes::open_add_node(None, window, cx),
+                            cx,
+                        ),
+                    ]
+                },
+            )
+            .into_any_element(),
             ]
         };
         let subtitle = t!("subs.subtitle", subs.len(), engine.total_nodes());

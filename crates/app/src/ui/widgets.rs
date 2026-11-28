@@ -6,8 +6,9 @@ use boxpilot_core::geo::{Country, Origin};
 use gpui_kit::assets::IconName as Lucide;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::component::popover::{Popover, PopoverState};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -202,6 +203,84 @@ pub fn choice_right<T: Copy + PartialEq + 'static>(
     choice_anchored(id, Anchor::TopRight, current, options, on_select)
 }
 
+/// Renders a crisp, shadow-free dropdown popover (`Popover::appearance(false)`)
+/// so GPUI's DirectX premultiplied swapchain never paints a white/blurry shadow
+/// halo around menus over translucent Windows 11 Mica / Acrylic / Frosted windows.
+pub fn dropdown_popover<T: gpui_kit::component::Selectable + IntoElement + 'static>(
+    id: impl Into<SharedString>,
+    anchor: Anchor,
+    trigger: T,
+    build: impl Fn(&gpui_kit::Entity<PopoverState>, &mut Window, &mut App) -> Vec<AnyElement> + 'static,
+) -> impl IntoElement {
+    let id: SharedString = id.into();
+    let build = Rc::new(build);
+    Popover::new(SharedString::from(format!("bp-pop:{id}")))
+        .appearance(false)
+        .anchor(anchor)
+        .trigger(trigger)
+        .content(move |_, window, cx| {
+            let popover = cx.entity().clone();
+            let items = build(&popover, window, cx);
+            let t = cx.theme();
+            v_flex()
+                .p_1()
+                .gap_y_0p5()
+                .rounded(t.radius)
+                .bg(t.popover)
+                .border_1()
+                .border_color(hairline(cx))
+                .text_color(t.popover_foreground)
+                .children(items)
+        })
+}
+
+/// One clickable option row inside [`dropdown_popover`], with an optional
+/// checkmark/icon slot and centered single-line typography.
+pub fn dropdown_item(
+    id: impl Into<ElementId>,
+    leading: Option<AnyElement>,
+    label: AnyElement,
+    popover: gpui_kit::Entity<PopoverState>,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let t = cx.theme();
+    let hover = t.list_hover;
+    h_flex()
+        .id(id)
+        .h(dp(28.))
+        .px_2()
+        .gap_2()
+        .items_center()
+        .rounded(t.radius)
+        .cursor_pointer()
+        .text_sm()
+        .line_height(rems(1.0))
+        .text_color(t.popover_foreground)
+        .hover(move |d| d.bg(hover))
+        .on_click(move |_, window, cx| {
+            popover.update(cx, |s, cx| s.dismiss(window, cx));
+            on_click(window, cx);
+        })
+        .when_some(leading, |d, el| d.child(el))
+        .child(label)
+        .into_any_element()
+}
+
+/// Fixed-width leading checkmark slot so checked and unchecked menu rows align.
+pub fn check_slot(checked: bool, cx: &App) -> AnyElement {
+    let fg = cx.theme().popover_foreground;
+    div()
+        .w(dp(14.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(fg)
+        .when(checked, |d| d.child(Icon::new(IconName::Check).xsmall()))
+        .into_any_element()
+}
+
 fn choice_anchored<T: Copy + PartialEq + 'static>(
     id: impl Into<SharedString>,
     anchor: Anchor,
@@ -216,25 +295,32 @@ fn choice_anchored<T: Copy + PartialEq + 'static>(
         .map(|(l, _)| l.clone())
         .unwrap_or_default();
     let on_select = Rc::new(on_select);
-    btn(id)
+    let trigger = btn(id.clone())
         .outline()
         .small()
         .pl_2()
         .pr_1p5()
         .label(label)
-        .dropdown_caret(true)
-        .dropdown_menu_with_anchor(anchor, move |menu, _, _| {
-            let mut menu = compact_menu(menu);
-            for (label, value) in options.iter().cloned() {
+        .dropdown_caret(true);
+    let item_prefix = id.clone();
+    dropdown_popover(id, anchor, trigger, move |popover, _, cx| {
+        options
+            .iter()
+            .enumerate()
+            .map(|(idx, (opt_label, value))| {
                 let on_select = on_select.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(label)
-                        .checked(value == current)
-                        .on_click(move |_, window, cx| on_select(value, window, cx)),
-                );
-            }
-            menu
-        })
+                let value = *value;
+                dropdown_item(
+                    SharedString::from(format!("{item_prefix}-opt-{idx}")),
+                    Some(check_slot(value == current, cx)),
+                    div().whitespace_nowrap().child(opt_label.clone()).into_any_element(),
+                    popover.clone(),
+                    move |window, cx| on_select(value, window, cx),
+                    cx,
+                )
+            })
+            .collect()
+    })
 }
 
 /// Approximate rendered width of `s` at `text_sm`, for equal-width segments.
